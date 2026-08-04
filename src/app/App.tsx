@@ -23,7 +23,8 @@ import { ParentSignUpScreen, ParentLinkingScreen } from "./ParentSignUp";
 import { LandlordProfileScreen } from "./LandlordProfile";
 import { HighlightsDashboardSection, Highlight, INITIAL_HIGHLIGHTS, HL_TODAY } from "./LandlordHighlights";
 import { LandlordPaymentsScreen } from "./LandlordPayments";
-import { StudentHomeScreen } from "./StudentHome";
+import { StudentHomeScreen, BH_DATA } from "./StudentHome";
+import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
 import { getReports, updateReport as updateStudentReport, CATEGORY_META, PRIORITY_META, STATUS_META, StudentReport, ReportStatus } from "./reportStore";
 import { StudentPaymentsScreen } from "./StudentPayments";
 import { StudentRoomOccupantsScreen } from "./StudentOccupants";
@@ -1886,41 +1887,38 @@ function OccupantsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; r
 // ── MAP ───────────────────────────────────────────────────────────────────────
 
 function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) => void; role?: Role; notifCount?: number }) {
+  const [mapType, setMapType] = useState<"standard" | "satellite">("standard");
+  const [zoom, setZoom] = useState(16);
+  const mapRef = useRef<GoogleMapHandle>(null);
+
+  const bhPos = { lat: BH_DATA.lat, lng: BH_DATA.lng };
+  // Occupant positions simulated near the boarding house (no live GPS backend in this prototype).
+  const markers: MapMarker[] = [
+    {
+      id: "bh", variant: "bh", position: bhPos, title: BH_DATA.name, zIndex: 10,
+      infoContent: <MapInfoCard title={BH_DATA.name} subtitle={BH_DATA.address} rows={[["Landlord", BH_DATA.landlord], ["Contact", BH_DATA.contact]]} />,
+    },
+    {
+      id: "s1", variant: "inside", position: { lat: bhPos.lat + 0.0006, lng: bhPos.lng + 0.0005 }, title: "Maria Santos", zIndex: 5,
+      infoContent: <MapInfoCard title="Maria Santos" subtitle="Room A · Bed 2" rows={[["Status", "Inside"], ["Last Check-in", "Today 8:02 AM"]]} />,
+    },
+    {
+      id: "s2", variant: "outside", position: { lat: bhPos.lat - 0.0009, lng: bhPos.lng + 0.0011 }, title: "Kevin Cruz", zIndex: 5,
+      infoContent: <MapInfoCard title="Kevin Cruz" subtitle="Room A · Bed 4" rows={[["Status", "Outside"], ["Last Check-in", "Today 7:55 AM"]]} />,
+    },
+  ];
+
   return (
     <div style={{ height: "100%", position: "relative", overflow: "hidden" }}>
-      {/* Full-bleed map SVG */}
-      <svg width="390" height="844" viewBox="0 0 390 844" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
-        <rect width="390" height="844" fill="#E8E3DB" />
-        {/* Green areas */}
-        <rect x="0" y="0" width="100" height="140" rx="0" fill="#D4EDDA" opacity=".9" />
-        <rect x="260" y="60" width="130" height="100" rx="0" fill="#D4EDDA" opacity=".85" />
-        <rect x="0" y="520" width="120" height="180" rx="0" fill="#D4EDDA" opacity=".7" />
-        <rect x="200" y="600" width="190" height="140" rx="0" fill="#D4EDDA" opacity=".75" />
-        {/* Main roads */}
-        <rect x="0" y="200" width="390" height="22" fill="white" opacity=".95" />
-        <rect x="0" y="480" width="390" height="18" fill="white" opacity=".9" />
-        <rect x="0" y="680" width="390" height="16" fill="white" opacity=".85" />
-        <rect x="130" y="0" width="20" height="844" fill="white" opacity=".95" />
-        <rect x="280" y="0" width="16" height="844" fill="white" opacity=".9" />
-        {/* Minor roads */}
-        <rect x="0" y="340" width="390" height="10" fill="white" opacity=".65" />
-        <rect x="0" y="580" width="390" height="10" fill="white" opacity=".65" />
-        <rect x="60" y="0" width="10" height="844" fill="white" opacity=".65" />
-        <rect x="200" y="0" width="10" height="844" fill="white" opacity=".65" />
-        <rect x="340" y="0" width="10" height="844" fill="white" opacity=".65" />
-        {/* Building blocks */}
-        {[[10,245,40,80],[75,245,40,80],[10,355,105,110],[220,245,48,80],[300,245,76,80],[220,355,48,110],[300,355,76,110],[10,510,105,60],[10,600,105,65],[220,510,48,60],[300,510,76,60],[220,600,48,65],[300,600,76,65],[10,710,105,60],[220,710,48,120],[300,710,76,120]].map(([x,y,w,h],i)=><rect key={i} x={x} y={y} width={w} height={h} rx="4" fill="#D4C5E2" opacity=".6"/>)}
-        {/* Primary dorm marker */}
-        <circle cx="195" cy="290" r="28" fill="#9772F6" opacity=".16" />
-        <circle cx="195" cy="290" r="17" fill="#9772F6" opacity=".25" />
-        <circle cx="195" cy="290" r="9" fill="#9772F6" />
-        <circle cx="195" cy="290" r="4" fill="white" />
-        {/* Secondary markers */}
-        <path d="M95 380 C95 370 102 365 110 365 C118 365 125 370 125 380 C125 390 110 400 110 400 C110 400 95 390 95 380Z" fill="#EF4444" opacity=".85" />
-        <circle cx="110" cy="380" r="5.5" fill="white" />
-        <circle cx="310" cy="420" r="20" fill="#3B82F6" opacity=".15" />
-        <circle cx="310" cy="420" r="11" fill="#3B82F6" stroke="white" strokeWidth="2.5" />
-      </svg>
+      {/* Real interactive Google Map */}
+      <GoogleMapCanvas
+        ref={mapRef}
+        center={bhPos}
+        zoom={zoom}
+        mapType={mapType}
+        onZoomChange={setZoom}
+        markers={markers}
+      />
 
       {/* Floating header */}
       <div style={{ position: "absolute", top: 50, left: 14, right: 14, zIndex: 30 }}>
@@ -1936,8 +1934,12 @@ function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) 
 
       {/* Map controls */}
       <div style={{ position: "absolute", top: 120, right: 20, display: "flex", flexDirection: "column", gap: 8, zIndex: 30 }}>
-        {[RefreshCcw, Layers, Navigation].map((Ic, i) => (
-          <button key={i} style={{ width: 40, height: 40, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(255,255,255,0.9)", cursor: "pointer", boxShadow: "0 4px 14px rgba(0,0,0,.12)" }}>
+        {[
+          { Ic: RefreshCcw, fn: () => mapRef.current?.recenter() },
+          { Ic: Layers,     fn: () => setMapType(t => (t === "standard" ? "satellite" : "standard")) },
+          { Ic: Navigation, fn: () => mapRef.current?.fitBounds(markers.map(m => m.position)) },
+        ].map(({ Ic, fn }, i) => (
+          <button key={i} onClick={fn} style={{ width: 40, height: 40, background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(255,255,255,0.9)", cursor: "pointer", boxShadow: "0 4px 14px rgba(0,0,0,.12)" }}>
             <Ic size={16} color={i === 0 ? "#9772F6" : "#6B7280"} />
           </button>
         ))}
@@ -1949,12 +1951,12 @@ function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) 
           <div style={{ width: 36, height: 4, borderRadius: 2, background: "#E5E7EB", margin: "0 auto 12px" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
             <MapPin size={14} color="#EF4444" />
-            <span style={{ fontWeight: 800, color: "#1F2937", fontSize: 14, fontFamily: "'Quicksand',sans-serif" }}>KKK Dormitory</span>
+            <span style={{ fontWeight: 800, color: "#1F2937", fontSize: 14, fontFamily: "'Quicksand',sans-serif" }}>{BH_DATA.name}</span>
           </div>
-          <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 12px 22px" }}>Cangumba, San Isidro, Calape, Bohol</p>
+          <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 12px 22px" }}>{BH_DATA.address}</p>
           <div style={{ display: "flex", gap: 10 }}>
-            <button style={{ flex: 1, padding: "11px 0", borderRadius: 16, border: "2px solid #9772F6", color: "#9772F6", fontWeight: 800, fontSize: 12, background: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><Navigation size={13} />My Location</button>
-            <button style={{ flex: 1, padding: "11px 0", borderRadius: 16, backgroundImage: "linear-gradient(135deg,#EC4899,#9772F6)", color: "white", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><MapPin size={13} />Directions</button>
+            <button onClick={() => mapRef.current?.recenter()} style={{ flex: 1, padding: "11px 0", borderRadius: 16, border: "2px solid #9772F6", color: "#9772F6", fontWeight: 800, fontSize: 12, background: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><Navigation size={13} />My Location</button>
+            <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${bhPos.lat},${bhPos.lng}`, "_blank", "noopener,noreferrer")} style={{ flex: 1, padding: "11px 0", borderRadius: 16, backgroundImage: "linear-gradient(135deg,#EC4899,#9772F6)", color: "white", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><MapPin size={13} />Directions</button>
           </div>
         </div>
       </div>
