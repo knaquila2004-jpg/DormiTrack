@@ -1,8 +1,10 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { loadGoogleMaps } from "./googleMapsLoader";
+import { AddressComponents } from "./mapGeo";
+import { extractAddressComponents } from "./phAddress";
 
-export type MarkerVariant = "bh" | "selected" | "student" | "inside" | "outside" | "report";
+export type MarkerVariant = "bh" | "selected" | "place" | "student" | "inside" | "outside" | "report";
 
 export interface MapMarker {
   id: string;
@@ -29,9 +31,38 @@ interface GoogleMapCanvasProps {
   onZoomChange?: (zoom: number) => void;
   style?: React.CSSProperties;
   markers?: MapMarker[];
-  draggableMarker?: { position: { lat: number; lng: number } };
-  onMarkerDragEnd?: (result: { lat: number; lng: number; address: string }) => void;
+  draggableMarker?: { position: { lat: number; lng: number }; variant?: MarkerVariant; draggable?: boolean };
+  /** Fired with the marker's raw new position when dragged — no reverse geocoding happens here;
+   *  the caller decides whether/how to resolve an address for the new position. */
+  onMarkerDragEnd?: (pos: { lat: number; lng: number }) => void;
   onMapClick?: (pos: { lat: number; lng: number }) => void;
+  /** When true, Google's own place-of-interest icons on the base map become clickable, so tapping one
+   *  directly carries a placeId (the click event itself tells us a POI was hit — no separate search
+   *  needed). Google's own default info window for that click is suppressed (event.stop()); its
+   *  details are then fetched ourselves and handed to onPoiClick so our own UI drives the popup.
+   *  Defaults to false everywhere else, where every tap goes straight to onMapClick as before. */
+  clickablePois?: boolean;
+  /** Fired instead of onMapClick when the landlord taps one of Google's own existing place icons
+   *  (only possible when clickablePois is true) — resolved via the Places Details API. Extra fields
+   *  (phone/website/rating/openNow) are included only when Google actually returned them. */
+  onPoiClick?: (result: {
+    placeId: string; name: string; address: string; components: AddressComponents; lat: number; lng: number;
+    phone?: string; website?: string; rating?: number; userRatingsTotal?: number; openNow?: boolean;
+  }) => void;
+  /** Fired synchronously the instant a POI tap is recognized, before the async Places Details lookup
+   *  resolves — lets the caller show a "detecting..." state immediately instead of the tap looking dead. */
+  onPoiClickStart?: () => void;
+  /** Fired when a POI tap was recognized but its details could not be resolved at all (Places API
+   *  not enabled/authorized, quota, timeout, ...) — the tap still falls back to onMapClick so a pin
+   *  gets placed regardless, but this lets the caller also surface a visible explanation. */
+  onPoiClickFailed?: () => void;
+  /** A floating info card anchored to a map position — e.g. the existing-place popup shown after a
+   *  successful onPoiClick. Rendered as a real Google InfoWindow (so it auto-repositions to stay on
+   *  screen, matches native map popup styling, and gets its own close button for free). Pass null/
+   *  undefined to close it. */
+  infoWindow?: { position: { lat: number; lng: number }; content: React.ReactNode } | null;
+  /** Fired when the landlord dismisses infoWindow via its own close (×) button. */
+  onInfoWindowClose?: () => void;
   polyline?: { lat: number; lng: number }[];
   circle?: { center: { lat: number; lng: number }; radiusMeters: number; color?: string };
   enableClustering?: boolean;
@@ -43,11 +74,11 @@ const HOME_PATH = "M12 3 L21 10 V20 A1 1 0 0 1 20 21 H15 V14 H9 V21 H4 A1 1 0 0 
 const STAR_PATH = "M12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26Z";
 
 function pinIconUrl(variant: MarkerVariant): { url: string; width: number; height: number; anchorX: number; anchorY: number } {
-  const isPin = variant === "bh" || variant === "selected";
+  const isPin = variant === "bh" || variant === "selected" || variant === "place";
   const size = isPin ? 44 : variant === "student" ? 20 : 18; // circle diameter
   const height = isPin ? size + 10 : size; // pins get a tail below the circle
   const fill =
-    variant === "bh" || variant === "selected" ? "url(#g)"
+    variant === "bh" || variant === "selected" || variant === "place" ? "url(#g)"
     : variant === "inside" ? "#16A34A"
     : variant === "outside" ? "#D97706"
     : variant === "report" ? "#EF4444"
@@ -75,9 +106,105 @@ function offlineNow() {
   return typeof navigator !== "undefined" && "onLine" in navigator && !navigator.onLine;
 }
 
+// Races a promise against a plain timeout so a Google API call that never invokes its callback at all
+// (a silent hang, as opposed to a thrown error) can't leave a map tap looking permanently unresponsive.
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, () => { clearTimeout(timer); resolve(fallback); });
+  });
+}
+
+interface PlaceDetails {
+  name: string; address: string; components: AddressComponents; lat: number; lng: number;
+  phone?: string; website?: string; rating?: number; userRatingsTotal?: number; openNow?: boolean;
+}
+
+// Looks up a tapped POI's details via the classic PlacesService first (works on projects with the
+// legacy "Places API" enabled), and — only if that fails — retries via the newer google.maps.places.Place
+// class (works on projects that instead only have "Places API (New)" enabled). Cloud projects commonly
+// have just one of the two enabled, so trying both here is what makes an existing-place tap reliably
+// resolve to that place's own info instead of silently failing (and looking like a dead click, or worse,
+// getting misread as "no existing place here" and downgraded to a custom pin).
+function fetchPlaceDetails(g: any, map: any, placeId: string): Promise<PlaceDetails | null> {
+  return new Promise((resolve) => {
+    const fallbackToNewApi = () => {
+      fetchPlaceDetailsViaNewApi(g, placeId)
+        .then(resolve)
+        .catch((err) => {
+          console.warn("[GoogleMapCanvas] New Places API lookup also failed for placeId", placeId, err);
+          resolve(null);
+        });
+    };
+    try {
+      new g.maps.places.PlacesService(map).getDetails(
+        {
+          placeId,
+          fields: [
+            "name", "formatted_address", "geometry", "address_components",
+            "formatted_phone_number", "website", "rating", "user_ratings_total", "opening_hours",
+          ],
+        },
+        (place: any, status: string) => {
+          const loc = place?.geometry?.location;
+          if (status === "OK" && loc) {
+            resolve({
+              name: place.name || place.formatted_address || "Selected Place",
+              address: place.formatted_address || "",
+              components: extractAddressComponents(place.address_components ?? []),
+              lat: loc.lat(),
+              lng: loc.lng(),
+              phone: place.formatted_phone_number || undefined,
+              website: place.website || undefined,
+              rating: typeof place.rating === "number" ? place.rating : undefined,
+              userRatingsTotal: typeof place.user_ratings_total === "number" ? place.user_ratings_total : undefined,
+              openNow: typeof place.opening_hours?.isOpen === "function" ? place.opening_hours.isOpen() : undefined,
+            });
+            return;
+          }
+          console.warn(`[GoogleMapCanvas] Legacy PlacesService.getDetails failed with status "${status}" for placeId`, placeId, "— trying the new Places API...");
+          fallbackToNewApi();
+        },
+      );
+    } catch (err) {
+      console.warn("[GoogleMapCanvas] Legacy PlacesService.getDetails call threw synchronously for placeId", placeId, err, "— trying the new Places API...");
+      fallbackToNewApi();
+    }
+  });
+}
+
+async function fetchPlaceDetailsViaNewApi(g: any, placeId: string): Promise<PlaceDetails | null> {
+  if (typeof g.maps.importLibrary !== "function") return null;
+  const { Place } = await g.maps.importLibrary("places");
+  const place = new Place({ id: placeId });
+  await place.fetchFields({
+    fields: ["displayName", "formattedAddress", "location", "addressComponents", "internationalPhoneNumber", "websiteURI", "rating", "userRatingCount"],
+  });
+  if (!place.location) return null;
+  const components = (place.addressComponents ?? []).map((c: any) => ({ long_name: c.longText, short_name: c.shortText, types: c.types ?? [] }));
+  let openNow: boolean | undefined;
+  try {
+    openNow = typeof place.isOpen === "function" ? await place.isOpen() : undefined;
+  } catch {
+    openNow = undefined; // isOpen() throws when a place has no opening-hours data — that's fine, just omit it
+  }
+  return {
+    name: place.displayName || place.formattedAddress || "Selected Place",
+    address: place.formattedAddress || "",
+    components: extractAddressComponents(components),
+    lat: place.location.lat(),
+    lng: place.location.lng(),
+    phone: place.internationalPhoneNumber || undefined,
+    website: place.websiteURI || undefined,
+    rating: typeof place.rating === "number" ? place.rating : undefined,
+    userRatingsTotal: typeof place.userRatingCount === "number" ? place.userRatingCount : undefined,
+    openNow,
+  };
+}
+
 export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>(
   (
-    { center, zoom, mapType, onZoomChange, style, markers, draggableMarker, onMarkerDragEnd, onMapClick, polyline, circle, enableClustering },
+    { center, zoom, mapType, onZoomChange, style, markers, draggableMarker, onMarkerDragEnd, onMapClick, clickablePois, onPoiClick, onPoiClickStart, onPoiClickFailed, infoWindow, onInfoWindowClose, polyline, circle, enableClustering },
     ref,
   ) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -97,6 +224,14 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
     const infoWindowDivRef = useRef<HTMLDivElement | null>(null);
     if (!infoWindowDivRef.current) infoWindowDivRef.current = document.createElement("div");
     const [activeMarker, setActiveMarker] = useState<MapMarker | null>(null);
+
+    // A second, independent InfoWindow just for the `infoWindow` prop (e.g. the existing-place popup) —
+    // kept separate from the marker-click InfoWindow above so the two never fight over the same window.
+    const pinnedInfoWindowRef = useRef<any>(null);
+    const pinnedInfoDivRef = useRef<HTMLDivElement | null>(null);
+    if (!pinnedInfoDivRef.current) pinnedInfoDivRef.current = document.createElement("div");
+    const onInfoWindowCloseRef = useRef(onInfoWindowClose);
+    onInfoWindowCloseRef.current = onInfoWindowClose;
 
     // ── Online/offline awareness ──────────────────────────────────────────────
     useEffect(() => {
@@ -123,12 +258,14 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
             mapTypeId: mapType === "satellite" ? "satellite" : "roadmap",
             disableDefaultUI: true,
             gestureHandling: "greedy",
-            clickableIcons: false,
+            clickableIcons: !!clickablePois,
             rotateControl: true,
           });
           mapRef.current = map;
           infoWindowRef.current = new g.maps.InfoWindow({ content: infoWindowDivRef.current });
           infoWindowRef.current.addListener("closeclick", () => setActiveMarker(null));
+          pinnedInfoWindowRef.current = new g.maps.InfoWindow({ content: pinnedInfoDivRef.current });
+          pinnedInfoWindowRef.current.addListener("closeclick", () => onInfoWindowCloseRef.current?.());
           g.maps.event.addListenerOnce(map, "tilesloaded", () => setTilesLoaded(true));
           if (onZoomChange) map.addListener("zoom_changed", () => onZoomChange(map.getZoom()));
           setMapReady(true);
@@ -148,18 +285,63 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
     }, [mapType]);
 
     useEffect(() => {
+      if (mapRef.current) mapRef.current.setOptions({ clickableIcons: !!clickablePois });
+    }, [clickablePois]);
+
+    useEffect(() => {
       if (mapRef.current && mapRef.current.getZoom() !== zoom) mapRef.current.setZoom(zoom);
     }, [zoom]);
 
-    // ── Map click ────────────────────────────────────────────────────────────
+    // ── Floating info popup anchored to a map position (e.g. the existing-place popup) ─────
     useEffect(() => {
-      if (!mapReady || !mapRef.current || !onMapClick) return;
+      if (!mapReady || !pinnedInfoWindowRef.current) return;
+      if (infoWindow) {
+        pinnedInfoWindowRef.current.setPosition(infoWindow.position);
+        pinnedInfoWindowRef.current.open(mapRef.current);
+      } else {
+        pinnedInfoWindowRef.current.close();
+      }
+    }, [mapReady, infoWindow?.position.lat, infoWindow?.position.lng, !!infoWindow]);
+
+    // ── Map click: an existing-marker tap carries a placeId directly (clickablePois on) — that always
+    //    takes priority over treating the tap as an empty-map click. ──────────────────────────────
+    useEffect(() => {
+      if (!mapReady || !mapRef.current || (!onMapClick && !onPoiClick)) return;
       const g = (window as any).google;
-      const listener = mapRef.current.addListener("click", (e: any) => {
-        onMapClick({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+      const map = mapRef.current;
+      const listener = map.addListener("click", (e: any) => {
+        const clickPos = e.latLng ? { lat: e.latLng.lat(), lng: e.latLng.lng() } : null;
+        if (!clickPos) return;
+
+        // Google marks a click on one of its own POI icons with a placeId — that's the single
+        // signal that decides existing-place vs. empty-map-click. Only reachable when clickablePois
+        // is on, since that's what makes those icons register clicks at all.
+        if (e.placeId && onPoiClick) {
+          e.stop?.(); // suppress Google's own default info window — our own UI drives the popup instead
+          onPoiClickStart?.();
+          withTimeout(fetchPlaceDetails(g, map, e.placeId), 6000, null).then((details) => {
+            if (details) {
+              onPoiClick({ placeId: e.placeId, ...details });
+              return;
+            }
+            // The tap hit a real existing place, but its details couldn't be resolved (Places API
+            // not enabled/authorized, quota, timed out, ...). Don't leave the tap looking dead —
+            // fall back to a plain tap, and let the caller surface that this specific lookup failed.
+            console.warn("[GoogleMapCanvas] Found an existing place but could not resolve its details, placeId", e.placeId, "— falling back to a plain map tap.");
+            // Fire onMapClick first, then onPoiClickFailed — both land in the same React state-update
+            // batch, so whichever fires last "wins" if a caller's handlers both touch the same status
+            // state. onPoiClickFailed should win here so the failure explanation isn't silently
+            // overwritten by the plain-tap handler's own "reset status" side effect.
+            onMapClick?.(clickPos);
+            onPoiClickFailed?.();
+          });
+          return;
+        }
+
+        onMapClick?.(clickPos);
       });
       return () => g?.maps.event.removeListener(listener);
-    }, [mapReady, onMapClick]);
+    }, [mapReady, onMapClick, onPoiClick, onPoiClickStart, onPoiClickFailed]);
 
     // ── Markers (+ optional clustering) ─────────────────────────────────────────
     const markersKey = useMemo(
@@ -227,24 +409,23 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
         dragMarkerObjRef.current = null;
         return;
       }
+      const icon = pinIconUrl(draggableMarker.variant ?? "selected");
+      const draggable = draggableMarker.draggable !== false;
       if (!dragMarkerObjRef.current) {
-        const icon = pinIconUrl("selected");
         dragMarkerObjRef.current = new g.maps.Marker({
           position: draggableMarker.position,
           map,
-          draggable: true,
+          draggable,
           icon: { url: icon.url, scaledSize: new g.maps.Size(icon.width, icon.height), anchor: new g.maps.Point(icon.anchorX, icon.anchorY) },
         });
         dragMarkerObjRef.current.addListener("dragend", () => {
           const pos = dragMarkerObjRef.current.getPosition();
-          const lat = pos.lat(), lng = pos.lng();
-          new g.maps.Geocoder().geocode({ location: { lat, lng } }, (results: any[], status: string) => {
-            const address = status === "OK" && results?.[0] ? results[0].formatted_address : "";
-            onMarkerDragEnd?.({ lat, lng, address });
-          });
+          onMarkerDragEnd?.({ lat: pos.lat(), lng: pos.lng() });
         });
       } else {
         dragMarkerObjRef.current.setPosition(draggableMarker.position);
+        dragMarkerObjRef.current.setDraggable(draggable);
+        dragMarkerObjRef.current.setIcon({ url: icon.url, scaledSize: new g.maps.Size(icon.width, icon.height), anchor: new g.maps.Point(icon.anchorX, icon.anchorY) });
       }
     }, [mapReady, draggableMarker, onMarkerDragEnd]);
 
@@ -308,6 +489,7 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
       <div style={{ position: "absolute", inset: 0, ...style }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
         {activeMarker && createPortal(activeMarker.infoContent, infoWindowDivRef.current)}
+        {infoWindow && createPortal(infoWindow.content, pinnedInfoDivRef.current)}
 
         {!isOffline && error && (
           <div style={{

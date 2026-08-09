@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { BOARDING_HOUSES, BoardingHouse } from "./shared";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
+import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -62,6 +63,7 @@ function ChipRow<T extends string>({ label, options, active, onSelect }: { label
 }
 
 export function AdminMapScreen({ go }: { go: (s: string) => void }) {
+  const notifCount = useUnreadCount("admin");
   const [mapType, setMapType] = useState<"standard" | "satellite">("standard");
   const [showMenu, setShowMenu] = useState(false);
   const [activeFilter, setFilter] = useState<FilterType>("all");
@@ -122,9 +124,9 @@ export function AdminMapScreen({ go }: { go: (s: string) => void }) {
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search boarding house, street, barangay…" style={{ background: "none", border: "none", outline: "none", flex: 1, color: "white", fontSize: 12, fontFamily: IN, caretColor: "white" }} />
             {query && <button onClick={() => setQuery("")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}><X size={13} color="rgba(255,255,255,.7)" /></button>}
           </div>
-          <button style={{ position: "relative" as const, width: 38, height: 38, borderRadius: 12, background: "rgba(255,255,255,.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <button onClick={() => go("notifications")} style={{ position: "relative" as const, width: 38, height: 38, borderRadius: 12, background: "rgba(255,255,255,.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Bell size={16} color="white" />
-            <span style={{ position: "absolute" as const, top: -2, right: -2, width: 14, height: 14, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 7, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>5</span>
+            {notifCount > 0 && <span style={{ position: "absolute" as const, top: -2, right: -2, width: 14, height: 14, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 7, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(notifCount)}</span>}
           </button>
           <button style={{ width: 38, height: 38, borderRadius: 12, background: "rgba(255,255,255,.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <MessageCircle size={16} color="white" />

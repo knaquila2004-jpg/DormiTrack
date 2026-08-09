@@ -182,7 +182,7 @@ function ReportDetailPanel({ report, users, onClose, onUpdateStatus }: {
           {/* Header */}
           <div style={{ flexShrink:0, padding:"4px 18px 14px", borderBottom:"1px solid #F3F4F6", background:"white", borderRadius:"28px 28px 0 0" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-              <button onClick={onClose} style={{ width:34, height:34, borderRadius:11, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><ChevronLeft size={17} color="#374151"/></button>
+              <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}><ChevronLeft size={17} color="#374151"/></button>
               <div style={{ flex:1 }}>
                 <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontFamily:IN }}>#{report.id.toUpperCase()} · {report.dateSubmitted} {report.timeSubmitted}</p>
                 <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS, lineHeight:1.3 }}>{report.title}</p>

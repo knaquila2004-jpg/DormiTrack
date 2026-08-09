@@ -1,11 +1,12 @@
 import React, { useState } from "react";
 import {
   CreditCard, CheckCircle, Clock, AlertCircle, X, Check,
-  ChevronDown, ChevronUp, Calendar, FileText, Camera, Hash,
+  Calendar, FileText, Camera, Hash,
   Banknote, MessageSquare, ChevronRight, Receipt, Zap, Droplet,
   Wifi, Trash2, Tag, Eye, Download,
 } from "lucide-react";
-import { BILLING_DATA, STAY_DATA, BH_DATA } from "./StudentHome";
+import { BILLING_DATA, STAY_DATA, BH_DATA, STUDENT_DATA } from "./StudentHome";
+import { addNotification } from "./notificationStore";
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const QS   = "'Quicksand',sans-serif";
@@ -60,7 +61,7 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
   const totalDue = BILLS.filter(b=>b.status==="unpaid"||b.status==="awaiting-verification").reduce((s,b)=>s+b.amount,0);
 
   return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
       <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"95%", display:"flex", flexDirection:"column" as const }}>
         <div style={{ padding:"16px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -144,7 +145,7 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
             <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Proof of Payment (Optional)</p>
             <div onClick={()=>setHasReceipt(p=>!p)} style={{ border:`2px dashed ${hasReceipt?"#9772F6":"#E5E7EB"}`, borderRadius:14, padding:"22px 16px", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, background:hasReceipt?"#F5F0FF":"#FAFAFA" }}>
               {hasReceipt ? <CheckCircle size={28} color="#9772F6"/> : <Camera size={28} color="#D1D5DB"/>}
-              <p style={{ margin:0, fontSize:12, fontWeight:700, color:hasReceipt?"#9772F6":"#9CA3AF", fontFamily:QS }}>{hasReceipt?"Receipt Attached ✓":"Tap to Upload Receipt"}</p>
+              <p style={{ margin:0, fontSize:12, fontWeight:700, color:hasReceipt?"#9772F6":"#9CA3AF", fontFamily:QS }}>{hasReceipt?"Receipt Attached":"Tap to Upload Receipt"}</p>
               <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>Photo, screenshot, or PDF · Max 5MB</p>
             </div>
           </div>
@@ -158,9 +159,61 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
         </div>
         <div style={{ padding:"10px 16px 28px", background:"white", borderTop:"1px solid #F3F4F6", flexShrink:0, display:"flex", gap:10 }}>
           <button onClick={onClose} style={{ flex:1, padding:"13px 0", borderRadius:14, border:"1.5px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Cancel</button>
-          <button onClick={()=>{ if(canSubmit){ onSubmit(); onClose(); } }} style={{ flex:2, padding:"13px 0", borderRadius:14, border:"none", backgroundImage:canSubmit?GRAD:undefined, background:canSubmit?undefined:"#E5E7EB", color:canSubmit?"white":"#9CA3AF", fontSize:13, fontWeight:800, cursor:canSubmit?"pointer":"default", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:canSubmit?"0 4px 14px rgba(151,114,246,.3)":undefined }}>
+          <button onClick={()=>{ if(canSubmit){ onSubmit(); onClose(); } }} style={{ flex:2, padding:"13px 0", borderRadius:14, border:"none", background:canSubmit?GRAD:"#E5E7EB", color:canSubmit?"white":"#9CA3AF", fontSize:13, fontWeight:800, cursor:canSubmit?"pointer":"default", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:canSubmit?"0 4px 14px rgba(151,114,246,.3)":undefined }}>
             <Check size={15}/> Submit Payment
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Payment History Modal ─────────────────────────────────────────────────────
+
+function PaymentHistoryModal({ onClose, onSelect }: { onClose:()=>void; onSelect:(rec:PayRecord)=>void }) {
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:75, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
+      <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"85%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ padding:"16px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:42, height:42, borderRadius:14, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <FileText size={19} color="white"/>
+          </div>
+          <div style={{ flex:1 }}>
+            <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Payment History</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{HISTORY.length} past payments</p>
+          </div>
+          <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <X size={15} color="#6B7280"/>
+          </button>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 16px 28px", display:"flex", flexDirection:"column" as const, gap:10 }}>
+          {HISTORY.map(rec=>{
+            const sm = payRecStatusMeta(rec.status);
+            return (
+              <div key={rec.id} onClick={()=>onSelect(rec)} style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", cursor:"pointer" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <Receipt size={18} color="white"/>
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:3 }}>
+                      <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{rec.period}</p>
+                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
+                    </div>
+                    <p style={{ margin:"0 0 2px", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{rec.receiptNo}</p>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:10, color:"#6B7280", fontFamily:IN }}>{rec.date}</span>
+                      <span style={{ fontSize:10, color:"#6B7280", fontFamily:IN }}>· {rec.method}</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign:"right" as const }}>
+                    <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#9772F6", fontFamily:QS }}>{php(rec.amount)}</p>
+                    <ChevronRight size={14} color="#D1D5DB" style={{ marginTop:4 }}/>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -178,7 +231,7 @@ function PaymentDetailModal({ rec, onClose }: { rec:PayRecord; onClose:()=>void 
     { label:"Garbage Fee",   amount:100  },
   ];
   return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
       <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"88%", display:"flex", flexDirection:"column" as const }}>
         <div style={{ padding:"16px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:12 }}>
@@ -317,7 +370,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
               { label:"Water Bill",     amount:BILLING_DATA.water,       color:"#3B82F6" },
               { label:"Garbage Fee",    amount:BILLING_DATA.garbage,     color:"#EF4444" },
             ].map(({ label, amount, color },i,arr)=>(
-              <div key={label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
+              <div key={label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px" }}>
                 <span style={{ fontSize:12, color:"#374151", fontFamily:IN }}>{label}</span>
                 <span style={{ fontSize:13, fontWeight:700, color, fontFamily:QS }}>{php(amount)}</span>
               </div>
@@ -376,7 +429,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
 
         {/* ── Payment History ───────────────────────────────────────────────── */}
         <div style={{ padding:"14px 16px 28px" }}>
-          <button onClick={()=>setHistOpen(p=>!p)} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", background:"white", border:"none", cursor:"pointer", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:10 }}>
+          <button onClick={()=>setHistOpen(true)} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", background:"white", border:"none", cursor:"pointer", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ width:36, height:36, borderRadius:11, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <FileText size={16} color="#9772F6"/>
@@ -386,46 +439,14 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
                 <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{HISTORY.length} past payments</p>
               </div>
             </div>
-            {histOpen ? <ChevronUp size={16} color="#9CA3AF"/> : <ChevronDown size={16} color="#9CA3AF"/>}
+            <ChevronRight size={16} color="#9CA3AF"/>
           </button>
-
-          {histOpen && (
-            <div style={{ display:"flex", flexDirection:"column" as const, gap:10 }}>
-              {HISTORY.map(rec=>{
-                const sm = payRecStatusMeta(rec.status);
-                return (
-                  <div key={rec.id} onClick={()=>setSelRec(rec)} style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", cursor:"pointer" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                        <Receipt size={18} color="white"/>
-                      </div>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:3 }}>
-                          <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{rec.period}</p>
-                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
-                        </div>
-                        <p style={{ margin:"0 0 2px", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{rec.receiptNo}</p>
-                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                          <span style={{ fontSize:10, color:"#6B7280", fontFamily:IN }}>{rec.date}</span>
-                          <span style={{ fontSize:10, color:"#6B7280", fontFamily:IN }}>· {rec.method}</span>
-                        </div>
-                      </div>
-                      <div style={{ textAlign:"right" as const }}>
-                        <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#9772F6", fontFamily:QS }}>{php(rec.amount)}</p>
-                        <ChevronRight size={14} color="#D1D5DB" style={{ marginTop:4 }}/>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       </div>
 
       {/* Bill detail inline modal */}
       {selBill && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:70, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px" }}>
+        <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:70, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px" }}>
           <div style={{ background:"white", borderRadius:24, padding:22, width:"100%" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:18 }}>
               <div style={{ width:44, height:44, borderRadius:14, background:selBill.bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -455,7 +476,15 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
         </div>
       )}
 
-      {showSubmit && <SubmitPaymentModal onClose={()=>setShowSubmit(false)} onSubmit={()=>setSubmitted(true)}/>}
+      {showSubmit && <SubmitPaymentModal onClose={()=>setShowSubmit(false)} onSubmit={()=>{
+        setSubmitted(true);
+        addNotification({
+          role: "landlord", type: "payment", title: "Payment Awaiting Verification",
+          description: `${STUDENT_DATA.name} submitted a payment for verification.`,
+          destination: "payments",
+        });
+      }}/>}
+      {histOpen  && <PaymentHistoryModal onClose={()=>setHistOpen(false)} onSelect={rec=>setSelRec(rec)}/>}
       {selRec    && <PaymentDetailModal rec={selRec} onClose={()=>setSelRec(null)}/>}
     </div>
   );

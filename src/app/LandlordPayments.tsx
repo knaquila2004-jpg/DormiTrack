@@ -5,6 +5,8 @@ import {
   ChevronDown, ChevronUp, X, Eye, Check, Banknote, TrendingUp,
   Calendar, FileText, ArrowRight, Circle, MoreVertical,
 } from "lucide-react";
+import { STUDENT_DATA } from "./StudentHome";
+import { addNotification } from "./notificationStore";
 
 const GRAD    = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H  = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -485,7 +487,12 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
       transactions: prev.transactions.map(t=>t.id===txId?{...t,status:"verified" as const}:t),
       bills: prev.bills.map(b=>{ const tx=prev.transactions.find(t=>t.id===txId); return tx&&b.key===tx.billKey?{...b,status:"paid" as BillStatus,paidAmount:b.amount}:b; }),
     } : null);
-    showToast("✓ Payment verified successfully");
+    if (studentId === STUDENT_DATA.id) {
+      const description = "Your payment has been verified by the landlord.";
+      addNotification({ role: "student", type: "payment", title: "Payment Verified", description, destination: "payments", relatedId: txId });
+      addNotification({ role: "parent",  type: "payment", title: "Student Payment Verified", description: `${STUDENT_DATA.name}'s payment has been verified by the landlord.`, destination: "payments", relatedId: txId });
+    }
+    showToast("Payment verified successfully");
   };
 
   const rejectTx = (studentId: string, txId: string, reason: string) => {
@@ -501,6 +508,9 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
       transactions: prev.transactions.map(t=>t.id===txId?{...t,status:"rejected" as const,rejectionReason:reason}:t),
       bills: prev.bills.map(b=>{ const tx=prev.transactions.find(t=>t.id===txId); return tx&&b.key===tx.billKey?{...b,status:"unpaid" as BillStatus,paidAmount:0}:b; }),
     } : null);
+    if (studentId === STUDENT_DATA.id) {
+      addNotification({ role: "student", type: "payment", title: "Payment Rejected", description: `Your payment was rejected: ${reason}`, destination: "payments", relatedId: txId });
+    }
     showToast("Payment rejected.");
   };
 

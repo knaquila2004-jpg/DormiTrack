@@ -26,6 +26,12 @@ import { LandlordPaymentsScreen } from "./LandlordPayments";
 import { StudentHomeScreen, BH_DATA } from "./StudentHome";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
 import { getReports, updateReport as updateStudentReport, CATEGORY_META, PRIORITY_META, STATUS_META, StudentReport, ReportStatus } from "./reportStore";
+import {
+  useNotifications, useUnreadCount, markNotificationRead, markAllRead, addNotification,
+  NOTIF_META, timeAgo, fmtBadgeCount, AppNotification, NotificationType,
+} from "./notificationStore";
+import { MessagesScreen } from "./Chat";
+import { useUnreadChatCount } from "./chatStore";
 import { StudentPaymentsScreen } from "./StudentPayments";
 import { StudentRoomOccupantsScreen } from "./StudentOccupants";
 import { StudentMapScreen } from "./StudentMap";
@@ -90,6 +96,11 @@ function MobileShell({ children, visible }: { children: React.ReactNode; visible
         <style>{`.dt-real-shell{height:100vh;height:100dvh}`}</style>
         <div className="dt-real-shell" style={{
           width: "100vw", overflow: "hidden", position: "relative",
+          // `transform` makes this div the containing block for any
+          // `position:fixed` descendant (full-screen sheet modals etc.),
+          // so they stay confined to the app frame — including the bottom
+          // nav bar — instead of escaping to the raw browser viewport.
+          transform: "translateZ(0)",
           fontFamily: "'Inter',sans-serif", background: "#F7F8FC",
           display: "flex", flexDirection: "column",
           paddingTop: "env(safe-area-inset-top)",
@@ -110,6 +121,11 @@ function MobileShell({ children, visible }: { children: React.ReactNode; visible
       style={{ background: "linear-gradient(135deg,#DCDCE6,#C4C4D4)" }}>
       <div style={{
         width: 390, height: 844, borderRadius: 52, overflow: "hidden", position: "relative",
+        // `transform` makes this the containing block for `position:fixed`
+        // descendants, so full-screen sheet modals stay confined to the
+        // phone frame — including the bottom nav bar — instead of
+        // escaping to the full browser viewport.
+        transform: "translateZ(0)",
         boxShadow: "0 50px 100px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.15) inset, 0 0 0 2px rgba(0,0,0,0.15)",
         fontFamily: "'Inter',sans-serif", background: "#F7F8FC",
         display: "flex", flexDirection: "column",
@@ -229,6 +245,52 @@ function navTabsForRole(role: Role): { left: NavTab[]; right: NavTab[] } {
   /* landlord default */   return { left: LANDLORD_LEFT, right: LANDLORD_RIGHT };
 }
 
+// Nav labels share this line-height so a single-line label's box height is a
+// known, consistent quantity — needed as the baseline that the two-line
+// "Boarding House" label is measured against below.
+const NAV_LABEL_LH = 1.2;
+
+// "Boarding House" is the only nav label long enough to wrap onto two lines.
+// Without help it renders with the browser's loose default line spacing and,
+// because the tab row vertically centers each button by its *total* content
+// height, the extra line pushes this button's icon+label block up — so
+// "Boarding" lands noticeably higher than the single-line "Home"/"Map"/etc.
+// labels instead of sitting on the same row.
+//
+// Fix: tighten the line-height, then clamp the label's own box height to
+// exactly one line (NAV_LABEL_LH em, same as every other label) with
+// `overflow: visible`. The block now contributes the same height to the
+// row's centering math as any single-line label, so the icon lines up and
+// "Boarding" (the first line, rendered at the top of the box same as always)
+// aligns with the other labels. "House" simply overflows visibly beneath,
+// still centered under the icon.
+function navLabelStyle(label: string, on: boolean): React.CSSProperties {
+  const base: React.CSSProperties = {
+    fontSize: 10.5, fontWeight: on ? 700 : 500,
+    color: on ? "#9772F6" : "#9CA3AF",
+    fontFamily: "'Quicksand',sans-serif",
+    letterSpacing: on ? 0.1 : 0,
+    transition: "color .22s ease, font-weight .22s ease",
+    lineHeight: NAV_LABEL_LH,
+    // Shift the label 10px closer to its icon. A transform (not margin/gap)
+    // is used so the shift is purely visual — it doesn't touch the flex
+    // layout, so icon positions, bar height, and the icon-text gap spacing
+    // stay exactly as laid out; every label (single- or two-line) moves by
+    // the same 10px, so relative alignment between labels is unaffected.
+    transform: "translateY(-10px)",
+  };
+  if (label === "Boarding House") {
+    return {
+      ...base,
+      lineHeight: 0.85,
+      textAlign: "center",
+      height: `${NAV_LABEL_LH}em`,
+      overflow: "visible",
+    };
+  }
+  return base;
+}
+
 function BottomNav({
   active, go,
   leftTabs  = LANDLORD_LEFT,
@@ -291,13 +353,15 @@ function BottomNav({
   const FAB_R  = 32;
   const fabTop = -(FAB_R + 7); // = −39 px
 
+  // Static shadow the FAB sits at on every non-Map page — the same shadow
+  // it always rested at between pulses before, just no longer animating.
+  const FAB_REST_SHADOW = "0 8px 28px rgba(151,114,246,.5),0 3px 10px rgba(117,73,246,.35),0 0 0 0 rgba(151,114,246,.2)";
+
   return (
     <div style={{ flexShrink: 0, padding: "0 16px 20px", position: "relative" }}>
       <style>{`
-        @keyframes fabGlow{
-          0%,100%{box-shadow:0 8px 28px rgba(151,114,246,.5),0 3px 10px rgba(117,73,246,.35),0 0 0 0 rgba(151,114,246,.2)}
-          55%{box-shadow:0 8px 28px rgba(151,114,246,.5),0 3px 10px rgba(117,73,246,.35),0 0 0 10px rgba(151,114,246,0)}
-        }
+        /* Map FAB pulse — only ever runs while the Map page is active (see
+           mapActive below); on every other page the FAB is static. */
         @keyframes fabGlowActive{
           0%,100%{box-shadow:0 10px 36px rgba(151,114,246,.68),0 3px 12px rgba(117,73,246,.44),0 0 0 0 rgba(151,114,246,.28)}
           55%{box-shadow:0 10px 36px rgba(151,114,246,.68),0 3px 12px rgba(117,73,246,.44),0 0 0 14px rgba(151,114,246,0)}
@@ -339,22 +403,19 @@ function BottomNav({
               <button key={id} onClick={() => go(id)} style={{
                 flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
                 gap: 3, padding: "8px 0 6px", background: "none", border: "none", cursor: "pointer",
+                // Nudge the whole icon+label group 3px up as one rigid unit —
+                // a transform on the button (not gap/padding) so the icon,
+                // its label, and the spacing between them are untouched;
+                // only the group's position shifts.
+                transform: "translateY(-3px)",
               }}>
                 <div style={{
                   width: 44, height: 44, borderRadius: 22,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  background: on ? "linear-gradient(135deg,rgba(151,114,246,.13),rgba(117,73,246,.08))" : "transparent",
-                  transition: "background .22s ease",
                 }}>
                   <Icon size={21} color={on ? "#9772F6" : "#9CA3AF"} strokeWidth={on ? 2.4 : 1.8} style={{ transition: "color .22s ease" }} />
                 </div>
-                <span style={{
-                  fontSize: 10.5, fontWeight: on ? 700 : 500,
-                  color: on ? "#9772F6" : "#9CA3AF",
-                  fontFamily: "'Quicksand',sans-serif",
-                  letterSpacing: on ? 0.1 : 0,
-                  transition: "color .22s ease, font-weight .22s ease",
-                }}>{label}</span>
+                <span style={navLabelStyle(label, on)}>{label}</span>
               </button>
             );
           })}
@@ -368,22 +429,19 @@ function BottomNav({
               <button key={id} onClick={() => go(id)} style={{
                 flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
                 gap: 3, padding: "8px 0 6px", background: "none", border: "none", cursor: "pointer",
+                // Nudge the whole icon+label group 3px up as one rigid unit —
+                // a transform on the button (not gap/padding) so the icon,
+                // its label, and the spacing between them are untouched;
+                // only the group's position shifts.
+                transform: "translateY(-3px)",
               }}>
                 <div style={{
                   width: 44, height: 44, borderRadius: 22,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  background: on ? "linear-gradient(135deg,rgba(151,114,246,.13),rgba(117,73,246,.08))" : "transparent",
-                  transition: "background .22s ease",
                 }}>
                   <Icon size={21} color={on ? "#9772F6" : "#9CA3AF"} strokeWidth={on ? 2.4 : 1.8} style={{ transition: "color .22s ease" }} />
                 </div>
-                <span style={{
-                  fontSize: 10.5, fontWeight: on ? 700 : 500,
-                  color: on ? "#9772F6" : "#9CA3AF",
-                  fontFamily: "'Quicksand',sans-serif",
-                  letterSpacing: on ? 0.1 : 0,
-                  transition: "color .22s ease, font-weight .22s ease",
-                }}>{label}</span>
+                <span style={navLabelStyle(label, on)}>{label}</span>
               </button>
             );
           })}
@@ -405,15 +463,19 @@ function BottomNav({
           borderRadius: "50%",
           backgroundImage: "linear-gradient(150deg,#D060F8 0%,#9772F6 40%,#5A0CA8 80%,#7549F6 100%)",
           border: "3px solid rgba(255,255,255,0.95)",
-          boxShadow: "none",
+          // Static on every page except Map — no shadow keyframes running,
+          // just the same resting shadow it always had between pulses.
+          // On the Map page the animation drives box-shadow instead.
+          boxShadow: mapActive ? undefined : FAB_REST_SHADOW,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           cursor: "pointer",
-          animation: mapActive
-            ? "fabGlowActive 2.2s ease-in-out infinite"
-            : "fabGlow 3s ease-in-out infinite",
-          transition: "transform 0.28s cubic-bezier(.34,1.56,.64,1)",
+          animation: mapActive ? "fabGlowActive 2.2s ease-in-out infinite" : "none",
+          // Easing the box-shadow (not just transform) means leaving the Map
+          // page settles back to the static shadow smoothly instead of
+          // snapping the instant the pulse keyframes stop.
+          transition: "transform 0.28s cubic-bezier(.34,1.56,.64,1), box-shadow 0.4s ease",
           zIndex: 10,
         }}
       >
@@ -450,77 +512,81 @@ function SplashScreen({ done }: { done: () => void }) {
   );
 }
 
-// ── LANDING ───────────────────────────────────────────────────────────────────
+// ── WELCOME / LOGIN ───────────────────────────────────────────────────────────
 
-function LandingIllustration() {
-  return (
-    <svg width="300" height="190" viewBox="0 0 300 190" fill="none">
-      <ellipse cx="150" cy="148" rx="122" ry="40" fill="rgba(255,255,255,0.07)" />
-      {/* Building */}
-      <rect x="55" y="65" width="108" height="110" rx="5" fill="white" fillOpacity=".9" />
-      <rect x="62" y="54" width="94" height="20" rx="4" fill="white" fillOpacity=".75" />
-      {[0,1,2].map(r=>[0,1,2].map(c=><rect key={`${r}${c}`} x={65+c*32} y={77+r*27} width={19} height={19} rx="3" fill="#9772F6" fillOpacity={.18+r*.05}/>))}
-      <rect x="97" y="145" width="22" height="30" rx="3" fill="#7549F6" fillOpacity=".55" />
-      <circle cx="115" cy="161" r="2" fill="white" fillOpacity=".8" />
-      {/* Trees */}
-      <ellipse cx="30" cy="115" rx="15" ry="19" fill="#22C55E" fillOpacity=".65" />
-      <rect x="28" y="130" width="5" height="16" fill="#15803D" fillOpacity=".6" />
-      <ellipse cx="272" cy="120" rx="13" ry="16" fill="#22C55E" fillOpacity=".5" />
-      <rect x="270" y="132" width="5" height="13" fill="#15803D" fillOpacity=".5" />
-      {/* Student */}
-      <circle cx="195" cy="102" r="12" fill="#FDE68A" fillOpacity=".9" />
-      <rect x="186" y="115" width="19" height="27" rx="4" fill="#DDD6FE" fillOpacity=".9" />
-      <rect x="201" y="124" width="9" height="14" rx="2" fill="#9772F6" fillOpacity=".85" />
-      <rect x="202" y="126" width="7" height="10" rx="1" fill="#E9D5FF" fillOpacity=".9" />
-      {[0,1,2].map(i=><path key={i} d={`M211 ${119-i*7} C216 ${114-i*7} 222 ${114-i*7} 227 ${119-i*7}`} stroke="white" strokeWidth="1.4" strokeLinecap="round" fill="none" opacity={.7-i*.18}/>)}
-      {/* Parent */}
-      <circle cx="240" cy="106" r="11" fill="#FCA5A5" fillOpacity=".9" />
-      <rect x="231" y="118" width="18" height="24" rx="4" fill="#FECDD3" fillOpacity=".75" />
-      {/* Map pin */}
-      <path d="M255 60 C255 49 264 43 273 43 C282 43 291 49 291 60 C291 71 273 84 273 84 C273 84 255 71 255 60Z" fill="#EF4444" fillOpacity=".85" />
-      <circle cx="273" cy="60" r="5.5" fill="white" />
-      {/* Shield */}
-      <path d="M14 70 L28 64 L42 70 L42 82 C42 91 28 99 28 99 C28 99 14 91 14 82Z" fill="#7549F6" fillOpacity=".75" />
-      <path d="M22 82 L26.5 86.5 L35 77" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      {/* Float card 1 */}
-      <rect x="16" y="138" width="66" height="40" rx="10" fill="white" fillOpacity=".92" style={{filter:"drop-shadow(0 4px 10px rgba(0,0,0,.12))"}} />
-      <circle cx="29" cy="153" r="7" fill="#9772F6" fillOpacity=".28" />
-      <rect x="40" y="148" width="32" height="5" rx="2.5" fill="#D1D5DB" />
-      <rect x="40" y="157" width="22" height="4" rx="2" fill="#E5E7EB" />
-      <rect x="16" y="168" width="66" height="10" rx="5" fill="#9772F6" fillOpacity=".6" />
-      {/* Float card 2 */}
-      <rect x="218" y="136" width="58" height="36" rx="9" fill="white" fillOpacity=".88" style={{filter:"drop-shadow(0 4px 10px rgba(0,0,0,.1))"}} />
-      <rect x="225" y="144" width="25" height="4" rx="2" fill="#D1D5DB" />
-      <rect x="225" y="152" width="18" height="3.5" rx="1.75" fill="#E5E7EB" />
-      <rect x="225" y="160" width="44" height="7" rx="3.5" fill="#22C55E" fillOpacity=".7" />
-    </svg>
-  );
-}
+// ── WELCOME + LOGIN (combined) ─────────────────────────────────────────────────
+//
+// Merges the old two-step Welcome → Login flow into one screen: the app opens
+// straight into a page that both introduces DormiTrack and lets you sign in,
+// so returning users never have to tap through an intermediate splash choice.
+// "Create Account" is the only path onward to role selection / registration.
+function WelcomeLoginScreen({ go, onAdminLogin }: { go: (s: Screen) => void; onAdminLogin?: () => void }) {
+  const [email, setEmail] = useState(""); const [pass, setPass] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setMounted(true), 30); return () => clearTimeout(t); }, []);
 
-function LandingScreen({ go }: { go: (s: Screen) => void }) {
+  const handleLogin = () => {
+    if (email.trim() === "admin" && pass === "123456") { onAdminLogin?.(); go("dashboard"); }
+    else { setErr(""); go("dashboard"); }
+  };
+
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflowY: "auto", scrollbarWidth: "none" as const }}>
-      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 60, paddingBottom: 24, position: "relative", backgroundImage: GRAD_H, minHeight: 400, overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: 0, right: 0, width: 220, height: 220, borderRadius: "50%", background: "radial-gradient(circle,rgba(232,100,255,.12),transparent)", transform: "translate(30%,-30%)" }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-          <div style={{ background: "rgba(255,255,255,0.13)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.22)", borderRadius: 20, padding: 12 }}>
-            <DormiLogo size={38} white />
-          </div>
-          <span style={{ color: "white", fontSize: 28, fontWeight: 800, fontFamily: "'Quicksand',sans-serif" }}>DormiTrack</span>
-        </div>
-        <LandingIllustration />
-        <p style={{ color: "rgba(255,255,255,0.82)", fontSize: 12, textAlign: "center", padding: "12px 36px 0", lineHeight: 1.6, margin: 0 }}>
-          Smart Boarding House Monitoring for a Safer Student Experience
-        </p>
+    <div style={{ height: "100%", position: "relative", overflow: "hidden", background: "linear-gradient(165deg,#1E1B3D 0%,#3B1F78 35%,#5B21B6 65%,#312E81 100%)" }}>
+      <style>{`
+        @keyframes dtBlobA{0%,100%{transform:translate(-10%,-6%) scale(1);border-radius:42% 58% 65% 35%/45% 40% 60% 55%}50%{transform:translate(6%,8%) scale(1.12);border-radius:60% 40% 35% 65%/55% 65% 35% 45%}}
+        @keyframes dtBlobB{0%,100%{transform:translate(8%,-4%) scale(1);border-radius:55% 45% 40% 60%/40% 55% 45% 60%}50%{transform:translate(-8%,10%) scale(1.08);border-radius:38% 62% 58% 42%/60% 45% 55% 40%}}
+        @keyframes dtBlobC{0%,100%{transform:translate(0,0) scale(1);border-radius:50% 50% 45% 55%/55% 45% 55% 45%}50%{transform:translate(-6%,-10%) scale(1.15);border-radius:60% 40% 55% 45%/45% 55% 40% 60%}}
+        @keyframes dtBlobD{0%,100%{transform:translate(4%,6%) scale(1)}50%{transform:translate(-10%,-4%) scale(1.1)}}
+        .dt-glow-field:focus-within input{box-shadow:0 0 0 4px rgba(151,114,246,.22)}
+      `}</style>
+
+      {/* ── Animated lava-lamp background: slow, blurred, layered blobs ── */}
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: "-8%", left: "-14%", width: 300, height: 300, background: "radial-gradient(circle at 35% 35%,rgba(196,181,253,.55),rgba(109,40,217,.05) 70%)", filter: "blur(50px)", animation: "dtBlobA 22s ease-in-out infinite" }} />
+        <div style={{ position: "absolute", top: "6%", right: "-18%", width: 260, height: 260, background: "radial-gradient(circle at 60% 40%,rgba(139,92,246,.55),rgba(76,29,149,.05) 70%)", filter: "blur(46px)", animation: "dtBlobB 26s ease-in-out infinite", animationDelay: "-4s" }} />
+        <div style={{ position: "absolute", bottom: "10%", left: "-12%", width: 280, height: 280, background: "radial-gradient(circle at 40% 60%,rgba(79,70,229,.5),rgba(30,27,61,.05) 70%)", filter: "blur(52px)", animation: "dtBlobC 30s ease-in-out infinite", animationDelay: "-10s" }} />
+        <div style={{ position: "absolute", bottom: "-16%", right: "-16%", width: 320, height: 320, background: "radial-gradient(circle at 50% 50%,rgba(167,139,250,.4),rgba(91,33,182,.05) 70%)", filter: "blur(56px)", animation: "dtBlobD 24s ease-in-out infinite", animationDelay: "-6s" }} />
       </div>
-      <div style={{ flex: 1, background: "white", borderRadius: "32px 32px 0 0", marginTop: -20, padding: "28px 24px 36px" }}>
-        <h2 style={{ color: "#1F2937", fontSize: 22, fontWeight: 800, textAlign: "center", margin: "0 0 10px", fontFamily: "'Quicksand',sans-serif" }}>Welcome to DormiTrack</h2>
-        <p style={{ color: "#6B7280", fontSize: 13, textAlign: "center", lineHeight: 1.65, margin: "0 0 24px" }}>
-          Monitor boarding house information, stay connected with parents and landlords, manage payments, and experience secure student accommodation — all in one app.
-        </p>
-        <GradBtn onClick={() => go("login")}>Log In</GradBtn>
-        <div style={{ marginTop: 12 }}><OutlineBtn onClick={() => go("roleSelect")}>Sign Up</OutlineBtn></div>
-        <div style={{ marginTop: 24, textAlign: "center", fontSize: 11, color: "#9CA3AF" }}>
+
+      <div style={{ position: "relative", zIndex: 1, height: "100%", display: "flex", flexDirection: "column", overflowY: "auto", scrollbarWidth: "none" as const, padding: "56px 24px 32px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0, marginBottom: 28 }}>
+          <div style={{ background: "rgba(255,255,255,.13)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,.22)", borderRadius: 22, padding: 16, marginBottom: 16, boxShadow: "0 8px 28px rgba(0,0,0,.18)" }}>
+            <DormiLogo size={48} white />
+          </div>
+          <h1 style={{ color: "white", fontSize: 24, fontWeight: 800, margin: "0 0 6px", fontFamily: "'Quicksand',sans-serif", textAlign: "center" }}>Welcome to DormiTrack</h1>
+          <p style={{ color: "rgba(255,255,255,.72)", fontSize: 13, textAlign: "center", lineHeight: 1.6, margin: 0, maxWidth: 280 }}>
+            Monitor, manage, and stay connected with your boarding house community.
+          </p>
+        </div>
+
+        {/* Glassmorphism login card — fades & slides into view on mount */}
+        <div style={{
+          flexShrink: 0, background: "rgba(255,255,255,.12)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
+          border: "1px solid rgba(255,255,255,.24)", borderRadius: 24, padding: "26px 22px 24px",
+          boxShadow: "0 20px 50px rgba(20,10,50,.35)",
+          opacity: mounted ? 1 : 0, transform: mounted ? "translateY(0)" : "translateY(24px)",
+          transition: "opacity .6s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1)",
+        }}>
+          <div className="dt-glow-field">
+            <Input label="Username or Email" placeholder="Enter your username or email" type="text" value={email} onChange={setEmail} right={<Mail size={17} />} />
+          </div>
+          <div className="dt-glow-field">
+            <Input label="Password" placeholder="Enter your password" type={show ? "text" : "password"} value={pass} onChange={setPass}
+              right={<button onClick={() => setShow(s => !s)} className="transition-transform active:scale-90" style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "#9CA3AF" }}>{show ? <Eye size={17} /> : <EyeOff size={17} />}</button>} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -8, marginBottom: 20 }}>
+            <button onClick={() => go("forgotPassword")} className="transition-opacity hover:opacity-80" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#9772F6", fontFamily: "'Quicksand',sans-serif" }}>Forgot Password?</button>
+          </div>
+          {err && <p style={{ textAlign: "center", fontSize: 12, color: "#DC2626", marginBottom: 12 }}>{err}</p>}
+          <GradBtn onClick={handleLogin}>Log In</GradBtn>
+          <p style={{ textAlign: "center", fontSize: 13, color: "#6B7280", marginTop: 18, marginBottom: 0 }}>
+            {"Don't have an account? "}
+            <button onClick={() => go("roleSelect")} className="transition-opacity hover:opacity-80" style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 800, color: "#7549F6", fontSize: 13, fontFamily: "'Quicksand',sans-serif" }}>Create Account</button>
+          </p>
+        </div>
+
+        <div style={{ marginTop: 24, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,.5)", flexShrink: 0 }}>
           <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
             <span style={{ textDecoration: "underline", cursor: "pointer" }}>Privacy Policy</span>
             <span>·</span>
@@ -563,48 +629,6 @@ function RoleSelectScreen({ go, onRole }: { go: (s: Screen) => void; onRole: (r:
             <ChevronRight size={17} color="#D1D5DB" style={{ flexShrink: 0 }} />
           </button>
         ))}
-      </div>
-    </div>
-  );
-}
-
-// ── LOGIN ─────────────────────────────────────────────────────────────────────
-
-function LoginScreen({ go, onAdminLogin }: { go: (s: Screen) => void; onAdminLogin?: () => void }) {
-  const [email, setEmail] = useState(""); const [pass, setPass] = useState(""); const [show, setShow] = useState(false); const [rem, setRem] = useState(false); const [err, setErr] = useState("");
-  const handleLogin = () => {
-    if (email.trim() === "admin" && pass === "123456") { onAdminLogin?.(); go("dashboard"); }
-    else { setErr(""); go("dashboard"); }
-  };
-  return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
-      <div style={{ flexShrink: 0, padding: "56px 24px 40px", backgroundImage: GRAD_H, display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
-        <button onClick={() => go("roleSelect")} style={{ position: "absolute", left: 24, top: 56, background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer" }}><ChevronLeft size={24} /></button>
-        <div style={{ background: "rgba(255,255,255,.13)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,.22)", borderRadius: 20, padding: 16, marginBottom: 16 }}>
-          <DormiLogo size={52} white />
-        </div>
-        <h1 style={{ color: "white", fontSize: 24, fontWeight: 800, margin: "0 0 4px", fontFamily: "'Quicksand',sans-serif" }}>Welcome Back!</h1>
-        <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>Sign in to your DormiTrack account</p>
-      </div>
-      <div style={{ flex: 1, background: "white", borderRadius: "32px 32px 0 0", marginTop: -20, padding: "28px 24px 32px" }}>
-        <Input label="Username or Email Address" placeholder="Enter your username or email" type="text" value={email} onChange={setEmail} right={<Mail size={17} />} />
-        <Input label="Password" placeholder="Enter your password" type={show ? "text" : "password"} value={pass} onChange={setPass}
-          right={<button onClick={() => setShow(s => !s)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "#9CA3AF" }}>{show ? <Eye size={17} /> : <EyeOff size={17} />}</button>} />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-            <div onClick={() => setRem(r => !r)} style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${rem ? "#9772F6" : "#D1D5DB"}`, backgroundImage: rem ? GRAD : "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-              {rem && <Check size={11} color="white" strokeWidth={3} />}
-            </div>
-            <span style={{ fontSize: 13, color: "#6B7280" }}>Remember Me</span>
-          </label>
-          <button onClick={() => go("forgotPassword")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#9772F6", fontFamily: "'Quicksand',sans-serif" }}>Forgot Password?</button>
-        </div>
-        {err && <p style={{ textAlign:"center", fontSize:12, color:"#DC2626", marginBottom:12 }}>{err}</p>}
-        <GradBtn onClick={handleLogin}>Log In</GradBtn>
-        <p style={{ textAlign: "center", fontSize: 13, color: "#6B7280", marginTop: 20 }}>
-          {"Don't have an account? "}
-          <button onClick={() => go("signup")} style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 700, color: "#9772F6", fontSize: 13, fontFamily: "'Quicksand',sans-serif" }}>Create Account</button>
-        </p>
       </div>
     </div>
   );
@@ -747,12 +771,13 @@ type VisitorRecord = {
 };
 type VisitorFields = { name: boolean; contact: boolean; relationship: boolean; purpose: boolean; visitDate: boolean };
 
-function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled = false, visitorFields = { name:true, contact:true, relationship:true, purpose:true, visitDate:true }, highlightsEnabled = true }: { go: (s: Screen) => void; role?: Role; notifCount?: number; visitorEnabled?: boolean; visitorFields?: VisitorFields; highlightsEnabled?: boolean }) {
+function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visitorFields = { name:true, contact:true, relationship:true, purpose:true, visitDate:true }, highlightsEnabled = true, pendingDeepLink, onDeepLinkConsumed }: { go: (s: Screen) => void; role?: Role; visitorEnabled?: boolean; visitorFields?: VisitorFields; highlightsEnabled?: boolean; pendingDeepLink?: { type: NotificationType; relatedId?: string } | null; onDeepLinkConsumed?: () => void }) {
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
+  const notifCount = useUnreadCount(role);
+  const chatCount = useUnreadChatCount(role);
 
   const [activityFilter, setActivityFilter] = useState<"all"|"landlord"|"student"|"parent"|"admin"|"visitor">("all");
-  const [chatOpen, setChatOpen] = useState(false);
 
   // ── Visitor Records state ────────────────────────────────────────────────────
   const [visitors, setVisitors] = useState<VisitorRecord[]>([
@@ -770,18 +795,20 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
   const [studentReports, setStudentReports] = useState<StudentReport[]>(()=>getReports().filter(r=>r.boardingHouse==="Naquila BH"||r.boardingHouse==="Naquila Boarding House"));
   const [selectedStudentReport, setSelectedStudentReport] = useState<StudentReport|null>(null);
   const [reportResponseText, setReportResponseText] = useState("");
+
+  // Opened from a "Report" notification — jump straight to that student's report.
+  useEffect(() => {
+    if (pendingDeepLink?.type === "report" && pendingDeepLink.relatedId) {
+      const match = studentReports.find(r => r.id === pendingDeepLink.relatedId);
+      if (match) setSelectedStudentReport(match);
+      onDeepLinkConsumed?.();
+    }
+  }, [pendingDeepLink, studentReports, onDeepLinkConsumed]);
   const [reportStatusFilter, setReportStatusFilter] = useState<"all"|ReportStatus>("all");
   const [activityDateFilter, setActivityDateFilter] = useState<"all"|"today"|"week"|"month">("all");
-  const [chatMsg, setChatMsg] = useState("");
-  const [chatThread, setChatThread] = useState([
-    { from: "student", name: "Maria Santos", msg: "Hi po! Kailan po yung next inspection?", time: "9:12 AM" },
-    { from: "landlord", name: "You", msg: "Sa December 22 po, 9AM. Salamat!", time: "9:15 AM" },
-    { from: "student", name: "Maria Santos", msg: "Thank you po!", time: "9:16 AM" },
-  ]);
   const [reqStates, setReqStates] = useState<Record<string,"pending"|"accepted"|"rejected">>({
     "2024-0041": "pending", "2024-0042": "pending", "2024-0043": "pending",
   });
-  const chatRef = useRef<HTMLDivElement>(null);
 
   const now = new Date();
   const hour = now.getHours();
@@ -827,15 +854,6 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
   const [hlItems, setHlItems] = useState<Highlight[]>(INITIAL_HIGHLIGHTS);
   const filtered = activityFilter === "all" ? allActivities : allActivities.filter(a => a.role === activityFilter);
 
-  const notifications = [
-    { icon: Bell,        color: "#9772F6", bg: "#F5F0FF", title: "Rent reminder sent",           sub: "All occupants notified",           time: "2h ago"    },
-    { icon: UserCheck,   color: "#16A34A", bg: "#DCFCE7", title: "Lara Mendoza approved",         sub: "Moved into Room B",                time: "5h ago"    },
-    { icon: AlertCircle, color: "#EF4444", bg: "#FEE2E2", title: "Room C is now full",            sub: "No available beds",                time: "Yesterday" },
-    { icon: MessageCircle,color:"#3B82F6", bg: "#EFF6FF", title: "New message from Maria Santos", sub: "About the inspection schedule",    time: "Dec 17"    },
-    { icon: Megaphone,   color: "#D97706", bg: "#FEF3C7", title: "Your notice was published",     sub: "Water interruption Dec 20",        time: "Dec 15"    },
-  ];
-
-
   const quickActions = [
     { Icon: Users,       label: "View Occupants", color: "#9772F6", bg: "#F5F0FF",  action: () => go("occupants")  },
     { Icon: Layers,      label: "Manage Rooms",   color: "#3B82F6", bg: "#EFF6FF",  action: () => go("rooms")      },
@@ -844,13 +862,6 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
     { Icon: Calendar,   label: "Home Visit",      color: "#8B5CF6", bg: "#EDE9FE",  action: () => go("homeVisit")  },
     { Icon: Settings,    label: "Settings",       color: "#6B7280", bg: "#F3F4F6",  action: () => go("settings")   },
   ];
-
-  function sendChat() {
-    if (!chatMsg.trim()) return;
-    setChatThread(t => [...t, { from: "landlord", name: "You", msg: chatMsg.trim(), time: new Date().toLocaleTimeString("en-PH",{hour:"2-digit",minute:"2-digit"}) }]);
-    setChatMsg("");
-    setTimeout(() => { chatRef.current?.scrollTo({ top: 9999, behavior: "smooth" }); }, 60);
-  }
 
   // visitor helpers
   const vStatusMeta = (s: "inside"|"left") => s === "inside"
@@ -917,18 +928,18 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <button onClick={() => go("notifications")} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
                   <Bell size={20} color="white" />
-                  {notifCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{notifCount > 9 ? "9+" : notifCount}</span>}
+                  {notifCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(notifCount)}</span>}
                 </button>
-                <button onClick={() => setChatOpen(true)} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
+                <button onClick={() => go("messages")} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
                   <MessageCircle size={20} color="white" />
-                  <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#22C55E", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>1</span>
+                  {chatCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#22C55E", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(chatCount)}</span>}
                 </button>
               </div>
             </div>
             {/* Welcome */}
             <div style={{ padding: "6px 16px 20px" }}>
               <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>{dateStr}</p>
-              <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}! 👋</p>
+              <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}!</p>
               <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: 0, fontFamily: IN }}>Welcome back to DormiTrack</p>
             </div>
           </div>
@@ -939,24 +950,6 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
           </div>
         </div>
         <BottomNav active="dashboard" go={go} leftTabs={navTabsForRole(role).left} rightTabs={navTabsForRole(role).right} />
-        {/* Chat panel shared */}
-        {chatOpen && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 50, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-            <div style={{ background: "white", borderRadius: "24px 24px 0 0", height: "72%", display: "flex", flexDirection: "column" }}>
-              <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ width: 38, height: 38, borderRadius: 13, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center" }}><User size={17} color="white" /></div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 14, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>Messages</p>
-                  <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>Chat with your landlord</p>
-                </div>
-                <button onClick={() => setChatOpen(false)} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={15} color="#6B7280" /></button>
-              </div>
-              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <p style={{ fontSize: 13, color: "#9CA3AF", fontFamily: IN }}>No messages yet.</p>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
@@ -981,11 +974,11 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button onClick={() => go("notifications")} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
               <Bell size={20} color="white" />
-              <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>3</span>
+              {notifCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(notifCount)}</span>}
             </button>
-            <button onClick={() => setChatOpen(true)} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
+            <button onClick={() => go("messages")} style={{ width: 40, height: 40, borderRadius: 13, background: "rgba(255,255,255,.14)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative" }}>
               <MessageCircle size={20} color="white" />
-              <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#22C55E", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>1</span>
+              {chatCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, width: 16, height: 16, borderRadius: "50%", background: "#22C55E", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(chatCount)}</span>}
             </button>
           </div>
         </div>
@@ -993,7 +986,7 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
         {/* Welcome banner */}
         <div style={{ padding: "6px 16px 20px" }}>
           <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>{dateStr}</p>
-          <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}, Kyla! 👋</p>
+          <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}, Kyla!</p>
           <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: 0, fontFamily: IN }}>Naquila Boarding House · Calape, Bohol</p>
         </div>
       </div>
@@ -1071,8 +1064,8 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
                   </div>
                   {st === "pending" && (
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "accepted" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS }}>✓ Accept</button>
-                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "rejected" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS }}>✗ Reject</button>
+                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "accepted" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Check size={13}/> Accept</button>
+                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "rejected" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><X size={13}/> Reject</button>
                       <button style={{ width: 38, padding: "9px 0", borderRadius: 12, background: "#EFF6FF", color: "#3B82F6", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <MessageCircle size={14} color="#3B82F6" />
                       </button>
@@ -1140,6 +1133,16 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
             }
             updateStudentReport(id, updates);
             setStudentReports(getReports().filter(r=>r.boardingHouse==="Naquila BH"||r.boardingHouse==="Naquila Boarding House"));
+            if (report) {
+              const title = status === "resolved" ? "Report Resolved" : response ? "Landlord Responded" : "Report Status Updated";
+              const description = status === "resolved"
+                ? `Your concern "${report.title}" has been marked as resolved.`
+                : response
+                ? `Your landlord responded to "${report.title}".`
+                : `Your concern "${report.title}" is now ${STATUS_META[status].label}.`;
+              addNotification({ role: "student", type: "report", title, description, destination: "dashboard", relatedId: id });
+              addNotification({ role: "parent",  type: "report", title, description: `${report.studentName}'s concern "${report.title}" — ${STATUS_META[status].label.toLowerCase()}.`, destination: "dashboard", relatedId: id });
+            }
             setSelectedStudentReport(null);
             setReportResponseText("");
           };
@@ -1183,7 +1186,9 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
                                 <div style={{ width:4, height:4, borderRadius:"50%", background:sm.dot }}/>{sm.label}
                               </span>
                               <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
-                              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2 }}>{pm.emoji} {pm.label}</span>
+                              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
+                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
+              </span>
                             </div>
                             <p style={{ margin:"0 0 2px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3 }}>{r.title}</p>
                             <p style={{ margin:"0 0 1px", fontSize:11, color:"#9CA3AF", fontFamily:IN2 }}>{r.studentName} · {r.roomNumber}</p>
@@ -1211,7 +1216,9 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
                         <div style={{ flex:1 }}>
                           <div style={{ display:"flex", gap:5, flexWrap:"wrap" as const, marginBottom:3 }}>
                             <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS2 }}>{sm.label}</span>
-                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2 }}>{pm.emoji} {pm.label}</span>
+                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
+                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
+              </span>
                             <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
                           </div>
                           <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3 }}>{r.title}</p>
@@ -1531,53 +1538,6 @@ function DashboardScreen({ go, role = "landlord", notifCount = 0, visitorEnabled
         </div>
       )}
 
-      {/* ── CHAT PANEL ───────────────────────────────────────────────────────── */}
-      {chatOpen && (
-        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 50, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-          <div style={{ background: "white", borderRadius: "24px 24px 0 0", height: "72%", display: "flex", flexDirection: "column" }}>
-            {/* Chat header */}
-            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 13, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <User size={17} color="white" />
-              </div>
-              <div style={{ flex: 1 }}>
-                <p style={{ fontSize: 14, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>Maria Santos</p>
-                <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>Room A · Active tenant</p>
-              </div>
-              <button onClick={() => setChatOpen(false)} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <X size={15} color="#6B7280" />
-              </button>
-            </div>
-            {/* Messages */}
-            <div ref={chatRef} style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-              {chatThread.map((m, i) => {
-                const isMe = m.from === "landlord";
-                return (
-                  <div key={i} style={{ display: "flex", justifyContent: isMe ? "flex-end" : "flex-start" }}>
-                    <div style={{ maxWidth: "72%", padding: "9px 13px", borderRadius: isMe ? "16px 16px 4px 16px" : "16px 16px 16px 4px", background: isMe ? GRAD : "#F3F4F6" }}>
-                      <p style={{ fontSize: 13, color: isMe ? "white" : "#1F2937", margin: "0 0 3px", fontFamily: IN, lineHeight: 1.4 }}>{m.msg}</p>
-                      <p style={{ fontSize: 9, color: isMe ? "rgba(255,255,255,.6)" : "#9CA3AF", margin: 0, textAlign: "right", fontFamily: IN }}>{m.time}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {/* Input */}
-            <div style={{ padding: "12px 16px 20px", borderTop: "1px solid #F3F4F6", display: "flex", gap: 10 }}>
-              <input
-                value={chatMsg}
-                onChange={e => setChatMsg(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && sendChat()}
-                placeholder="Type a message…"
-                style={{ flex: 1, padding: "10px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", outline: "none", fontSize: 13, fontFamily: IN, color: "#1F2937" }}
-              />
-              <button onClick={sendChat} style={{ width: 42, height: 42, borderRadius: 14, backgroundImage: GRAD, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Navigation size={17} color="white" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1656,7 +1616,7 @@ function DormInfoScreen({ go }: { go: (s: Screen) => void }) {
   return (
     <div style={{ height: "100%", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
       <div style={{ height: 220, backgroundImage: GRAD_H, position: "relative", display: "flex", alignItems: "flex-end" }}>
-        <button onClick={() => go("dashboard")} style={{ position: "absolute", top: 56, left: 20, width: 36, height: 36, borderRadius: 12, background: "rgba(255,255,255,.18)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,.25)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><ChevronLeft size={20} color="white" /></button>
+        <button onClick={() => go("dashboard")} style={{ position: "absolute", top: 56, left: 20, background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 4 }}><ChevronLeft size={20} color="white" /></button>
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: .12 }}><Building2 size={110} color="white" /></div>
         <div style={{ padding: "0 20px 16px" }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 14px", borderRadius: 12, background: "rgba(255,255,255,.15)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,.2)" }}>
@@ -1886,7 +1846,8 @@ function OccupantsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; r
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 
-function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) => void; role?: Role; notifCount?: number }) {
+function MapScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?: Role }) {
+  const notifCount = useUnreadCount(role);
   const [mapType, setMapType] = useState<"standard" | "satellite">("standard");
   const [zoom, setZoom] = useState(16);
   const mapRef = useRef<GoogleMapHandle>(null);
@@ -1927,7 +1888,7 @@ function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) 
           <span style={{ fontSize: 13, color: "#9CA3AF", flex: 1 }}>Search places, streets, barangay…</span>
           <button onClick={() => go("notifications")} style={{ width: 32, height: 32, borderRadius: 10, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", border: "none", cursor: "pointer", flexShrink: 0, position: "relative" }}>
             <Bell size={15} color="#9772F6" />
-            {notifCount > 0 && <span style={{ position: "absolute", top: -3, right: -3, width: 13, height: 13, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{notifCount > 9 ? "9+" : notifCount}</span>}
+            {notifCount > 0 && <span style={{ position: "absolute", top: -3, right: -3, width: 13, height: 13, borderRadius: "50%", background: "#EF4444", color: "white", fontSize: 8, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{fmtBadgeCount(notifCount)}</span>}
           </button>
         </div>
       </div>
@@ -1971,53 +1932,58 @@ function MapScreen({ go, role = "landlord", notifCount = 0 }: { go: (s: Screen) 
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
-function NotificationsScreen({ go, onOpen }: { go: (s: Screen) => void; onOpen?: () => void }) {
-  const [tab, setTab] = useState("all");
-  useEffect(() => { onOpen?.(); }, []);
-  const TABS = ["all", "announcements", "payments", "verification", "alerts"];
-  const items = [
-    { type: "announcements", title: "Dormitory Inspection", body: "Scheduled for December 15, 2024 at 9:00 AM. Ensure your room is clean.", time: "2h ago", unread: true, Icon: Megaphone, color: "#D97706", bg: "#FEF3C7" },
-    { type: "payments", title: "Payment Reminder", body: "Your December 2024 payment of ₱3,500 is due in 5 days.", time: "5h ago", unread: true, Icon: CreditCard, color: "#9772F6", bg: "#F5F0FF" },
-    { type: "verification", title: "Check-in Verified", body: "Your home visit check-in was successfully recorded on Nov 28.", time: "Yesterday", unread: false, Icon: CheckCircle, color: "#16A34A", bg: "#DCFCE7" },
-    { type: "alerts", title: "Emergency Alert", body: "Minor water outage on the 2nd floor. Estimated 2-hour downtime.", time: "2 days ago", unread: true, Icon: AlertCircle, color: "#DC2626", bg: "#FEE2E2" },
-    { type: "announcements", title: "Updated House Rules", body: "New curfew guidelines have been posted on the bulletin board.", time: "3 days ago", unread: false, Icon: Megaphone, color: "#D97706", bg: "#FEF3C7" },
-    { type: "payments", title: "Payment Confirmed", body: "Your November 2024 payment of ₱3,500 has been confirmed.", time: "1 week ago", unread: false, Icon: CheckCircle, color: "#16A34A", bg: "#DCFCE7" },
-  ];
-  const shown = tab === "all" ? items : items.filter(n => n.type === tab);
+function NotificationsScreen({ go, role, onOpenNotification }: {
+  go: (s: Screen) => void; role: Role; onOpenNotification?: (n: AppNotification) => void;
+}) {
+  const list = useNotifications(role);
+  const unread = useUnreadCount(role);
+
+  const openNotification = (n: AppNotification) => {
+    markNotificationRead(n.id);
+    onOpenNotification?.(n);
+    go(n.destination);
+  };
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ flexShrink: 0, padding: "56px 20px 16px", backgroundImage: GRAD_H }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button onClick={() => go("dashboard")} style={{ width: 34, height: 34, borderRadius: 12, background: "rgba(255,255,255,.14)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,.2)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><ChevronLeft size={18} color="white" /></button>
+            <button onClick={() => go("dashboard")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 4, flexShrink: 0 }}><ChevronLeft size={18} color="white" /></button>
             <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: 0, fontFamily: "'Quicksand',sans-serif" }}>Notifications</h1>
           </div>
-          <button style={{ padding: "6px 12px", borderRadius: 12, background: "rgba(255,255,255,.13)", border: "1px solid rgba(255,255,255,.18)", color: "rgba(255,255,255,.7)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Mark all read</button>
-        </div>
-        <div style={{ display: "flex", gap: 8, overflowX: "auto", scrollbarWidth: "none" as const, paddingBottom: 2 }}>
-          {TABS.map(t => <button key={t} onClick={() => setTab(t)} style={{ padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 800, cursor: "pointer", flexShrink: 0, border: tab === t ? "none" : "1px solid rgba(255,255,255,.18)", background: tab === t ? "white" : "rgba(255,255,255,.14)", color: tab === t ? "#9772F6" : "rgba(255,255,255,.8)", fontFamily: "'Quicksand',sans-serif", textTransform: "capitalize" as const }}>{t}</button>)}
+          {unread > 0 && (
+            <button onClick={() => markAllRead(role)} style={{ padding: "6px 12px", borderRadius: 12, background: "rgba(255,255,255,.13)", border: "1px solid rgba(255,255,255,.18)", color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Quicksand',sans-serif" }}>Mark All as Read</button>
+          )}
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "16px 20px" }}>
-        {shown.length === 0 ? (
+        {list.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "64px 0", textAlign: "center" }}>
             <Bell size={44} color="#D1D5DB" style={{ marginBottom: 16 }} />
-            <p style={{ fontWeight: 700, color: "#6B7280", margin: "0 0 4px", fontFamily: "'Quicksand',sans-serif" }}>No notifications here</p>
-            <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0 }}>Check back later</p>
+            <p style={{ fontWeight: 800, fontSize: 15, color: "#374151", margin: "0 0 4px", fontFamily: "'Quicksand',sans-serif" }}>No Notifications</p>
+            <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0 }}>You're all caught up.</p>
           </div>
         ) : (
           <div style={{ background: "white", borderRadius: 24, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-            {shown.map((n, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", position: "relative", borderBottom: i < shown.length - 1 ? "1px solid #F9FAFB" : "none", background: n.unread ? "rgba(151,114,246,0.025)" : "white" }}>
-                {n.unread && <div style={{ position: "absolute", top: 16, right: 16, width: 10, height: 10, borderRadius: "50%", background: "#9772F6" }} />}
-                <div style={{ width: 40, height: 40, borderRadius: 14, background: n.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><n.Icon size={17} color={n.color} /></div>
-                <div style={{ flex: 1, paddingRight: 16 }}>
-                  <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: "0 0 2px", fontFamily: "'Quicksand',sans-serif" }}>{n.title}</p>
-                  <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px", lineHeight: 1.5 }}>{n.body}</p>
-                  <p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 600, margin: 0 }}>{n.time}</p>
+            {list.map((n, i) => {
+              const meta = NOTIF_META[n.type];
+              return (
+                <div key={n.id} onClick={() => openNotification(n)}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", position: "relative", cursor: "pointer", borderBottom: i < list.length - 1 ? "1px solid #F9FAFB" : "none", background: n.read ? "white" : "rgba(151,114,246,0.05)" }}>
+                  {!n.read && <div style={{ position: "absolute", top: 18, right: 16, width: 8, height: 8, borderRadius: "50%", background: "#9772F6" }} />}
+                  <div style={{ width: 40, height: 40, borderRadius: 14, background: meta.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><meta.Icon size={17} color={meta.color} /></div>
+                  <div style={{ flex: 1, paddingRight: 16, minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: n.read ? 700 : 800, color: "#1F2937", margin: "0 0 2px", fontFamily: "'Quicksand',sans-serif" }}>{n.title}</p>
+                    <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px", lineHeight: 1.5 }}>{n.description}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 20, fontFamily: "'Quicksand',sans-serif" }}>{meta.label}</span>
+                      <p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 600, margin: 0 }}>{timeAgo(n.timestamp)}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -2286,6 +2252,14 @@ function PendingVerificationScreen({ req, onApproved }: { req: RegRequest; onApp
     return () => clearTimeout(t);
   }, []);
 
+  // Fire the moment approval happens — not tied to the user tapping "Enter DormiTrack".
+  useEffect(() => {
+    if (!approved) return;
+    const description = `Your boarding house registration for ${req.house.name} has been approved.`;
+    addNotification({ role: "student", type: "boarding-house", title: "Registration Approved", description, destination: "occupants" });
+    addNotification({ role: "parent",  type: "boarding-house", title: "Registration Approved", description: `${req.studentName}'s boarding house registration for ${req.house.name} has been approved.`, destination: "occupants" });
+  }, [approved, req.house.name, req.studentName]);
+
   const refresh = () => {
     setChecking(true);
     setTimeout(() => { setChecking(false); setApproved(true); }, 1400);
@@ -2367,13 +2341,16 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("splash");
   const [visible, setVisible] = useState(true);
   const [role, setRole] = useState<Role>("landlord");
-  const [notifCount, setNotifCount] = useState(3);
   const [regRequest, setRegRequest] = useState<RegRequest | null>(null);
   const [studentProfile, setStudentProfile] = useState<StudentProfile | null>(null);
   const [parentLinkingId, setParentLinkingId] = useState("");
   const [visitorEnabled, setVisitorEnabled] = useState(false);
   const [visitorFields, setVisitorFields] = useState<VisitorFields>({ name: true, contact: true, relationship: true, purpose: true, visitDate: true });
   const [highlightsEnabled, setHighlightsEnabled] = useState(true);
+  // Set right before navigating away from a clicked notification, so the
+  // destination screen can open the exact record (e.g. a specific report)
+  // instead of just landing on the general page. Cleared once consumed.
+  const [pendingDeepLink, setPendingDeepLink] = useState<{ type: NotificationType; relatedId?: string } | null>(null);
 
   const go = (s: Screen) => {
     if (s === screen) return;
@@ -2383,7 +2360,11 @@ export default function App() {
 
   const submitRegistration = (r: RegRequest) => {
     setRegRequest(r);
-    setNotifCount(c => c + 1); // notify the landlord of the new request
+    addNotification({
+      role: "landlord", type: "verification", title: "New Registration Request",
+      description: `${r.studentName} submitted a boarding house registration request for ${r.house.name}.`,
+      destination: "dashboard",
+    });
     go("pendingVerify");
   };
 
@@ -2394,9 +2375,13 @@ export default function App() {
     }
     switch (screen) {
       case "splash":         return <SplashScreen done={() => go("landing")} />;
-      case "landing":        return <LandingScreen go={go} />;
+      // "landing" and "login" both resolve to the same combined Welcome+Login
+      // screen — every path that used to lead to a standalone login page
+      // (sign-up "already have an account" links, forgot-password's back
+      // button, logout from any role's profile) now lands here directly.
+      case "landing":
+      case "login":          return <WelcomeLoginScreen go={go} onAdminLogin={() => setRole("admin")} />;
       case "roleSelect":     return <RoleSelectScreen go={go} onRole={setRole} />;
-      case "login":          return <LoginScreen go={go} onAdminLogin={() => setRole("admin")} />;
       case "signup":         return <SignUpScreen go={go} />;
       case "studentSignup":  return <StudentSignUpScreen go={go} onSignup={p => setStudentProfile(p)} />;
       case "landlordSignup": return <LandlordSignUpScreen go={go} />;
@@ -2410,17 +2395,17 @@ export default function App() {
           <div style={{ flex:1, overflow:"hidden" }}><AdminDashboardScreen go={go} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
         </div>
-      ) : role === "landlord" ? <DashboardScreen go={go} role={role} notifCount={notifCount} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} /> : role === "student" ? (
+      ) : role === "landlord" ? <DashboardScreen go={go} role={role} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /> : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} notifCount={notifCount} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={STUDENT_LEFT} rightTabs={STUDENT_RIGHT} />
         </div>
       ) : role === "parent" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} notifCount={notifCount} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
         </div>
-      ) : <DashboardScreen go={go} role={role} notifCount={notifCount} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} />;
+      ) : <DashboardScreen go={go} role={role} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} />;
       case "dormInfo":       return <DormInfoScreen go={go} />;
       case "payments":       return role === "landlord" ? <LandlordPaymentsScreen go={go} /> : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
@@ -2435,7 +2420,7 @@ export default function App() {
       ) : <PaymentsScreen go={go} role={role} />;
       case "homeVisit":      return <HomeVisitScreen go={go} />;
       case "occupants":      return role === "landlord"
-        ? <LandlordOccupantsScreen go={go} navLeft={navTabsForRole(role).left} navRight={navTabsForRole(role).right} />
+        ? <LandlordOccupantsScreen go={go} navLeft={navTabsForRole(role).left} navRight={navTabsForRole(role).right} onOpenChat={id => { setPendingDeepLink({ type: "message", relatedId: id }); go("messages"); }} />
         : role === "student" ? (
           <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
             <div style={{ flex:1, overflow:"hidden" }}><StudentRoomOccupantsScreen go={go} /></div>
@@ -2463,8 +2448,9 @@ export default function App() {
           <div style={{ flex:1, overflow:"hidden" }}><ParentMapScreen go={go} /></div>
           <BottomNav active="map" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
         </div>
-      ) : <MapScreen go={go} role={role} notifCount={notifCount} />;
-      case "notifications":  return <NotificationsScreen go={go} onOpen={() => setNotifCount(0)} />;
+      ) : <MapScreen go={go} role={role} />;
+      case "notifications":  return <NotificationsScreen go={go} role={role} onOpenNotification={n => setPendingDeepLink({ type: n.type, relatedId: n.relatedId })} />;
+      case "messages":       return <MessagesScreen go={go} role={role} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} />;
       case "profile":        return role === "landlord"
         ? <LandlordProfileScreen go={go} visitorEnabled={visitorEnabled} setVisitorEnabled={setVisitorEnabled} visitorFields={visitorFields} setVisitorFields={setVisitorFields} highlightsEnabled={highlightsEnabled} setHighlightsEnabled={setHighlightsEnabled} />
         : role === "student" ? (
@@ -2505,15 +2491,15 @@ export default function App() {
         </div>
       ) : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} notifCount={notifCount} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={STUDENT_LEFT} rightTabs={STUDENT_RIGHT} />
         </div>
       ) : role === "parent" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} notifCount={notifCount} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
         </div>
-      ) : <DashboardScreen go={go} role={role} notifCount={notifCount} />;
+      ) : <DashboardScreen go={go} role={role} />;
     }
   };
 

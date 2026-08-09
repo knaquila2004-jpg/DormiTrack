@@ -3,15 +3,48 @@ import {
   ChevronLeft, ChevronRight, Check, Eye, EyeOff, Mail, Lock,
   MapPin, Camera, Plus, X, Phone,
 } from "lucide-react";
-import { GRAD, GRAD_H, MAP_CENTER, Screen, LBed, LRoom, LPaymentExtra } from "./shared";
-import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
-import { LocationPickerModal } from "./components/LocationPickerModal";
+import { GRAD, GRAD_H, Screen, LBed, LRoom, LPaymentExtra } from "./shared";
+import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationPicker";
+import { AddressComponents } from "./components/mapGeo";
+
+// ── Payment Setup helpers ─────────────────────────────────────────────────────
+// Hoisted to module scope (not redeclared per-render) so they keep a stable
+// component identity across renders. Defining these as local `const`s inside the
+// render body — as they were before — makes React see a brand-new component type
+// on every re-render, which unmounts/remounts the underlying <input> on every
+// keystroke and drops focus after a single character.
+function PaymentToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <div onClick={onToggle} style={{ width:40, height:22, borderRadius:11, background: on ? undefined : "#D1D5DB", backgroundImage: on ? GRAD : undefined, position:"relative" as const, cursor:"pointer", flexShrink:0, transition:"background .2s" }}>
+      <div style={{ position:"absolute" as const, top:2, left: on ? 20 : 2, width:18, height:18, borderRadius:"50%", background:"white", boxShadow:"0 1px 4px rgba(0,0,0,.2)", transition:"left .2s" }}/>
+    </div>
+  );
+}
+function PaymentTypePicker({ type, setType }: { type: string; setType: (v: string) => void }) {
+  return (
+    <div style={{ display:"flex", background:"#F3F4F6", borderRadius:10, padding:3, marginTop:8 }}>
+      {["fixed","metered"].map(t => (
+        <button key={t} onClick={()=>setType(t)} style={{ flex:1, padding:"7px 0", borderRadius:8, border:"none", cursor:"pointer", background: type===t ? "white" : "transparent", color: type===t ? "#9772F6" : "#6B7280", fontSize:11, fontWeight:800, fontFamily:"'Quicksand',sans-serif", boxShadow: type===t ? "0 1px 4px rgba(0,0,0,.08)" : "none" }}>
+          {t==="fixed" ? "Fixed Rate" : "Meter-Based"}
+        </button>
+      ))}
+    </div>
+  );
+}
+function PaymentAmtInput({ value, onChange, placeholder = "500" }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <div style={{ position:"relative" as const, marginTop:10 }}>
+      <span style={{ position:"absolute" as const, left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"#9CA3AF", fontFamily:"'Quicksand',sans-serif" }}>₱</span>
+      <input type="number" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+        style={{ width:"100%", boxSizing:"border-box" as const, padding:"13px 14px", borderRadius:14, border:"1.5px solid #E5E7EB", background:"#F9FAFB", color:"#1F2937", fontSize:14, fontFamily:"'Inter',sans-serif", outline:"none", paddingLeft:28 }}/>
+    </div>
+  );
+}
 
 export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
   const [step, setStep] = useState(0); // 0=personal 1=account 2=setup 3=review
-  const [showMapModal, setShowMapModal] = useState(false);
   const [bhLat, setBhLat] = useState<number | null>(null);
   const [bhLng, setBhLng] = useState<number | null>(null);
   const [customAmenity, setCustomAmenity] = useState("");
@@ -44,6 +77,11 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   // ── Step 3: Boarding House Setup ──────────────────────────────────────────
   const [bhName, setBhName] = useState("");
   const [bhAddress, setBhAddress] = useState("");
+  const [bhComponents, setBhComponents] = useState<AddressComponents>({});
+  const [bhLocationType, setBhLocationType] = useState<"existing" | "custom" | null>(null);
+  const [bhPlaceName, setBhPlaceName] = useState<string | null>(null);
+  const [bhPlaceId, setBhPlaceId] = useState<string | null>(null);
+  const [bhLocationConfirmed, setBhLocationConfirmed] = useState(false);
   const [bhLandlord, setBhLandlord] = useState("");
   const [bhContact, setBhContact] = useState("");
   const [bhDesc, setBhDesc] = useState("");
@@ -160,7 +198,9 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const validate3 = () => {
     const e: Record<string,string> = {};
     if (!bhName.trim()) e.bhName = "Boarding house name is required.";
-    if (!bhAddress.trim()) e.bhAddress = "Address is required.";
+    if (bhLat == null || bhLng == null) e.bhLocation = "Please pin your boarding house location.";
+    else if (!bhAddress.trim()) e.bhAddress = "Please provide the boarding house address — select an existing map place, or enter it yourself for a custom pin.";
+    else if (!bhLocationConfirmed) e.bhLocation = "Please confirm your boarding house location on the map.";
     return e;
   };
 
@@ -348,7 +388,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
               </button>
             </div>
             {confirmPw && password !== confirmPw && <p style={{ margin:"4px 0 0", fontSize:11, color:"#EF4444", fontFamily:IN }}>Passwords do not match.</p>}
-            {confirmPw && password === confirmPw && <p style={{ margin:"4px 0 0", fontSize:11, color:"#16A34A", fontFamily:IN }}>✓ Passwords match.</p>}
+            {confirmPw && password === confirmPw && <p style={{ margin:"4px 0 0", fontSize:11, color:"#16A34A", fontFamily:IN, display:"flex", alignItems:"center", gap:4 }}><Check size={11}/> Passwords match.</p>}
             {err("confirmPw")}
           </div>
         </>)}
@@ -378,39 +418,43 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             <input value={bhName} onChange={e=>setBhName(e.target.value)} placeholder="e.g. Naquila Boarding House" style={inputStyle(!!errors.bhName)}/>
             {err("bhName")}
           </div>
+
+          {/* Interactive map-based location picker — the pin is the source of truth.
+              An existing map place's address is used exactly as the place provider returns it
+              (never reverse-geocoded); a custom pin's address is typed by the landlord themselves
+              inside the picker. The read-only field below just mirrors whichever of those applies. */}
+          <BoardingHouseLocationPicker
+            lat={bhLat}
+            lng={bhLng}
+            address={bhAddress}
+            locationType={bhLocationType}
+            placeName={bhPlaceName}
+            placeId={bhPlaceId}
+            confirmed={bhLocationConfirmed}
+            onConfirmedChange={setBhLocationConfirmed}
+            hasError={!!errors.bhLocation}
+            onLocationChange={(r)=>{ setBhLat(r.lat); setBhLng(r.lng); setBhAddress(r.address); setBhComponents(r.components); setBhLocationType(r.locationType); setBhPlaceName(r.placeName); setBhPlaceId(r.placeId); }}
+          />
+          {err("bhLocation")}
+
           <div style={fieldStyle}>
             <label style={labelStyle}>Boarding House Address <span style={{color:"#EF4444"}}>*</span></label>
-            <textarea value={bhAddress} onChange={e=>setBhAddress(e.target.value)} placeholder="Purok, Barangay, Municipality, Province" rows={2}
-              style={{ ...inputStyle(!!errors.bhAddress), resize:"none" as const, lineHeight:1.5 }}/>
-            {err("bhAddress")}
-          </div>
-          {/* Map preview — real Google Map of the picked (or default) location */}
-          <button onClick={()=>setShowMapModal(true)} style={{ width:"100%", borderRadius:16, overflow:"hidden", marginBottom:16, position:"relative" as const, height:140, border:"none", padding:0, cursor:"pointer", display:"block" }}>
-            <GoogleMapCanvas
-              center={bhLat != null && bhLng != null ? { lat: bhLat, lng: bhLng } : MAP_CENTER}
-              zoom={16}
-              mapType="standard"
-              markers={bhLat != null && bhLng != null ? [{ id: "bh", variant: "selected", position: { lat: bhLat, lng: bhLng } }] : []}
-            />
-            {/* Transparent shield: blocks the tiny preview map from hijacking scroll/drag/zoom gestures, so this whole card behaves as a single tap target */}
-            <div style={{ position:"absolute" as const, inset:0, background:"transparent", zIndex:10 }} />
-            <div style={{ position:"absolute" as const, bottom:8, left:8, background:"white", borderRadius:8, padding:"3px 8px", boxShadow:"0 2px 8px rgba(0,0,0,.1)", zIndex:20 }}>
-              <span style={{ fontSize:9, fontWeight:700, color:"#7549F6", fontFamily:QS }}>{bhLat != null ? "Tap to adjust pinned location" : "Tap to pin exact location"}</span>
-            </div>
-          </button>
-          {/* Real Google Maps location picker */}
-          {showMapModal && (
-            <LocationPickerModal
-              initialPosition={bhLat != null && bhLng != null ? { lat: bhLat, lng: bhLng } : undefined}
-              initialAddress={bhAddress}
-              onClose={()=>setShowMapModal(false)}
-              onConfirm={(result)=>{
-                setBhLat(result.lat); setBhLng(result.lng);
-                if (result.address) setBhAddress(result.address);
-                setShowMapModal(false);
+            <textarea
+              value={bhAddress}
+              disabled
+              readOnly
+              placeholder="Select a location on the map above to set the address."
+              rows={2}
+              style={{
+                ...inputStyle(!!errors.bhAddress), resize:"none" as const, lineHeight:1.5,
+                background: "#F3F4F6", color: bhAddress ? "#1F2937" : "#9CA3AF", cursor: "not-allowed",
               }}
             />
-          )}
+            <p style={{ margin:"4px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>
+              {bhAddress ? "Synced from the map location selected above." : "Select a location on the map above to set the address."}
+            </p>
+            {err("bhAddress")}
+          </div>
           <div style={fieldStyle}>
             <label style={labelStyle}>Landlord Name</label>
             <input value={bhLandlord} onChange={e=>setBhLandlord(e.target.value)} placeholder="Auto-populated from your name" style={inputStyle(false)}/>
@@ -456,8 +500,8 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
               const on = bhAmenities.includes(a);
               return (
                 <button key={a} onClick={()=>toggleBhAmenity(a)}
-                  style={{ padding:"7px 13px", borderRadius:12, border:`1.5px solid ${on?"#9772F6":"#E5E7EB"}`, background: on ? "#F5F0FF" : "white", color: on ? "#9772F6" : "#6B7280", fontSize:12, fontWeight:700, fontFamily:QS, cursor:"pointer" }}>
-                  {on && "✓ "}{a}
+                  style={{ padding:"7px 13px", borderRadius:12, border:`1.5px solid ${on?"#9772F6":"#E5E7EB"}`, background: on ? "#F5F0FF" : "white", color: on ? "#9772F6" : "#6B7280", fontSize:12, fontWeight:700, fontFamily:QS, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:5 }}>
+                  {on && <Check size={11}/>}{a}
                 </button>
               );
             })}
@@ -500,15 +544,9 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                     <label style={labelStyle}>Short Description</label>
                     <textarea value={r.desc} onChange={e=>updateRoom(r.id,"desc",e.target.value)} rows={2} placeholder="e.g. Ground floor, near entrance" style={{ ...inputStyle(false), resize:"none" as const }}/>
                   </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
-                    <div>
-                      <label style={labelStyle}>Capacity</label>
-                      <input type="number" min="1" value={r.cap} onChange={e=>updateRoomCap(r.id, e.target.value)} placeholder="0" style={inputStyle(false)}/>
-                    </div>
-                    <div>
-                      <label style={labelStyle}>Occupants</label>
-                      <input type="number" min="0" value={r.occ} onChange={e=>updateRoom(r.id,"occ",e.target.value)} placeholder="0" style={inputStyle(false)}/>
-                    </div>
+                  <div style={fieldStyle}>
+                    <label style={labelStyle}>Capacity</label>
+                    <input type="number" min="1" value={r.cap} onChange={e=>updateRoomCap(r.id, e.target.value)} placeholder="0" style={inputStyle(false)}/>
                   </div>
 
                   {/* Room photo */}
@@ -538,7 +576,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                   <div style={{ display:"flex", flexWrap:"wrap" as const, gap:6, marginBottom:10 }}>
                     {[...ROOM_AMENITIES, ...(r.customAmenities || [])].map(a => {
                       const on = r.amenities.includes(a);
-                      return <button key={a} onClick={()=>toggleRoomAmenity(r.id, a)} style={{ padding:"5px 10px", borderRadius:10, border:`1.5px solid ${on?"#9772F6":"#E5E7EB"}`, background: on?"#F5F0FF":"white", color: on?"#9772F6":"#6B7280", fontSize:11, fontWeight:700, fontFamily:QS, cursor:"pointer" }}>{on?"✓ ":""}{a}</button>;
+                      return <button key={a} onClick={()=>toggleRoomAmenity(r.id, a)} style={{ padding:"5px 10px", borderRadius:10, border:`1.5px solid ${on?"#9772F6":"#E5E7EB"}`, background: on?"#F5F0FF":"white", color: on?"#9772F6":"#6B7280", fontSize:11, fontWeight:700, fontFamily:QS, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:4 }}>{on && <Check size={10}/>}{a}</button>;
                     })}
                   </div>
                   <div style={{ display:"flex", gap:6, marginBottom:16 }}>
@@ -611,12 +649,14 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
         {(() => {
           const totalRooms = rooms.length;
           const totalCap = rooms.reduce((s,r)=>s+r.beds.length,0);
-          const totalOcc = rooms.reduce((s,r)=>s+r.beds.filter(b=>b.status==="occupied"||b.status==="reserved").length,0);
-          const avail = totalCap - totalOcc;
+          const totalOcc = rooms.reduce((s,r)=>s+r.beds.filter(b=>b.status==="occupied").length,0);
+          const totalRes = rooms.reduce((s,r)=>s+r.beds.filter(b=>b.status==="reserved").length,0);
+          const avail = totalCap - totalOcc - totalRes;
           const stats = [
             { label:"Total Rooms", value: totalRooms },
             { label:"Total Capacity", value: totalCap },
-            { label:"Occupied / Reserved", value: totalOcc },
+            { label:"Occupied", value: totalOcc },
+            { label:"Reserved", value: totalRes },
           ];
           return sCard("Boarding House Statistics", "Auto-calculated from your room setup.", <>
             {stats.map(s=>(
@@ -728,47 +768,26 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
         </>)}
 
         {/* I: Payment Setup */}
-        {(() => {
-          const Toggle = ({ on, onToggle }: { on: boolean; onToggle: ()=>void }) => (
-            <div onClick={onToggle} style={{ width:40, height:22, borderRadius:11, background: on ? undefined : "#D1D5DB", backgroundImage: on ? GRAD : undefined, position:"relative" as const, cursor:"pointer", flexShrink:0, transition:"background .2s" }}>
-              <div style={{ position:"absolute" as const, top:2, left: on ? 20 : 2, width:18, height:18, borderRadius:"50%", background:"white", boxShadow:"0 1px 4px rgba(0,0,0,.2)", transition:"left .2s" }}/>
-            </div>
-          );
-          const TypePicker = ({ type, setType }: { type:string; setType:(v:string)=>void }) => (
-            <div style={{ display:"flex", background:"#F3F4F6", borderRadius:10, padding:3, marginTop:8 }}>
-              {["fixed","metered"].map(t=>(
-                <button key={t} onClick={()=>setType(t)} style={{ flex:1, padding:"7px 0", borderRadius:8, border:"none", cursor:"pointer", background: type===t ? "white" : "transparent", color: type===t ? "#9772F6" : "#6B7280", fontSize:11, fontWeight:800, fontFamily:QS, boxShadow: type===t ? "0 1px 4px rgba(0,0,0,.08)" : "none" }}>
-                  {t==="fixed" ? "Fixed Rate" : "Meter-Based"}
-                </button>
-              ))}
-            </div>
-          );
-          const AmtInput = ({ value, onChange, placeholder="500" }: { value:string; onChange:(v:string)=>void; placeholder?:string }) => (
-            <div style={{ position:"relative" as const, marginTop:10 }}>
-              <span style={{ position:"absolute" as const, left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"#9CA3AF", fontFamily:QS }}>₱</span>
-              <input type="number" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={{ ...inputStyle(false), paddingLeft:28 }}/>
-            </div>
-          );
-          return sCard("Payment Setup", "Configure monthly fees for students.", <>
+        {sCard("Payment Setup", "Configure monthly fees for students.", <>
             {/* Monthly Rent */}
             <div style={{ borderRadius:14, border:"1.5px solid #F3F4F6", overflow:"hidden", marginBottom:12 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:"white" }}>
                 <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Monthly Rent</span>
-                <Toggle on={rentEnabled} onToggle={()=>setRentEnabled(!rentEnabled)}/>
+                <PaymentToggle on={rentEnabled} onToggle={()=>setRentEnabled(!rentEnabled)}/>
               </div>
-              {rentEnabled && <div style={{ padding:"0 14px 14px", background:"#FAFAFA" }}><AmtInput value={rentAmt} onChange={setRentAmt} placeholder="2500"/></div>}
+              {rentEnabled && <div style={{ padding:"0 14px 14px", background:"#FAFAFA" }}><PaymentAmtInput value={rentAmt} onChange={setRentAmt} placeholder="2500"/></div>}
             </div>
 
             {/* Electrical Bill */}
             <div style={{ borderRadius:14, border:"1.5px solid #F3F4F6", overflow:"hidden", marginBottom:12 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:"white" }}>
                 <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Electrical Bill</span>
-                <Toggle on={electricEnabled} onToggle={()=>setElectricEnabled(!electricEnabled)}/>
+                <PaymentToggle on={electricEnabled} onToggle={()=>setElectricEnabled(!electricEnabled)}/>
               </div>
               {electricEnabled && (
                 <div style={{ padding:"0 14px 14px", background:"#FAFAFA" }}>
-                  <TypePicker type={electricType} setType={v=>setElectricType(v as "fixed"|"metered")}/>
-                  {electricType==="fixed" && <AmtInput value={electricAmt} onChange={setElectricAmt}/>}
+                  <PaymentTypePicker type={electricType} setType={v=>setElectricType(v as "fixed"|"metered")}/>
+                  {electricType==="fixed" && <PaymentAmtInput value={electricAmt} onChange={setElectricAmt}/>}
                   {electricType==="metered" && <p style={{ fontSize:11, color:"#9CA3AF", margin:"8px 0 0", fontFamily:IN }}>Metered — billed based on actual consumption.</p>}
                 </div>
               )}
@@ -778,12 +797,12 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             <div style={{ borderRadius:14, border:"1.5px solid #F3F4F6", overflow:"hidden", marginBottom:12 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:"white" }}>
                 <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Water Bill</span>
-                <Toggle on={waterEnabled} onToggle={()=>setWaterEnabled(!waterEnabled)}/>
+                <PaymentToggle on={waterEnabled} onToggle={()=>setWaterEnabled(!waterEnabled)}/>
               </div>
               {waterEnabled && (
                 <div style={{ padding:"0 14px 14px", background:"#FAFAFA" }}>
-                  <TypePicker type={waterType} setType={v=>setWaterType(v as "fixed"|"metered")}/>
-                  {waterType==="fixed" && <AmtInput value={waterAmt} onChange={setWaterAmt}/>}
+                  <PaymentTypePicker type={waterType} setType={v=>setWaterType(v as "fixed"|"metered")}/>
+                  {waterType==="fixed" && <PaymentAmtInput value={waterAmt} onChange={setWaterAmt}/>}
                   {waterType==="metered" && <p style={{ fontSize:11, color:"#9CA3AF", margin:"8px 0 0", fontFamily:IN }}>Metered — billed based on actual consumption.</p>}
                 </div>
               )}
@@ -793,12 +812,12 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             <div style={{ borderRadius:14, border:"1.5px solid #F3F4F6", overflow:"hidden", marginBottom:12 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:"white" }}>
                 <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Internet Fee</span>
-                <Toggle on={internetEnabled} onToggle={()=>setInternetEnabled(!internetEnabled)}/>
+                <PaymentToggle on={internetEnabled} onToggle={()=>setInternetEnabled(!internetEnabled)}/>
               </div>
               {internetEnabled && (
                 <div style={{ padding:"0 14px 14px", background:"#FAFAFA" }}>
-                  <TypePicker type={internetType} setType={v=>setInternetType(v as "fixed"|"metered")}/>
-                  {internetType==="fixed" && <AmtInput value={internetAmt} onChange={setInternetAmt} placeholder="300"/>}
+                  <PaymentTypePicker type={internetType} setType={v=>setInternetType(v as "fixed"|"metered")}/>
+                  {internetType==="fixed" && <PaymentAmtInput value={internetAmt} onChange={setInternetAmt} placeholder="300"/>}
                   {internetType==="metered" && <p style={{ fontSize:11, color:"#9CA3AF", margin:"8px 0 0", fontFamily:IN }}>Metered — billed based on actual consumption.</p>}
                 </div>
               )}
@@ -815,7 +834,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                         <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{ep.name || "Custom Payment"}</span>
                         <button onClick={()=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,confirmed:false}:x))} style={{ fontSize:10, color:"#9772F6", background:"#F5F0FF", border:"none", borderRadius:6, padding:"2px 7px", fontFamily:QS, fontWeight:700, cursor:"pointer" }}>Edit</button>
                       </div>
-                      <Toggle on={ep.enabled} onToggle={()=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,enabled:!x.enabled}:x))}/>
+                      <PaymentToggle on={ep.enabled} onToggle={()=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,enabled:!x.enabled}:x))}/>
                     </div>
                     {ep.enabled && (
                       <div style={{ padding:"0 14px 12px", background:"#FAFAFA" }}>
@@ -835,12 +854,9 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                         <X size={14}/>
                       </button>
                     </div>
-                    <TypePicker type={ep.type} setType={v=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,type:v as "fixed"|"metered"}:x))}/>
+                    <PaymentTypePicker type={ep.type} setType={v=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,type:v as "fixed"|"metered"}:x))}/>
                     {ep.type==="fixed" && (
-                      <div style={{ position:"relative" as const, marginTop:10 }}>
-                        <span style={{ position:"absolute" as const, left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"#9CA3AF", fontFamily:QS }}>₱</span>
-                        <input type="number" value={ep.amount} onChange={e=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,amount:e.target.value}:x))} placeholder="0" style={{ ...inputStyle(false), paddingLeft:28 }}/>
-                      </div>
+                      <PaymentAmtInput value={ep.amount} onChange={v=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,amount:v}:x))} placeholder="0"/>
                     )}
                     {ep.type==="metered" && <p style={{ fontSize:11, color:"#9CA3AF", margin:"8px 0 0", fontFamily:IN }}>Metered — billed based on actual consumption.</p>}
                     <button onClick={()=>setExtraPayments(prev=>prev.map((x,j)=>j===i?{...x,confirmed:true}:x))}
@@ -855,8 +871,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             <button onClick={addExtraPayment} style={{ width:"100%", padding:"12px 0", borderRadius:14, border:"2px solid #DDD6FE", background:"#FAFAFE", color:"#9772F6", fontSize:13, fontWeight:800, fontFamily:QS, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               <Plus size={16} color="#9772F6"/>Add Custom Payment
             </button>
-          </>);
-        })()}
+          </>)}
 
         <div style={{ display:"flex", gap:10 }}>
           <button onClick={prevStep} style={{ flex:1, height:52, borderRadius:24, border:"2px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:14, fontWeight:800, fontFamily:QS, cursor:"pointer" }}>Back</button>
@@ -908,7 +923,18 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
         </>)}
         {rvCard("Boarding House", ()=>setStep(2), <>
           {rvRow("Name", bhName)}
-          {rvRow("Address", bhAddress)}
+          {rvRow("Formatted Address", bhAddress)}
+          {rvRow("Latitude", bhLat != null ? bhLat.toFixed(6) : "")}
+          {rvRow("Longitude", bhLng != null ? bhLng.toFixed(6) : "")}
+          {rvRow("Location Type", bhLocationType === "existing" ? "Existing Map Location" : bhLocationType === "custom" ? "Custom Boarding House Pin" : "")}
+          {bhComponents.street && rvRow("Street", bhComponents.street)}
+          {bhComponents.purok && rvRow("Purok", bhComponents.purok)}
+          {bhComponents.sitio && rvRow("Sitio", bhComponents.sitio)}
+          {bhComponents.barangay && rvRow("Barangay", bhComponents.barangay)}
+          {bhComponents.municipality && rvRow("Municipality/City", bhComponents.municipality)}
+          {bhComponents.province && rvRow("Province", bhComponents.province)}
+          {bhComponents.postalCode && rvRow("Postal Code", bhComponents.postalCode)}
+          {bhComponents.country && rvRow("Country", bhComponents.country)}
           {rvRow("Landlord", bhLandlord)}
           {rvRow("Contact", bhContact ? `+63 ${bhContact}` : "")}
           {rvRow("Description", bhDesc)}
@@ -922,7 +948,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           {rooms.map((r,i)=>(
             <div key={r.id} style={{ marginBottom: i<rooms.length-1?12:0, paddingBottom: i<rooms.length-1?12:0, borderBottom: i<rooms.length-1?"1px solid #F3F4F6":"none" }}>
               <p style={{ fontSize:12, fontWeight:800, color:"#7549F6", margin:"0 0 4px", fontFamily:QS }}>{r.name}</p>
-              <p style={{ fontSize:11, color:"#6B7280", margin:"0 0 6px" }}>Capacity: {r.cap || 0} · Occupants: {r.occ || 0}</p>
+              <p style={{ fontSize:11, color:"#6B7280", margin:"0 0 6px" }}>Capacity: {r.cap || 0} · Occupied: {r.beds.filter(b=>b.status==="occupied"||b.status==="reserved").length}</p>
               {r.beds.length > 0 && (
                 <div style={{ display:"flex", flexWrap:"wrap" as const, gap:4 }}>
                   {r.beds.map((b,bi)=>{

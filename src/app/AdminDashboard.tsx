@@ -5,6 +5,8 @@ import {
   TrendingUp, ShieldCheck, BarChart2, Zap, RefreshCw,
   ChevronRight, UserCheck, UserPlus, CreditCard, Activity,
 } from "lucide-react";
+import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
+import { useUnreadChatCount } from "./chatStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -56,6 +58,8 @@ function fmtDate() {
 
 export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
   const [refreshing, setRefreshing] = useState(false);
+  const notifCount = useUnreadCount("admin");
+  const chatCount = useUnreadChatCount("admin");
 
   const refresh = () => { setRefreshing(true); setTimeout(()=>setRefreshing(false), 1200); };
 
@@ -68,20 +72,20 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
             <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:1 }}>Welcome,</p>
-            <h1 style={{ margin:"2px 0 2px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Admin 👋</h1>
+            <h1 style={{ margin:"2px 0 2px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Admin</h1>
             <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.6)", fontFamily:IN }}>{fmtDate()}</p>
           </div>
           <div style={{ display:"flex", gap:8 }}>
             <button onClick={refresh} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <RefreshCw size={16} color="white" style={{ transform:refreshing?"rotate(360deg)":"none", transition:"transform .6s" }}/>
             </button>
-            <button style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <Bell size={17} color="white"/>
-              <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>5</span>
+              {notifCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
             </button>
-            <button style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("messages")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <MessageCircle size={17} color="white"/>
-              <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>3</span>
+              {chatCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(chatCount)}</span>}
             </button>
             <button onClick={()=>go("adminProfile")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <User size={17} color="white"/>

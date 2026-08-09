@@ -584,7 +584,7 @@ export function ParentLinkingScreen({
                     <span style={{ fontSize: 12, color: "#374151", fontFamily: QS, fontWeight: 700 }}>{row.label}</span>
                     {row.ok !== undefined
                       ? <Check size={14} color="#16A34A" strokeWidth={3} />
-                      : <span style={{ fontSize: 12, fontWeight: 700, color: "#16A34A", fontFamily: QS }}>✓ {row.value}</span>}
+                      : <span style={{ fontSize: 12, fontWeight: 700, color: "#16A34A", fontFamily: QS, display: "inline-flex", alignItems: "center", gap: 4 }}><Check size={11}/> {row.value}</span>}
                   </div>
                 ))}
               </div>

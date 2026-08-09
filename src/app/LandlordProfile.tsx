@@ -1,15 +1,17 @@
 import React, { useState } from "react";
 import { AppInfoSection } from "./AppInfo";
 import {
-  User, Mail, Lock, Phone, MapPin, Building2, ChevronDown, ChevronUp,
+  User, Mail, Lock, Phone, Building2, ChevronDown, ChevronUp,
   ChevronRight, Edit3, Save, X, Camera, LogOut, Wifi, Droplet, Zap,
   BookOpen, Utensils, Shirt, Video, Car, Clock, Shield, Plus, Trash2,
   Eye, EyeOff, Check, ToggleLeft, ToggleRight, AlertCircle, Image,
   GripVertical, RefreshCw, Home, Layers, CreditCard,
+  CalendarClock, UserCheck,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen } from "./shared";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
-import { LocationPickerModal } from "./components/LocationPickerModal";
+import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationPicker";
+import { AddressComponents } from "./components/mapGeo";
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -61,18 +63,18 @@ function EditableField({ label, value, onChange, placeholder, multiline = false,
   );
 }
 
-function GradBtn({ children, onClick, outline = false, danger = false, small = false }: {
-  children: React.ReactNode; onClick?: () => void; outline?: boolean; danger?: boolean; small?: boolean;
+function GradBtn({ children, onClick, outline = false, danger = false, small = false, disabled = false }: {
+  children: React.ReactNode; onClick?: () => void; outline?: boolean; danger?: boolean; small?: boolean; disabled?: boolean;
 }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={disabled ? undefined : onClick} disabled={disabled} style={{
       height: small ? 36 : 44, padding: small ? "0 14px" : "0 20px", borderRadius: 20,
       border: outline ? `2px solid ${danger ? "#EF4444" : "#9772F6"}` : "none",
       background: outline ? "white" : danger ? "#EF4444" : GRAD,
       color: outline ? (danger ? "#EF4444" : "#9772F6") : "white",
-      fontSize: small ? 12 : 13, fontWeight: 800, fontFamily: QS, cursor: "pointer",
+      fontSize: small ? 12 : 13, fontWeight: 800, fontFamily: QS, cursor: disabled ? "default" : "pointer",
       boxShadow: outline ? "none" : "0 4px 16px rgba(151,114,246,.3)",
-      display: "inline-flex", alignItems: "center", gap: 6,
+      display: "inline-flex", alignItems: "center", gap: 6, opacity: disabled ? 0.5 : 1,
     }}>{children}</button>
   );
 }
@@ -87,8 +89,8 @@ function Toggle({ value, onToggle }: { value: boolean; onToggle: () => void }) {
 
 function Chip({ label, on, onToggle }: { label: string; on: boolean; onToggle: () => void }) {
   return (
-    <button onClick={onToggle} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${on ? "#9772F6" : "#E5E7EB"}`, background: on ? "#F5F0FF" : "white", color: on ? "#9772F6" : "#6B7280", fontSize: 11, fontWeight: 700, fontFamily: QS, cursor: "pointer" }}>
-      {on ? "✓ " : ""}{label}
+    <button onClick={onToggle} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${on ? "#9772F6" : "#E5E7EB"}`, background: on ? "#F5F0FF" : "white", color: on ? "#9772F6" : "#6B7280", fontSize: 11, fontWeight: 700, fontFamily: QS, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {on && <Check size={11} />}{label}
     </button>
   );
 }
@@ -164,13 +166,21 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
   const [bhAddress, setBhAddress] = useState("Purok 3, Brgy. Poblacion, Calape, Bohol");
   const [bhContact, setBhContact] = useState("09171234567");
   const [bhDesc, setBhDesc] = useState("A clean, secure, and student-friendly boarding house near BISU campus. Newly renovated rooms with fast Wi-Fi and 24/7 security.");
-  const [bhLat, setBhLat] = useState(9.8886);
-  const [bhLng, setBhLng] = useState(123.8672);
-  const [showLocationPicker, setShowLocationPicker] = useState(false);
-  const [bhDraft, setBhDraft] = useState({ bhName, bhAddress, bhContact, bhDesc });
+  const [bhLat, setBhLat] = useState<number | null>(9.8886);
+  const [bhLng, setBhLng] = useState<number | null>(123.8672);
+  const [bhComponents, setBhComponents] = useState<AddressComponents>({});
+  const [bhLocationType, setBhLocationType] = useState<"existing" | "custom" | null>(null);
+  const [bhPlaceName, setBhPlaceName] = useState<string | null>(null);
+  const [bhPlaceId, setBhPlaceId] = useState<string | null>(null);
+  const [bhLocationConfirmed, setBhLocationConfirmed] = useState(true); // already-saved location starts confirmed
+  const [bhDraft, setBhDraft] = useState({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId });
 
-  const startEditBH = () => { setBhDraft({ bhName, bhAddress, bhContact, bhDesc }); setEditBH(true); };
-  const saveBH = () => { setBhName(bhDraft.bhName); setBhAddress(bhDraft.bhAddress); setBhContact(bhDraft.bhContact); setBhDesc(bhDraft.bhDesc); setEditBH(false); showToast("Boarding house information updated."); };
+  const startEditBH = () => { setBhDraft({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId }); setBhLocationConfirmed(true); setEditBH(true); };
+  const saveBH = () => {
+    setBhName(bhDraft.bhName); setBhAddress(bhDraft.bhAddress); setBhContact(bhDraft.bhContact); setBhDesc(bhDraft.bhDesc);
+    setBhLat(bhDraft.bhLat); setBhLng(bhDraft.bhLng); setBhComponents(bhDraft.bhComponents); setBhLocationType(bhDraft.bhLocationType); setBhPlaceName(bhDraft.bhPlaceName); setBhPlaceId(bhDraft.bhPlaceId);
+    setEditBH(false); showToast("Boarding house information updated.");
+  };
 
   // ── Amenities ──────────────────────────────────────────────────────────────
   const [amenities, setAmenities] = useState<string[]>(["Wi-Fi", "Water Included", "Electricity", "Study Area", "Kitchen", "CCTV", "Security"]);
@@ -322,7 +332,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
           <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{fullName}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
             <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>@{username}</span>
-            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>🏠 Landlord</span>
+            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}><Home size={11} /> Landlord</span>
           </div>
           <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: "8px 0 0", fontFamily: QS }}>{bhName}</p>
         </div>
@@ -395,44 +405,54 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
               <>
                 <InfoRow label="Boarding House Name" value={bhName} />
                 <InfoRow label="Address"             value={bhAddress} />
+                <InfoRow label="Latitude"             value={bhLat != null ? bhLat.toFixed(6) : ""} />
+                <InfoRow label="Longitude"            value={bhLng != null ? bhLng.toFixed(6) : ""} />
+                {bhLocationType && <InfoRow label="Location Type" value={bhLocationType === "existing" ? "Existing Map Location" : "Custom Boarding House Pin"} />}
                 <InfoRow label="Contact Number"      value={bhContact} />
                 <InfoRow label="Description"         value={bhDesc} last />
-                {/* Real Google Map of the boarding house's pinned location */}
-                <div style={{ marginTop: 14, borderRadius: 16, overflow: "hidden", height: 150, position: "relative" }}>
-                  <GoogleMapCanvas
-                    center={{ lat: bhLat, lng: bhLng }}
-                    zoom={16}
-                    mapType="standard"
-                    markers={[{ id: "bh", variant: "bh", position: { lat: bhLat, lng: bhLng }, title: bhName }]}
-                  />
-                </div>
-                {showLocationPicker && (
-                  <LocationPickerModal
-                    initialPosition={{ lat: bhLat, lng: bhLng }}
-                    initialAddress={bhAddress}
-                    onClose={() => setShowLocationPicker(false)}
-                    onConfirm={(result) => {
-                      setBhLat(result.lat); setBhLng(result.lng);
-                      if (result.address) setBhAddress(result.address);
-                      setShowLocationPicker(false);
-                      showToast("Boarding house location updated.");
-                    }}
-                  />
+                {/* Real Google Map of the boarding house's saved, pinned location */}
+                {bhLat != null && bhLng != null && (
+                  <div style={{ marginTop: 14, borderRadius: 16, overflow: "hidden", height: 150, position: "relative" }}>
+                    <GoogleMapCanvas
+                      center={{ lat: bhLat, lng: bhLng }}
+                      zoom={16}
+                      mapType="standard"
+                      markers={[{ id: "bh", variant: "bh", position: { lat: bhLat, lng: bhLng }, title: bhName }]}
+                    />
+                  </div>
                 )}
                 <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
                   <GradBtn small outline onClick={startEditBH}><Edit3 size={13} />Edit BH Info</GradBtn>
-                  <GradBtn small outline onClick={() => setShowLocationPicker(true)}><MapPin size={13} />Update Location</GradBtn>
+                  <GradBtn small outline onClick={startEditBH}><Building2 size={13} />Edit Location</GradBtn>
                 </div>
               </>
             ) : (
               <>
                 <EditableField label="Boarding House Name" value={bhDraft.bhName} onChange={v => setBhDraft(d => ({ ...d, bhName: v }))} placeholder="e.g. Naquila Boarding House" />
-                <EditableField label="Address" value={bhDraft.bhAddress} onChange={v => setBhDraft(d => ({ ...d, bhAddress: v }))} placeholder="Purok, Barangay, Municipality, Province" />
+                {/* Interactive map picker — the pin is the source of truth. An existing map place's
+                    address is used exactly as its provider returns it (never reverse-geocoded); a
+                    custom pin's address is typed by the landlord themselves inside the picker. */}
+                <BoardingHouseLocationPicker
+                  lat={bhDraft.bhLat}
+                  lng={bhDraft.bhLng}
+                  address={bhDraft.bhAddress}
+                  locationType={bhDraft.bhLocationType}
+                  placeName={bhDraft.bhPlaceName}
+                  placeId={bhDraft.bhPlaceId}
+                  confirmed={bhLocationConfirmed}
+                  onConfirmedChange={setBhLocationConfirmed}
+                  onLocationChange={r => setBhDraft(d => ({ ...d, bhLat: r.lat, bhLng: r.lng, bhAddress: r.address, bhComponents: r.components, bhLocationType: r.locationType, bhPlaceName: r.placeName, bhPlaceId: r.placeId }))}
+                />
                 <EditableField label="Contact Number" value={bhDraft.bhContact} onChange={v => setBhDraft(d => ({ ...d, bhContact: v }))} placeholder="09XXXXXXXXX" />
                 <EditableField label="Short Description" value={bhDraft.bhDesc} onChange={v => setBhDraft(d => ({ ...d, bhDesc: v }))} multiline />
+                {!bhLocationConfirmed && (
+                  <p style={{ fontSize: 11, color: "#D97706", margin: "-4px 0 12px", fontFamily: IN }}>
+                    Please confirm your boarding house location on the map before saving.
+                  </p>
+                )}
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
                   <GradBtn small outline onClick={() => setEditBH(false)}><X size={13} />Cancel</GradBtn>
-                  <GradBtn small onClick={saveBH}><Save size={13} />Save Changes</GradBtn>
+                  <GradBtn small disabled={!bhLocationConfirmed} onClick={saveBH}><Save size={13} />Save Changes</GradBtn>
                 </div>
               </>
             )}
@@ -710,7 +730,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
           </SectionCard>
 
           {/* ── Highlights & Schedule Settings ── */}
-          <SectionCard title="Highlights & Schedule Settings">
+          <SectionCard title="Highlights & Schedule Settings" icon={<CalendarClock size={16} color="#9772F6" />}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <p style={{ margin: "0 0 3px", fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Enable Highlights & Schedule</p>
@@ -727,7 +747,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
           </SectionCard>
 
           {/* ── Visitor Records Settings ── */}
-          <SectionCard title="Visitor Records Settings">
+          <SectionCard title="Visitor Records Settings" icon={<UserCheck size={16} color="#9772F6" />}>
             {/* Main enable toggle */}
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid #F3F4F6" }}>
               <div style={{ flex: 1 }}>

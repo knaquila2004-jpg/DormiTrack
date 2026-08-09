@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  MapPin, Navigation, Bell, Home, Building2, Clock, Layers,
+  MapPin, Navigation, Home, Building2, Clock, Layers,
   LocateFixed, ZoomIn, ZoomOut, CheckCircle, XCircle, AlertCircle,
   LogIn, LogOut, Wifi, Compass, Shield, ChevronDown, ChevronUp,
-  Activity, Radio, Check, X, Crosshair, RefreshCw, Eye,
+  Radio, Check, X, Crosshair, RefreshCw, Eye,
 } from "lucide-react";
 import { BH_DATA, ROOM_DATA, STUDENT_DATA, STAY_DATA } from "./StudentHome";
 import { MAP_CENTER } from "./shared";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
+import { addNotification } from "./notificationStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -54,13 +55,6 @@ const NOW_TIME   = fmtTime(NOW);
 
 // ── Seed data ─────────────────────────────────────────────────────────────────
 
-const SEED_HISTORY: VerificationRecord[] = [
-  { id:"h1", type:"checkout",  date:"August 3, 2026", time:"5:46 PM", address:"Km 4 National Highway, Tagbilaran City",  coords:"9.6533° N, 123.8527° E", result:"verified" },
-  { id:"h2", type:"checkin",   date:"August 3, 2026", time:"8:02 AM", address:"Km 4 National Highway, Tagbilaran City",  coords:"9.6533° N, 123.8527° E", result:"verified" },
-  { id:"h3", type:"checkout",  date:"August 2, 2026", time:"6:10 PM", address:"Km 4 National Highway, Tagbilaran City",  coords:"9.6533° N, 123.8527° E", result:"verified" },
-  { id:"h4", type:"checkin",   date:"August 2, 2026", time:"7:55 AM", address:"Km 4 National Highway, Tagbilaran City",  coords:"9.6533° N, 123.8527° E", result:"verified" },
-];
-
 const SEED_LOGS: ActivityLog[] = [
   { id:"l1", msg:"Checked Out — Aug 3, 5:46 PM",         time:"Yesterday", color:"#D97706", bg:"#FEF3C7", Icon: LogOut      },
   { id:"l2", msg:"Checked In — Aug 3, 8:02 AM",          time:"Yesterday", color:"#16A34A", bg:"#DCFCE7", Icon: LogIn       },
@@ -99,7 +93,7 @@ function SuccessModal({ type, time, onClose }: { type:"checkin"|"checkout"; time
             ["Room / Bed",  `${ROOM_DATA.name} · ${ROOM_DATA.bed}`],
             ["Date",        TODAY_STR             ],
             ["Time",        time                  ],
-            ["GPS Status",  "Verified ✓"          ],
+            ["GPS Status",  "Verified"            ],
           ].map(([l,v])=>(
             <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:"1px solid #F3F4F6" }}>
               <span style={{ fontSize:11, color:"#9CA3AF", fontFamily:QS, fontWeight:700 }}>{l}</span>
@@ -212,9 +206,10 @@ function MapView({ withinRadius, zoom, onZoomIn, onZoomOut, onRecenter, simDista
 
       {/* Radius label */}
       <div style={{ position:"absolute" as const, bottom:10, left:"50%", transform:"translateX(-50%)", zIndex:20 }}>
-        <div style={{ background:withinRadius?"rgba(22,163,74,.9)":"rgba(239,68,68,.9)", borderRadius:20, padding:"5px 14px", backdropFilter:"blur(8px)" }}>
+        <div style={{ background:withinRadius?"rgba(22,163,74,.9)":"rgba(239,68,68,.9)", borderRadius:20, padding:"5px 14px", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", gap:5 }}>
+          {withinRadius ? <Check size={12} color="white"/> : <X size={12} color="white"/>}
           <span style={{ fontSize:10, fontWeight:800, color:"white", fontFamily:QS }}>
-            {withinRadius ? "✓ Within Verification Radius (50m)" : "✗ Outside Verification Radius"}
+            {withinRadius ? "Within Verification Radius (50m)" : "Outside Verification Radius"}
           </span>
         </div>
       </div>
@@ -246,9 +241,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
   const [zoom,             setZoom]             = useState(15);
   const [successModal,     setSuccessModal]     = useState<"checkin"|"checkout"|null>(null);
   const [successTime,      setSuccessTime]      = useState("");
-  const [verHistory,       setVerHistory]       = useState<VerificationRecord[]>(SEED_HISTORY);
   const [actLogs,          setActLogs]          = useState<ActivityLog[]>(SEED_LOGS);
-  const [histOpen,         setHistOpen]         = useState(true);
   const [logsOpen,         setLogsOpen]         = useState(true);
   const [currentTime,      setCurrentTime]      = useState(new Date());
   const [isLoading,        setIsLoading]        = useState(false);
@@ -292,7 +285,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
         coords: "9.6533° N, 123.8527° E",
         result: "verified",
       };
-      setVerHistory(h => [newRec, ...h]);
       const newLog: ActivityLog = {
         id: `l${Date.now()}`,
         msg: type === "checkin" ? `Checked In — ${t}` : `Checked Out — ${t}`,
@@ -303,6 +295,18 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
       };
       setActLogs(l => [newLog, ...l]);
       setIsLoading(false);
+      const label = type === "checkin" ? "Check-In" : "Check-Out";
+      const notifType = type === "checkin" ? "check-in" : "check-out" as const;
+      addNotification({
+        role: "student", type: notifType, title: `${label} Recorded`,
+        description: `Your ${label.toLowerCase()} was successfully verified at ${BH_DATA.name}.`,
+        destination: "map", relatedId: newRec.id,
+      });
+      addNotification({
+        role: "landlord", type: notifType, title: `Student ${label}`,
+        description: `${STUDENT_DATA.name} ${type === "checkin" ? "checked in" : "checked out"} at ${t}.`,
+        destination: "occupants", relatedId: newRec.id,
+      });
     }, 1400);
   }
 
@@ -340,16 +344,11 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 18px", position:"relative" as const, overflow:"hidden" }}>
         <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
-        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
-          <div>
-            <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
-            <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, maxWidth:260, lineHeight:1.5 }}>
-              Verify your arrival and departure using your current location.
-            </p>
-          </div>
-          <button style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", backdropFilter:"blur(8px)" }}>
-            <Bell size={18} color="white"/>
-          </button>
+        <div>
+          <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
+          <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, maxWidth:260, lineHeight:1.5 }}>
+            Verify your arrival and departure using your current location.
+          </p>
         </div>
       </div>
 
@@ -370,15 +369,16 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
           <div style={{ background:"white", borderRadius:18, padding:"12px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.06)", marginBottom:14, display:"flex", gap:10 }}>
             <div style={{ flex:1 }}>
               <p style={{ margin:"0 0 3px", fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Simulate GPS</p>
-              <button onClick={toggleGps} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:gpsActive?"#DCFCE7":"#FEE2E2", color:gpsActive?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS }}>
-                {gpsActive ? "🟢 GPS Active" : "🔴 GPS Off"}
+              <button onClick={toggleGps} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:gpsActive?"#DCFCE7":"#FEE2E2", color:gpsActive?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"inline-flex", alignItems:"center", gap:5 }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", background:gpsActive?"#16A34A":"#EF4444" }}/>
+                {gpsActive ? "GPS Active" : "GPS Off"}
               </button>
             </div>
             <div style={{ width:1, background:"#F3F4F6" }}/>
             <div style={{ flex:1 }}>
               <p style={{ margin:"0 0 3px", fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Simulate Location</p>
-              <button onClick={toggleProximity} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:withinRadius?"#DCFCE7":"#FEE2E2", color:withinRadius?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS }}>
-                {withinRadius ? "✓ Within Range" : "✗ Outside Range"}
+              <button onClick={toggleProximity} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:withinRadius?"#DCFCE7":"#FEE2E2", color:withinRadius?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"inline-flex", alignItems:"center", gap:4 }}>
+                {withinRadius ? <Check size={11}/> : <X size={11}/>} {withinRadius ? "Within Range" : "Outside Range"}
               </button>
             </div>
           </div>
@@ -402,7 +402,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               { label:"Current Address",       val:"Km 4 National Highway, Tagbilaran City, Bohol"  },
               { label:"GPS Accuracy",          val: gpsActive ? "±5 meters (High)"  : "—"           },
               { label:"Distance to BH",        val:`${simDistance} meters`                           },
-              { label:"Verification Radius",   val: withinRadius ? "✓ Within Allowed Area (50m)" : "✗ Outside Area (50m)" },
+              { label:"Verification Radius",   val: withinRadius ? "Within Allowed Area (50m)" : "Outside Area (50m)" },
             ].map(({ label, val }, i, arr)=>(
               <div key={label} style={{ padding:"9px 0", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
                 <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{label}</p>
@@ -499,7 +499,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               {/* Action button */}
               {attendanceStatus === "not-checked-in" && (
                 <button onClick={()=>doAction("checkin")} disabled={!allReqsMet}
-                  style={{ width:"100%", height:56, borderRadius:24, backgroundImage:allReqsMet?GRAD:"none", background:allReqsMet?"none":"#F3F4F6", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", gap:10, boxShadow:allReqsMet?"0 8px 28px rgba(151,114,246,.38)":"none", transition:"all .2s" }}>
+                  style={{ width:"100%", height:56, borderRadius:24, background:allReqsMet?"linear-gradient(135deg,#16A34A,#15803D)":"#F3F4F6", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", gap:10, boxShadow:allReqsMet?"0 8px 28px rgba(22,163,74,.38)":"none", transition:"all .2s" }}>
                   <div style={{ width:28, height:28, borderRadius:10, background:allReqsMet?"rgba(255,255,255,.2)":"rgba(0,0,0,.08)", display:"flex", alignItems:"center", justifyContent:"center" }}>
                     <LogIn size={15} color={allReqsMet?"white":"#9CA3AF"}/>
                   </div>
@@ -530,52 +530,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
                 </div>
               )}
             </div>
-          </div>
-
-          {/* ── Verification History ───────────────────────────────────────── */}
-          <div style={{ background:"white", borderRadius:22, boxShadow:"0 4px 20px rgba(0,0,0,.07)", overflow:"hidden", marginBottom:14 }}>
-            <button onClick={()=>setHistOpen(p=>!p)} style={{ width:"100%", display:"flex", alignItems:"center", gap:12, padding:"16px 18px", background:"none", border:"none", cursor:"pointer", borderBottom:histOpen?"1px solid #F3F4F6":"none" }}>
-              <div style={{ width:34, height:34, borderRadius:11, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                <Activity size={16} color="#9772F6"/>
-              </div>
-              <span style={{ flex:1, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"left" as const }}>Verification History</span>
-              <span style={{ fontSize:10, color:"#9CA3AF", fontFamily:IN, marginRight:6 }}>{verHistory.length} records</span>
-              {histOpen ? <ChevronUp size={16} color="#9CA3AF"/> : <ChevronDown size={16} color="#9CA3AF"/>}
-            </button>
-
-            {histOpen && (
-              <div style={{ padding:"4px 18px 18px" }}>
-                {verHistory.slice(0, 6).map((rec, i) => {
-                  const isCI = rec.type === "checkin";
-                  return (
-                    <div key={rec.id} style={{ display:"flex", gap:12, paddingTop:14 }}>
-                      {/* Timeline line + dot */}
-                      <div style={{ display:"flex", flexDirection:"column" as const, alignItems:"center", width:28 }}>
-                        <div style={{ width:28, height:28, borderRadius:10, backgroundImage:isCI?GRAD:"linear-gradient(135deg,#D97706,#B45309)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                          {isCI ? <LogIn size={13} color="white"/> : <LogOut size={13} color="white"/>}
-                        </div>
-                        {i < Math.min(verHistory.length, 6)-1 && <div style={{ width:2, flex:1, minHeight:16, background:"#F3F4F6", marginTop:4 }}/>}
-                      </div>
-                      {/* Content */}
-                      <div style={{ flex:1, paddingBottom:i < Math.min(verHistory.length,6)-1 ? 0 : 0 }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
-                          <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{isCI?"Check In":"Check Out"}</span>
-                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:rec.result==="verified"?"#DCFCE7":"#FEE2E2", color:rec.result==="verified"?"#16A34A":"#EF4444", fontFamily:QS }}>
-                            {rec.result==="verified"?"Verified ✓":"Failed ✗"}
-                          </span>
-                        </div>
-                        <p style={{ margin:"0 0 2px", fontSize:11, color:"#6B7280", fontFamily:IN }}>{rec.date} · {rec.time}</p>
-                        <p style={{ margin:"0 0 2px", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{rec.address}</p>
-                        <p style={{ margin:0, fontSize:9, color:"#C4B5FD", fontFamily:IN }}>GPS: {rec.coords}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-                {verHistory.length > 6 && (
-                  <p style={{ margin:"14px 0 0", fontSize:12, fontWeight:700, color:"#9772F6", fontFamily:QS, textAlign:"center" as const, cursor:"pointer" }}>View All {verHistory.length} Records →</p>
-                )}
-              </div>
-            )}
           </div>
 
           {/* ── Recent Activity Logs ────────────────────────────────────────── */}

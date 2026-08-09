@@ -7,6 +7,7 @@ import {
 import { BH_DATA, ROOM_DATA } from "./StudentHome";
 import { MAP_CENTER } from "./shared";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
+import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -14,6 +15,7 @@ const QS   = "'Quicksand',sans-serif";
 const IN   = "'Inter',sans-serif";
 
 export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
+  const notifCount = useUnreadCount("parent");
   const [mapType,    setMapType]    = useState<"standard"|"satellite">("standard");
   const [showMenu,   setShowMenu]   = useState(false);
   const [zoom,       setZoom]       = useState(17);
@@ -50,8 +52,9 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
               View your student's boarding house location.
             </p>
           </div>
-          <button style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <Bell size={18} color="white"/>
+            {notifCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
           </button>
         </div>
       </div>

@@ -462,7 +462,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
                   <div style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
                     <div style={{ display: "flex", gap: 5, marginBottom: 4, flexWrap: "wrap" as const }}>
-                      {a.status === "pinned" && <span style={{ fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 20, background: "#F5F0FF", color: "#9772F6", fontFamily: QS }}>📌 Pinned</span>}
+                      {a.status === "pinned" && <span style={{ fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 20, background: "#F5F0FF", color: "#9772F6", fontFamily: QS, display: "flex", alignItems: "center", gap: 3 }}><Pin size={9}/> Pinned</span>}
                       <span style={{ fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 20, background: pm.bg, color: pm.color, fontFamily: QS }}>{pm.label}</span>
                       <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "#F3F4F6", color: "#6B7280", fontFamily: IN }}>{a.audience}</span>
                     </div>

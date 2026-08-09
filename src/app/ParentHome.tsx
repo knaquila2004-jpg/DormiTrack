@@ -7,6 +7,8 @@ import {
 } from "lucide-react";
 import { BH_DATA, ROOM_DATA, STUDENT_DATA, BILLING_DATA, ANNOUNCEMENTS } from "./StudentHome";
 import { getReports, CATEGORY_META, PRIORITY_META, STATUS_META } from "./reportStore";
+import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
+import { useUnreadChatCount } from "./chatStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -42,8 +44,9 @@ function getGreeting() {
   return h < 12 ? "Good Morning" : h < 18 ? "Good Afternoon" : "Good Evening";
 }
 
-export function ParentHomeScreen({ go, notifCount = 0 }: { go:(s:string)=>void; notifCount?:number }) {
-  const [notifSeen, setNotifSeen] = useState(false);
+export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
+  const notifCount = useUnreadCount("parent");
+  const chatCount = useUnreadChatCount("parent");
 
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F2F4F8", overflowY:"auto", scrollbarWidth:"none" as const }}>
@@ -54,21 +57,23 @@ export function ParentHomeScreen({ go, notifCount = 0 }: { go:(s:string)=>void; 
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
             <p style={{ margin:"0 0 2px", fontSize:12, color:"rgba(255,255,255,.65)", fontFamily:IN }}>{getGreeting()},</p>
-            <h1 style={{ margin:"0 0 4px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>{PARENT_DATA.firstName}! 👋</h1>
+            <h1 style={{ margin:"0 0 4px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>{PARENT_DATA.firstName}!</h1>
             <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,.7)", fontFamily:IN, maxWidth:260, lineHeight:1.5 }}>
               Here's the latest update about your student's boarding house.
             </p>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <button onClick={()=>setNotifSeen(true)} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <Bell size={18} color="white"/>
-              {!notifSeen && notifCount > 0 && (
-                <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{notifCount > 9 ? "9+" : notifCount}</span>
+              {notifCount > 0 && (
+                <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>
               )}
             </button>
-            <button style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("messages")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <MessageCircle size={18} color="white"/>
-              <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>1</span>
+              {chatCount > 0 && (
+                <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(chatCount)}</span>
+              )}
             </button>
           </div>
         </div>
@@ -209,14 +214,17 @@ export function ParentHomeScreen({ go, notifCount = 0 }: { go:(s:string)=>void; 
                     <div style={{ display:"flex", gap:5, marginBottom:5, flexWrap:"wrap" as const }}>
                       <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
                       <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS }}>{cm.label}</span>
-                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS }}>{pm.emoji} {pm.label}</span>
+                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS, display:"flex", alignItems:"center", gap:3 }}>
+                        <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
+                      </span>
                     </div>
                     <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{r.title}</p>
                     <p style={{ margin:"0 0 4px", fontSize:11, color:"#6B7280", fontFamily:IN, lineHeight:1.45 }}>{r.description.length>100?r.description.slice(0,100)+"...":r.description}</p>
                     <p style={{ margin:"0 0 4px", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{r.dateSubmitted}</p>
                     {r.landlordResponse && (
-                      <div style={{ padding:"8px 10px", borderRadius:10, background:"#F0FDF4", border:"1px solid #BBF7D0" }}>
-                        <p style={{ margin:0, fontSize:10, color:"#16A34A", fontFamily:IN, lineHeight:1.5 }}>💬 Landlord: {r.landlordResponse}</p>
+                      <div style={{ padding:"8px 10px", borderRadius:10, background:"#F0FDF4", border:"1px solid #BBF7D0", display:"flex", alignItems:"flex-start", gap:6 }}>
+                        <MessageCircle size={11} color="#16A34A" style={{ flexShrink:0, marginTop:2 }}/>
+                        <p style={{ margin:0, fontSize:10, color:"#16A34A", fontFamily:IN, lineHeight:1.5 }}>Landlord: {r.landlordResponse}</p>
                       </div>
                     )}
                   </div>

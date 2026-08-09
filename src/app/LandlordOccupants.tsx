@@ -7,6 +7,7 @@ import {
   BookOpen, Plus, GraduationCap, Layers,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen, NavTab } from "./shared";
+import { findStudentContactByName } from "./chatStore";
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -468,11 +469,12 @@ type FilterType = "all" | OccupantStatus | "withVisitors" | "noVisitors";
 type SortType = "nameAsc" | "nameDesc" | "newestMoveIn" | "oldestMoveIn" | "room";
 
 export function LandlordOccupantsScreen({
-  go, navLeft, navRight,
+  go, navLeft, navRight, onOpenChat,
 }: {
   go: (s: Screen) => void;
   navLeft: NavTab[];
   navRight: NavTab[];
+  onOpenChat?: (contactId: string) => void;
 }) {
   const [occupants, setOccupants] = useState<Occupant[]>(SEED_OCCUPANTS);
   const [search, setSearch] = useState("");
@@ -655,7 +657,11 @@ export function LandlordOccupantsScreen({
         <OccupantProfileModal
           occupant={profileOccupant}
           onClose={() => setProfileOccupant(null)}
-          onMessage={() => setProfileOccupant(null)}
+          onMessage={o => {
+            setProfileOccupant(null);
+            const contact = findStudentContactByName(o.name);
+            if (contact && onOpenChat) onOpenChat(contact.id); else go("messages");
+          }}
         />
       )}
 

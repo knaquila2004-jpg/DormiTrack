@@ -3,11 +3,10 @@ import {
   Users, Home, ChevronRight, X, Phone, BookOpen,
   GraduationCap, Calendar, Building2, MapPin, User, Bed,
   Info, Shield, Mail, Wifi, Droplet, Zap, Utensils, Star,
-  Shirt, Car, CheckCircle, AlertCircle, Navigation,
+  Shirt, Car, CheckCircle, AlertCircle, Clock,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA, STUDENT_DATA } from "./StudentHome";
+import { BH_DATA, ROOM_DATA, STUDENT_DATA, STAY_DATA } from "./StudentHome";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
-import { FullScreenBHMap } from "./components/FullScreenBHMap";
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const QS   = "'Quicksand',sans-serif";
@@ -101,7 +100,6 @@ function OccupantModal({ occ, idx, onClose }: { occ:Occupant; idx:number; onClos
 // ── Tab content ───────────────────────────────────────────────────────────────
 
 function OverviewTab({ go }: { go:(s:string)=>void }) {
-  const [showFullMap, setShowFullMap] = useState(false);
   return (
     <div style={{ padding:"16px 16px 28px" }}>
 
@@ -116,12 +114,6 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
             markers={[{ id:"bh", variant:"bh", position:{ lat: BH_DATA.lat, lng: BH_DATA.lng }, title: BH_DATA.name }]}
           />
         </div>
-        {showFullMap && (
-          <FullScreenBHMap
-            bh={{ name: BH_DATA.name, address: BH_DATA.address, landlord: BH_DATA.landlord, contact: BH_DATA.contact, lat: BH_DATA.lat, lng: BH_DATA.lng }}
-            onClose={()=>setShowFullMap(false)}
-          />
-        )}
         {[
           { Icon:Building2, label:"Name",            val:BH_DATA.name     },
           { Icon:MapPin,    label:"Address",         val:BH_DATA.address  },
@@ -167,6 +159,24 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
             <div style={{ height:"100%", borderRadius:6, backgroundImage:GRAD, width:`${Math.round(ROOM_DATA.occupied/ROOM_DATA.capacity*100)}%` }}/>
           </div>
         </div>
+        {/* Stay period */}
+        <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #F3F4F6" }}>
+          {[
+            { Icon:Calendar, label:"Move-in Date",  val:STAY_DATA.moveIn     },
+            { Icon:Calendar, label:"Move-out Date", val:STAY_DATA.moveOut    },
+            { Icon:Clock,    label:"Stay Duration", val:STAY_DATA.stayLength },
+          ].map(({ Icon, label, val }, i, arr)=>(
+            <div key={label} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 0", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
+              <div style={{ width:32, height:32, borderRadius:10, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                <Icon size={13} color="#9772F6"/>
+              </div>
+              <div style={{ flex:1 }}>
+                <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, fontWeight:700, letterSpacing:0.5 }}>{label}</p>
+                <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN }}>{val}</p>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Status badges */}
@@ -190,18 +200,6 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
           </div>
         </div>
       </div>
-
-      {/* Map shortcut */}
-      <button onClick={()=>setShowFullMap(true)} style={{ width:"100%", background:"white", borderRadius:18, padding:"14px 16px", border:"none", cursor:"pointer", display:"flex", alignItems:"center", gap:12, boxShadow:"0 2px 10px rgba(0,0,0,.05)" }}>
-        <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <Navigation size={18} color="white"/>
-        </div>
-        <div style={{ flex:1, textAlign:"left" as const }}>
-          <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Show Full Map</p>
-          <p style={{ margin:"1px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Route, distance & travel time to {BH_DATA.name}</p>
-        </div>
-        <ChevronRight size={15} color="#D1D5DB"/>
-      </button>
     </div>
   );
 }

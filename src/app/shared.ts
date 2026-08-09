@@ -12,7 +12,7 @@ export const MAP_CENTER = { lat: 9.6539, lng: 123.8547 };
 export type Screen =
   | "splash" | "landing" | "roleSelect" | "login" | "signup"
   | "forgotPassword" | "dashboard" | "payments" | "map"
-  | "notifications" | "profile" | "dormInfo" | "occupants"
+  | "notifications" | "messages" | "profile" | "dormInfo" | "occupants"
   | "homeVisit" | "settings" | "rooms"
   | "adminUsers" | "adminReports" | "adminProfile" | "adminMap" | "adminSystem"
   | "studentSignup" | "landlordSignup" | "parentSignup" | "parentLinking" | "boardingReg" | "pendingVerify";
@@ -22,7 +22,7 @@ export type Role = "student" | "parent" | "landlord" | "admin";
 
 // ── Data types ────────────────────────────────────────────────────────────────
 export type BedStatus = "available" | "occupied" | "reserved" | "maintenance";
-export type BedData = { id: string; label: string; status: BedStatus };
+export type BedData = { id: string; label: string; status: BedStatus; photo?: string };
 export type RoomData = {
   id: string; name: string; photo: string; cap: number; occ: number;
   description?: string;
@@ -93,6 +93,9 @@ export const IMG = {
   desk: U("1761123489272-ab7534a498d8"),
 };
 
+// Clean default photo shown for a bed when the landlord hasn't uploaded one yet.
+export const DEFAULT_BED_PHOTO = IMG.bed1;
+
 export const AMENITIES: Amenity[] = [
   { label: "Wi-Fi", Icon: Wifi }, { label: "Water Included", Icon: Droplet },
   { label: "Electricity", Icon: Zap }, { label: "Study Area", Icon: BookOpen },
@@ -136,10 +139,10 @@ export const BOARDING_HOUSES: BoardingHouse[] = [
     ],
     payment: { rent: 2500, electric: { type: "metered" }, water: { type: "fixed", amount: 250 }, internet: { type: "included" } },
     rooms: [
-      { id: "r1", name: "Room A", photo: IMG.bed1, cap: 6, occ: 6, description: "Ground floor room with 6 individual beds, excellent ventilation, and a large window overlooking the garden.", photos: [IMG.bed1, IMG.study, IMG.books], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"},{id:"b6",label:"Bed 6",status:"occupied"}] },
-      { id: "r2", name: "Room B", photo: IMG.bed2, cap: 6, occ: 3, description: "Spacious room on the second floor with a garden view. Comes with built-in cabinets and a shared study area.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"available"},{id:"b5",label:"Bed 5",status:"reserved"},{id:"b6",label:"Bed 6",status:"available"}] },
-      { id: "r3", name: "Room C", photo: IMG.bed3, cap: 4, occ: 3, description: "Corner room with natural lighting and a quiet environment. Ideal for studious and focused students.", photos: [IMG.bed3, IMG.books], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"available"}] },
-      { id: "r4", name: "Room D", photo: IMG.bed4, cap: 4, occ: 1, description: "Top-floor room with a great breeze. Quiet neighborhood view. Two beds are currently under maintenance.", photos: [IMG.bed4, IMG.study, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"available"},{id:"b3",label:"Bed 3",status:"maintenance"},{id:"b4",label:"Bed 4",status:"available"}] },
+      { id: "r1", name: "Room A", photo: IMG.bed1, cap: 6, occ: 6, description: "Ground floor room with 6 individual beds, excellent ventilation, and a large window overlooking the garden.", photos: [IMG.bed1, IMG.study, IMG.books], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.study},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.books},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"},{id:"b6",label:"Bed 6",status:"occupied"}] },
+      { id: "r2", name: "Room B", photo: IMG.bed2, cap: 6, occ: 3, description: "Spacious room on the second floor with a garden view. Comes with built-in cabinets and a shared study area.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"available",photo:IMG.desk},{id:"b5",label:"Bed 5",status:"reserved",photo:IMG.common},{id:"b6",label:"Bed 6",status:"available"}] },
+      { id: "r3", name: "Room C", photo: IMG.bed3, cap: 4, occ: 3, description: "Corner room with natural lighting and a quiet environment. Ideal for studious and focused students.", photos: [IMG.bed3, IMG.books], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.books},{id:"b4",label:"Bed 4",status:"available"}] },
+      { id: "r4", name: "Room D", photo: IMG.bed4, cap: 4, occ: 1, description: "Top-floor room with a great breeze. Quiet neighborhood view. Two beds are currently under maintenance.", photos: [IMG.bed4, IMG.study, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed4},{id:"b2",label:"Bed 2",status:"available",photo:IMG.study},{id:"b3",label:"Bed 3",status:"maintenance"},{id:"b4",label:"Bed 4",status:"available"}] },
     ],
   },
   {
@@ -166,10 +169,10 @@ export const BOARDING_HOUSES: BoardingHouse[] = [
     ],
     payment: { rent: 2000, electric: { type: "fixed", amount: 400 }, water: { type: "fixed", amount: 200 }, internet: { type: "separate", amount: 299 } },
     rooms: [
-      { id: "r1", name: "Room 101", photo: IMG.bed3, cap: 5, occ: 5, description: "First floor room with easy access to the common area. Fully air-conditioned with private bathroom.", photos: [IMG.bed3, IMG.common], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"}] },
-      { id: "r2", name: "Room 102", photo: IMG.bed4, cap: 5, occ: 2, description: "Bright and airy room with large windows and a shared bathroom. Great for students who enjoy natural light.", photos: [IMG.bed4, IMG.desk, IMG.books], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available"},{id:"b4",label:"Bed 4",status:"available"},{id:"b5",label:"Bed 5",status:"reserved"}] },
-      { id: "r3", name: "Room 201", photo: IMG.bed1, cap: 4, occ: 4, description: "Second floor room with scenic views. All beds currently occupied.", photos: [IMG.bed1, IMG.study], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
-      { id: "r4", name: "Room 202", photo: IMG.bed2, cap: 6, occ: 4, description: "Spacious 6-bed room on the second floor.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"available"},{id:"b6",label:"Bed 6",status:"available"}] },
+      { id: "r1", name: "Room 101", photo: IMG.bed3, cap: 5, occ: 5, description: "First floor room with easy access to the common area. Fully air-conditioned with private bathroom.", photos: [IMG.bed3, IMG.common], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.common},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"}] },
+      { id: "r2", name: "Room 102", photo: IMG.bed4, cap: 5, occ: 2, description: "Bright and airy room with large windows and a shared bathroom. Great for students who enjoy natural light.", photos: [IMG.bed4, IMG.desk, IMG.books], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed4},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available",photo:IMG.desk},{id:"b4",label:"Bed 4",status:"available"},{id:"b5",label:"Bed 5",status:"reserved",photo:IMG.books}] },
+      { id: "r3", name: "Room 201", photo: IMG.bed1, cap: 4, occ: 4, description: "Second floor room with scenic views. All beds currently occupied.", photos: [IMG.bed1, IMG.study], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.study},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
+      { id: "r4", name: "Room 202", photo: IMG.bed2, cap: 6, occ: 4, description: "Spacious 6-bed room on the second floor.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"available",photo:IMG.desk},{id:"b6",label:"Bed 6",status:"available"}] },
     ],
   },
   {
@@ -197,9 +200,9 @@ export const BOARDING_HOUSES: BoardingHouse[] = [
     ],
     payment: { rent: 3000, electric: { type: "metered" }, water: { type: "metered" }, internet: { type: "included" } },
     rooms: [
-      { id: "r1", name: "Unit 1", photo: IMG.bed2, cap: 4, occ: 2, description: "Premium semi-private unit with modern furniture.", photos: [IMG.bed2, IMG.desk], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available"},{id:"b4",label:"Bed 4",status:"available"}] },
-      { id: "r2", name: "Unit 2", photo: IMG.bed1, cap: 4, occ: 4, description: "Fully occupied cozy unit.", photos: [IMG.bed1, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
-      { id: "r3", name: "Unit 3", photo: IMG.bed3, cap: 6, occ: 1, description: "Large 6-bed unit on the top floor with panoramic views.", photos: [IMG.bed3, IMG.study, IMG.books, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied"},{id:"b2",label:"Bed 2",status:"available"},{id:"b3",label:"Bed 3",status:"available"},{id:"b4",label:"Bed 4",status:"reserved"},{id:"b5",label:"Bed 5",status:"available"},{id:"b6",label:"Bed 6",status:"available"}] },
+      { id: "r1", name: "Unit 1", photo: IMG.bed2, cap: 4, occ: 2, description: "Premium semi-private unit with modern furniture.", photos: [IMG.bed2, IMG.desk], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available",photo:IMG.desk},{id:"b4",label:"Bed 4",status:"available"}] },
+      { id: "r2", name: "Unit 2", photo: IMG.bed1, cap: 4, occ: 4, description: "Fully occupied cozy unit.", photos: [IMG.bed1, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.common},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
+      { id: "r3", name: "Unit 3", photo: IMG.bed3, cap: 6, occ: 1, description: "Large 6-bed unit on the top floor with panoramic views.", photos: [IMG.bed3, IMG.study, IMG.books, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"available",photo:IMG.study},{id:"b3",label:"Bed 3",status:"available",photo:IMG.books},{id:"b4",label:"Bed 4",status:"reserved",photo:IMG.desk},{id:"b5",label:"Bed 5",status:"available"},{id:"b6",label:"Bed 6",status:"available"}] },
     ],
   },
 ];

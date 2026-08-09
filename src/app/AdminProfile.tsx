@@ -243,7 +243,7 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
 
         {/* Back + title row */}
         <div style={{ display: "flex", alignItems: "center", marginBottom: 20 }}>
-          <div onClick={() => go("dashboard")} style={{ width: 36, height: 36, borderRadius: 12, background: "rgba(255,255,255,.2)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+          <div onClick={() => go("dashboard")} style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 4 }}>
             <ChevronLeft size={18} color="white" />
           </div>
           <h1 style={{ flex: 1, color: "white", fontSize: 20, fontWeight: 800, margin: 0, fontFamily: QS, textAlign: "center" as const }}>My Profile</h1>

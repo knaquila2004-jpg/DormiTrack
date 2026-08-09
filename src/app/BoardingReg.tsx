@@ -1,11 +1,11 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   ChevronLeft, ChevronRight, Check, CheckCircle, MapPin, Phone,
   Star, Search, Filter, Plus, X, Camera, Building2, User, Layers,
   Users, Minus, AlertCircle, Clock, Navigation, House,
 } from "lucide-react";
 import { ImageWithFallback } from "./components/figma/ImageWithFallback";
-import { GRAD, GRAD_H, Screen, BoardingHouse, RoomData, RegRequest, BOARDING_HOUSES, roomStatus, BedStatus } from "./shared";
+import { GRAD, GRAD_H, Screen, BoardingHouse, RoomData, RegRequest, BOARDING_HOUSES, roomStatus, BedStatus, DEFAULT_BED_PHOTO } from "./shared";
 import { FullScreenBHMap } from "./components/FullScreenBHMap";
 
 const TRAITS   = ["Friendly","Quiet","Respectful","Responsible","Organized","Independent","Studious","Outgoing","Calm","Clean","Helpful","Disciplined"];
@@ -55,6 +55,8 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     if (!el) return;
     el.scrollTo({ left: i * el.clientWidth, behavior: "smooth" });
   };
+  const availableRoomsRef = useRef<HTMLDivElement | null>(null);
+  const scrollToRoomsRef = useRef(false);
   const [selectedBed, setSelectedBed] = useState<string | null>(null);
   const [stayUnit, setStayUnit] = useState<"Weeks" | "Months">("Months");
   const [stayCount, setStayCount] = useState("1");
@@ -65,6 +67,17 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
   const [lifestyle, setLifestyle] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
+
+  // After confirming a room & bed, land back on the "Available Rooms" section
+  // instead of the top of the boarding house page.
+  useEffect(() => {
+    if (view === "details" && scrollToRoomsRef.current) {
+      scrollToRoomsRef.current = false;
+      requestAnimationFrame(() => {
+        availableRoomsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }, [view]);
 
   const toggle = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (v: string) =>
     setter(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]);
@@ -89,6 +102,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     setBedId(selectedBed);
     setPendingRoomId(null);
     setSelectedBed(null);
+    scrollToRoomsRef.current = true;
     setView("details");
   };
 
@@ -124,7 +138,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
           </div>
           <h1 style={{ color: "white", fontSize: 24, fontWeight: 800, margin: "0 0 12px", fontFamily: QS }}>Choose your Boarding House!</h1>
           <p style={{ color: "rgba(255,255,255,.82)", fontSize: 14, lineHeight: 1.6, margin: "0 0 8px", fontFamily: IN }}>
-            Welcome to DormiTrack, {studentName.split(" ")[0]}! 🎉
+            Welcome to DormiTrack, {studentName.split(" ")[0]}!
           </p>
           <p style={{ color: "rgba(255,255,255,.72)", fontSize: 13, lineHeight: 1.6, margin: "0 0 32px", fontFamily: IN }}>
             Before you can explore the app, you need to register to a boarding house. Choose where you'll be staying and send a request to the landlord.
@@ -151,9 +165,9 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     };
 
     return (
-      <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
+      <div style={{ height: "100%", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
         {/* Room photo carousel */}
-        <div style={{ flexShrink: 0, position: "relative", height: 240 }}>
+        <div style={{ position: "relative", height: 240 }}>
           <div ref={roomGalleryRef}
             onScroll={e => setRoomCarousel(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}
             style={{ display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", height: "100%", scrollbarWidth: "none" as const, WebkitOverflowScrolling: "touch", touchAction: "pan-x", overscrollBehaviorX: "contain" }}>
@@ -165,7 +179,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
             ))}
           </div>
           {/* Back button */}
-          <button onClick={() => setView(roomDetailsFrom)} style={{ position: "absolute", top: 50, left: 16, width: 38, height: 38, borderRadius: 13, background: "rgba(0,0,0,.42)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 5 }}>
+          <button onClick={() => setView(roomDetailsFrom)} style={{ position: "absolute", top: 50, left: 16, background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 5, padding: 4 }}>
             <ChevronLeft size={22} color="white" />
           </button>
           {/* Image counter */}
@@ -193,8 +207,8 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
           )}
         </div>
 
-        {/* Scrollable content */}
-        <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "16px 16px 24px" }}>
+        {/* Content */}
+        <div style={{ padding: "16px 16px 24px" }}>
           {/* Room info card */}
           <div style={{ background: "white", borderRadius: 22, padding: 16, marginBottom: 14, boxShadow: "0 2px 12px rgba(0,0,0,.05)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -266,8 +280,6 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
                 const c = bedColors[bed.status];
                 const isAvail = bed.status === "available";
                 const isSel = selectedBed === bed.id;
-                const blanketColor = isSel ? "#7C3AED" : bed.status === "reserved" ? "#D97706" : isAvail ? "#16A34A" : "#6B7280";
-                const blanketLight = isSel ? "#A78BFA" : bed.status === "reserved" ? "#FBBF24" : isAvail ? "#4ADE80" : "#9CA3AF";
                 return (
                   <button key={bed.id} disabled={!isAvail} onClick={() => setSelectedBed(isSel ? null : bed.id)}
                     style={{
@@ -282,34 +294,17 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
                     }}>
                     {/* Check badge */}
                     {isSel && (
-                      <div style={{ position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(151,114,246,.4)" }}>
+                      <div style={{ position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(151,114,246,.4)", zIndex: 2 }}>
                         <Check size={12} color="white" strokeWidth={3} />
                       </div>
                     )}
-                    {/* Single bed — top-down, DormiTrack palette */}
-                    <div style={{ marginBottom: 10 }}>
-                      <svg width="52" height="50" viewBox="0 0 52 50" fill="none">
-                        {/* Side rails */}
-                        <rect x="0" y="6" width="4" height="36" rx="1.5" fill={isSel ? "#7C3AED" : "#C4B5FD"} opacity=".7"/>
-                        <rect x="48" y="6" width="4" height="36" rx="1.5" fill={isSel ? "#7C3AED" : "#C4B5FD"} opacity=".7"/>
-                        {/* Headboard block */}
-                        <rect x="0" y="0" width="52" height="13" rx="3" fill={isSel ? "#7C3AED" : isAvail ? "#A78BFA" : "#9CA3AF"}/>
-                        <rect x="3" y="2" width="46" height="3" rx="1" fill="white" opacity=".25"/>
-                        <rect x="0" y="10" width="52" height="3" fill="rgba(0,0,0,.12)"/>
-                        {/* Mattress */}
-                        <rect x="4" y="13" width="44" height="24" fill={isSel ? "#EDE9FE" : isAvail ? "#F5F3FF" : "#F3F4F6"}/>
-                        {/* Pillow */}
-                        <rect x="8" y="15" width="36" height="10" rx="3" fill="white" opacity={isAvail ? 1 : 0.6}/>
-                        <rect x="8" y="23" width="36" height="2" fill="rgba(0,0,0,.06)"/>
-                        {/* Blanket */}
-                        <rect x="4" y="27" width="44" height="9" rx="1" fill={blanketColor} opacity={isAvail ? 1 : 0.55}/>
-                        <rect x="4" y="27" width="44" height="3" fill={blanketLight} opacity={isAvail ? 1 : 0.55}/>
-                        <rect x="4" y="33" width="44" height="3" fill="rgba(0,0,0,.08)"/>
-                        {/* Footboard block */}
-                        <rect x="0" y="37" width="52" height="13" rx="3" fill={isSel ? "#7C3AED" : isAvail ? "#A78BFA" : "#9CA3AF"}/>
-                        <rect x="0" y="37" width="52" height="3" fill="rgba(0,0,0,.12)"/>
-                        <rect x="3" y="44" width="46" height="3" rx="1" fill="white" opacity=".2"/>
-                      </svg>
+                    {/* Bed photo — landlord-uploaded when available, else a clean default */}
+                    <div style={{ width: "100%", aspectRatio: "4 / 3", borderRadius: 14, overflow: "hidden", marginBottom: 10, position: "relative", background: "#F3F4F6", border: isSel ? "1.5px solid #C4B5FD" : "1px solid rgba(0,0,0,.05)" }}>
+                      <ImageWithFallback
+                        src={bed.photo || pendingRoom.photo || DEFAULT_BED_PHOTO}
+                        alt={`${bed.label} photo`}
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", filter: isAvail ? "none" : "grayscale(55%)", opacity: isAvail ? 1 : 0.7, transition: "all .18s ease" }}
+                      />
                     </div>
                     <span style={{ fontSize: 13, fontWeight: 800, color: isSel ? "#7549F6" : "#1F2937", fontFamily: QS, marginBottom: 5 }}>{bed.label}</span>
                     <span style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#9772F6" : c.text, background: isSel ? "rgba(151,114,246,.1)" : c.bg, border: `1px solid ${isSel ? "rgba(151,114,246,.3)" : c.border + "55"}`, padding: "3px 10px", borderRadius: 99, fontFamily: QS }}>
@@ -410,7 +405,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
         <div style={{ flexShrink: 0, padding: "52px 20px 20px", backgroundImage: GRAD_H, position: "relative" }}>
-          <button onClick={() => setView("details")} style={{ position: "absolute", top: 50, left: 16, width: 38, height: 38, borderRadius: 13, background: "rgba(0,0,0,.35)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+          <button onClick={() => setView("details")} style={{ position: "absolute", top: 50, left: 16, background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 4 }}>
             <ChevronLeft size={20} color="white" />
           </button>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 4px", fontFamily: QS, paddingLeft: 36 }}>All Rooms</h1>
@@ -476,7 +471,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
         <div style={{ flexShrink: 0, padding: "52px 20px 20px", backgroundImage: GRAD_H, position: "relative" as const }}>
-          <button onClick={() => setView("details")} style={{ position: "absolute" as const, top: 50, left: 16, width: 38, height: 38, borderRadius: 13, background: "rgba(0,0,0,.35)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+          <button onClick={() => setView("details")} style={{ position: "absolute" as const, top: 50, left: 16, background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 4 }}>
             <ChevronLeft size={20} color="white" />
           </button>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 4px", fontFamily: QS, paddingLeft: 36 }}>Boarding House Rules</h1>
@@ -512,9 +507,9 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
   const card: React.CSSProperties = { background: "white", borderRadius: 22, padding: 16, marginBottom: 14, boxShadow: "0 2px 12px rgba(0,0,0,.05)" };
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
+    <div style={{ height: "100%", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
       {/* Image carousel */}
-      <div style={{ flexShrink: 0, position: "relative", height: 260 }}>
+      <div style={{ position: "relative", height: 260 }}>
         <div ref={galleryRef} onScroll={e => setCarousel(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}
           style={{ display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", height: "100%", scrollbarWidth: "none" as const, WebkitOverflowScrolling: "touch", touchAction: "pan-x", cursor: "grab", overscrollBehaviorX: "contain" }}>
           {house.gallery.map((g, i) => (
@@ -525,7 +520,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
             </div>
           ))}
         </div>
-        <button onClick={() => setView("list")} style={{ position: "absolute", top: 50, left: 16, width: 38, height: 38, borderRadius: 13, background: "rgba(0,0,0,.4)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 5 }}>
+        <button onClick={() => setView("list")} style={{ position: "absolute", top: 50, left: 16, background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 5, padding: 4 }}>
           <ChevronLeft size={22} color="white" />
         </button>
         <span style={{ position: "absolute", top: 50, right: 16, background: "rgba(0,0,0,.45)", color: "white", fontSize: 11, fontWeight: 700, fontFamily: QS, padding: "5px 11px", borderRadius: 99, zIndex: 5 }}>
@@ -548,7 +543,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "18px 16px 32px" }}>
+      <div style={{ padding: "18px 16px 32px" }}>
         {/* House info */}
         <div style={{ ...card }}>
           {/* Name + rating */}
@@ -731,7 +726,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
         })()}
 
         {/* Available rooms */}
-        <div style={card}>
+        <div ref={availableRoomsRef} style={card}>
           <p style={sec}>Available Rooms</p>
           {(() => {
             // ── If a room is confirmed → show ONLY that room ──────────────────

@@ -5,6 +5,7 @@ import {
   ArrowDown, Banknote, Droplet, Zap, Trash2, Eye,
 } from "lucide-react";
 import { BILLING_DATA, BH_DATA, ROOM_DATA, STAY_DATA } from "./StudentHome";
+import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -41,6 +42,7 @@ const BILL_ROWS = [
 ];
 
 export function ParentPaymentsScreen({ go }: { go:(s:string)=>void }) {
+  const notifCount = useUnreadCount("parent");
   const [payments, setPayments] = useState<Payment[]>(INIT_PAYMENTS);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showDetail, setShowDetail]   = useState<Payment|null>(null);
@@ -127,8 +129,9 @@ export function ParentPaymentsScreen({ go }: { go:(s:string)=>void }) {
               <h1 style={{ margin:"0 0 4px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Payments</h1>
               <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN }}>Monitor your student's payment status.</p>
             </div>
-            <button style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <Bell size={18} color="white"/>
+              {notifCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
             </button>
           </div>
           {/* Summary strip */}

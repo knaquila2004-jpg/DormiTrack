@@ -166,7 +166,7 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
           </div>
           <h2 style={{ color:"white", fontSize:20, fontWeight:800, margin:"14px 0 4px", fontFamily:QS }}>{name}</h2>
           <div style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
-            <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700 }}>👨‍👩‍👧 {PARENT_DATA.relationship}</span>
+            <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}><Heart size={11}/> {PARENT_DATA.relationship}</span>
             <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700 }}>Parent / Guardian</span>
           </div>
         </div>
@@ -238,7 +238,7 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
               <div style={{ flex:1 }}>
                 <p style={{ margin:"0 0 2px", fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{STUDENT_DATA.name}</p>
                 <p style={{ margin:"0 0 2px", fontSize:11, color:"#6B7280", fontFamily:IN }}>{STUDENT_DATA.id}</p>
-                <span style={{ fontSize:9, fontWeight:800, padding:"2px 9px", borderRadius:20, background:"#DCFCE7", color:"#16A34A", fontFamily:QS }}>✓ Successfully Linked</span>
+                <span style={{ fontSize:9, fontWeight:800, padding:"2px 9px", borderRadius:20, background:"#DCFCE7", color:"#16A34A", fontFamily:QS, display:"inline-flex", alignItems:"center", gap:3 }}><Check size={9}/> Successfully Linked</span>
               </div>
             </div>
             <InfoRow label="Program"    value={STUDENT_DATA.program} />

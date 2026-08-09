@@ -92,13 +92,26 @@ function GradBtn({ children, onClick, outline = false, danger = false, small = f
 
 export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
   // ── Personal Info ────────────────────────────────────────────────────────
+  // Every field here is student-editable — nothing is locked. Held in local
+  // state (seeded from STUDENT_DATA) so edits don't mutate the shared module
+  // data other screens also read from.
   const [editPersonal, setEditPersonal] = useState(false);
+  const [fullName, setFullName]   = useState(STUDENT_DATA.name);
+  const [studentId, setStudentId] = useState(STUDENT_DATA.id);
+  const [program, setProgram]     = useState(STUDENT_DATA.program);
+  const [yearLevel, setYearLevel] = useState(STUDENT_DATA.year);
+  const [block, setBlock]         = useState(STUDENT_DATA.block);
   const [contact, setContact] = useState(STUDENT_DATA.contact);
   const [address, setAddress] = useState(STUDENT_DATA.address);
-  const [personalDraft, setPersonalDraft] = useState({ contact, address });
+  const [personalDraft, setPersonalDraft] = useState({ fullName, studentId, program, yearLevel, block, contact, address });
 
-  const startEditPersonal = () => { setPersonalDraft({ contact, address }); setEditPersonal(true); };
-  const savePersonal = () => { setContact(personalDraft.contact); setAddress(personalDraft.address); setEditPersonal(false); showToast("Personal information updated."); };
+  const startEditPersonal = () => { setPersonalDraft({ fullName, studentId, program, yearLevel, block, contact, address }); setEditPersonal(true); };
+  const savePersonal = () => {
+    setFullName(personalDraft.fullName); setStudentId(personalDraft.studentId);
+    setProgram(personalDraft.program); setYearLevel(personalDraft.yearLevel); setBlock(personalDraft.block);
+    setContact(personalDraft.contact); setAddress(personalDraft.address);
+    setEditPersonal(false); showToast("Personal information updated.");
+  };
 
   // ── Account / Password ───────────────────────────────────────────────────
   const [showPwModal, setShowPwModal] = useState(false);
@@ -196,7 +209,7 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
           <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{STUDENT_DATA.name}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const, justifyContent: "center" }}>
             <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>{STUDENT_DATA.id}</span>
-            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>🎓 Student</span>
+            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}><GraduationCap size={11}/> Student</span>
           </div>
           <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: "8px 0 0", fontFamily: QS }}>{STUDENT_DATA.program} · {STUDENT_DATA.year}</p>
         </div>
@@ -224,28 +237,24 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
           <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6" />} defaultOpen>
             {!editPersonal ? (
               <>
-                <LockedRow label="Full Name"    value={STUDENT_DATA.name}    />
-                <LockedRow label="Student ID"   value={STUDENT_DATA.id}      />
-                <LockedRow label="Program"      value={STUDENT_DATA.program} />
-                <LockedRow label="Year Level"   value={STUDENT_DATA.year}    />
-                <LockedRow label="Block"        value={STUDENT_DATA.block}   />
-                <InfoRow   label="Contact Number" value={contact} />
-                <InfoRow   label="Home Address"  value={address} last />
+                <InfoRow label="Full Name"       value={fullName}   />
+                <InfoRow label="Student ID"      value={studentId}  />
+                <InfoRow label="Program"         value={program}    />
+                <InfoRow label="Year Level"      value={yearLevel}  />
+                <InfoRow label="Block"           value={block}      />
+                <InfoRow label="Contact Number"  value={contact}    />
+                <InfoRow label="Home Address"    value={address} last />
                 <div style={{ marginTop: 14 }}>
                   <GradBtn small outline onClick={startEditPersonal}><Edit3 size={13} />Edit Personal Info</GradBtn>
                 </div>
               </>
             ) : (
               <>
-                {/* Read-only locked fields shown greyed */}
-                <div style={{ background: "#F9FAFB", borderRadius: 14, padding: "12px 14px", marginBottom: 14, border: "1.5px dashed #E5E7EB" }}>
-                  <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 700, color: "#D97706", fontFamily: QS, display: "flex", alignItems: "center", gap: 6 }}>
-                    <AlertCircle size={12} color="#D97706" /> Read-only fields managed by your institution
-                  </p>
-                  {[["Full Name", STUDENT_DATA.name], ["Student ID", STUDENT_DATA.id], ["Program", STUDENT_DATA.program], ["Year / Block", `${STUDENT_DATA.year} · ${STUDENT_DATA.block}`]].map(([l, v]) => (
-                    <p key={l} style={{ margin: "4px 0 0", fontSize: 11, color: "#9CA3AF", fontFamily: IN }}><strong style={{ fontFamily: QS }}>{l}:</strong> {v}</p>
-                  ))}
-                </div>
+                <EditableField label="Full Name" value={personalDraft.fullName} onChange={v => setPersonalDraft(d => ({ ...d, fullName: v }))} placeholder="Full name" />
+                <EditableField label="Student ID" value={personalDraft.studentId} onChange={v => setPersonalDraft(d => ({ ...d, studentId: v }))} placeholder="Student ID" />
+                <EditableField label="Program" value={personalDraft.program} onChange={v => setPersonalDraft(d => ({ ...d, program: v }))} placeholder="Program" />
+                <EditableField label="Year Level" value={personalDraft.yearLevel} onChange={v => setPersonalDraft(d => ({ ...d, yearLevel: v }))} placeholder="Year Level" />
+                <EditableField label="Block" value={personalDraft.block} onChange={v => setPersonalDraft(d => ({ ...d, block: v }))} placeholder="Block" />
                 <EditableField label="Contact Number" value={personalDraft.contact} onChange={v => setPersonalDraft(d => ({ ...d, contact: v }))} placeholder="09XXXXXXXXX" />
                 <EditableField label="Home Address" value={personalDraft.address} onChange={v => setPersonalDraft(d => ({ ...d, address: v }))} placeholder="Purok, Barangay, Municipality, Province" multiline />
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>

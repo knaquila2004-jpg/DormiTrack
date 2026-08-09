@@ -1,19 +1,20 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
-  Bell, MessageCircle, Building2, MapPin, Phone, Mail,
-  Calendar, Clock, CreditCard, Users, Navigation, Megaphone,
-  ChevronRight, X, Check, CheckCircle, AlertCircle, Shield,
-  Wifi, Droplet, Zap, BookOpen, ArrowRight, Eye, Home, User,
-  Utensils, Car, Shirt, Star, LogIn, Bed, TrendingUp,
+  Bell, MessageCircle, Building2,
+  Calendar, CreditCard, Megaphone,
+  ChevronRight, X, Check, CheckCircle, AlertCircle,
+  BookOpen, Eye, Home,
+  LogIn, TrendingUp,
   Flag, Plus, Image as ImageIcon, ChevronLeft,
+  Wrench, Zap, ShowerHead, Wifi,
 } from "lucide-react";
 import {
   getReports, addReport, updateReport,
   CATEGORY_META, PRIORITY_META, STATUS_META,
-  StudentReport, ReportCategory, ReportPriority,
+  StudentReport, ReportCategory,
 } from "./reportStore";
-import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
-import { FullScreenBHMap } from "./components/FullScreenBHMap";
+import { useUnreadCount, addNotification, NotificationType, fmtBadgeCount } from "./notificationStore";
+import { useUnreadChatCount } from "./chatStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -124,181 +125,6 @@ const bhStatusMeta = (s: string) => ({
   "Moving Out":           { color:"#EF4444", bg:"#FEE2E2", dot:"#EF4444" },
 }[s] ?? { color:"#6B7280", bg:"#F3F4F6", dot:"#6B7280" });
 
-const amenityIcon = (a: string): React.ElementType => {
-  if (a.toLowerCase().includes("wifi"))     return Wifi;
-  if (a.toLowerCase().includes("water"))    return Droplet;
-  if (a.toLowerCase().includes("electric")) return Zap;
-  if (a.toLowerCase().includes("kitchen"))  return Utensils;
-  if (a.toLowerCase().includes("laundry"))  return Shirt;
-  if (a.toLowerCase().includes("parking"))  return Car;
-  return Star;
-};
-
-// ── Reusable: BH Details Modal ────────────────────────────────────────────────
-
-export function BHDetailsModal({ onClose }: { onClose:()=>void }) {
-  const [tab, setTab] = useState<"info"|"amenities"|"rules">("info");
-  const [showFullMap, setShowFullMap] = useState(false);
-  const tabBtn = (t: typeof tab, label:string) => (
-    <button onClick={()=>setTab(t)} style={{ flex:1, padding:"9px 0", border:"none", cursor:"pointer", fontFamily:QS, fontSize:11, fontWeight:800, borderRadius:10,
-      background:tab===t ? GRAD:"transparent", color:tab===t?"white":"#9CA3AF" }}>{label}</button>
-  );
-  return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
-      <div style={{ background:"#F3F4F8", borderRadius:"24px 24px 0 0", height:"93%", display:"flex", flexDirection:"column" as const }}>
-        <div style={{ padding:"16px 20px 12px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-            <div style={{ width:44, height:44, borderRadius:14, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Building2 size={20} color="white"/>
-            </div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:0, fontFamily:QS }}>{BH_DATA.name}</p>
-              <div style={{ display:"flex", gap:6, marginTop:3 }}>
-                <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:bhStatusMeta(BH_DATA.status).bg, color:bhStatusMeta(BH_DATA.status).color, fontFamily:QS }}>● {BH_DATA.status}</span>
-                <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:"#F5F0FF", color:"#9772F6", fontFamily:QS }}>{BH_DATA.regStatus}</span>
-              </div>
-            </div>
-            <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <X size={15} color="#6B7280"/>
-            </button>
-          </div>
-          <div style={{ display:"flex", background:"#F3F4F6", borderRadius:12, padding:4 }}>
-            {tabBtn("info","Info")} {tabBtn("amenities","Amenities")} {tabBtn("rules","Rules")}
-          </div>
-        </div>
-        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 16px 28px" }}>
-          {tab==="info" && (
-            <>
-              <div style={{ borderRadius:16, overflow:"hidden", height:130, position:"relative" as const, marginBottom:12 }}>
-                <GoogleMapCanvas
-                  center={{ lat: BH_DATA.lat, lng: BH_DATA.lng }}
-                  zoom={15}
-                  mapType="standard"
-                  markers={[{ id:"bh", variant:"bh", position:{ lat: BH_DATA.lat, lng: BH_DATA.lng }, title: BH_DATA.name }]}
-                />
-                <button onClick={()=>setShowFullMap(true)} style={{ position:"absolute" as const, bottom:8, right:8, zIndex:20, padding:"6px 12px", borderRadius:12, border:"none", backgroundImage:GRAD, color:"white", fontSize:10, fontWeight:800, fontFamily:QS, cursor:"pointer", boxShadow:"0 3px 10px rgba(0,0,0,.2)" }}>
-                  Show Full Map
-                </button>
-              </div>
-              {showFullMap && (
-                <FullScreenBHMap
-                  bh={{ name: BH_DATA.name, address: BH_DATA.address, landlord: BH_DATA.landlord, contact: BH_DATA.contact, lat: BH_DATA.lat, lng: BH_DATA.lng }}
-                  onClose={()=>setShowFullMap(false)}
-                />
-              )}
-              {[
-                { Icon:MapPin,        label:"Address",        val:BH_DATA.address    },
-                { Icon:User,          label:"Landlord",       val:BH_DATA.landlord   },
-                { Icon:Phone,         label:"Contact",        val:BH_DATA.contact    },
-                { Icon:Mail,          label:"Email",          val:BH_DATA.email      },
-                { Icon:Home,          label:"Room Assigned",  val:ROOM_DATA.name     },
-                { Icon:Bed,           label:"Bed Assigned",   val:ROOM_DATA.bed      },
-                { Icon:Calendar,      label:"Move-in Date",   val:STAY_DATA.moveIn   },
-                { Icon:Calendar,      label:"Move-out Date",  val:STAY_DATA.moveOut  },
-                { Icon:Clock,         label:"Stay Duration",  val:STAY_DATA.stayLength },
-                { Icon:Shield,        label:"Registration",   val:BH_DATA.regStatus  },
-              ].map(({ Icon, label, val }) => (
-                <div key={label} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 0", borderBottom:"1px solid #F3F4F6" }}>
-                  <div style={{ width:36, height:36, borderRadius:11, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <Icon size={15} color="#9772F6"/>
-                  </div>
-                  <div>
-                    <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{label}</p>
-                    <p style={{ margin:"2px 0 0", fontSize:13, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{val}</p>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-          {tab==="amenities" && (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-              {BH_DATA.amenities.map(a => {
-                const AIcon = amenityIcon(a);
-                return (
-                  <div key={a} style={{ background:"white", borderRadius:16, padding:"14px 12px", boxShadow:"0 2px 8px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:10 }}>
-                    <div style={{ width:36, height:36, borderRadius:11, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                      <AIcon size={15} color="#9772F6"/>
-                    </div>
-                    <p style={{ margin:0, fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{a}</p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {tab==="rules" && (
-            <div style={{ display:"flex", flexDirection:"column" as const, gap:8 }}>
-              {BH_DATA.rules.map((r,i) => (
-                <div key={i} style={{ background:"white", borderRadius:14, padding:"12px 14px", boxShadow:"0 1px 6px rgba(0,0,0,.04)", display:"flex", alignItems:"flex-start", gap:10 }}>
-                  <div style={{ width:24, height:24, borderRadius:8, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <span style={{ fontSize:10, fontWeight:800, color:"white", fontFamily:QS }}>{i+1}</span>
-                  </div>
-                  <p style={{ margin:0, fontSize:12, color:"#374151", fontFamily:IN, lineHeight:1.55, paddingTop:2 }}>{r}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Chat Modal ────────────────────────────────────────────────────────────────
-
-export function ChatModal({ onClose }: { onClose:()=>void }) {
-  const [msg, setMsg] = useState("");
-  const [thread, setThread] = useState([
-    { from:"landlord", text:"Hello Juan! Welcome to Naquila Boarding House.",                    time:"Aug 1 · 10:00 AM" },
-    { from:"student",  text:"Thank you po! I just moved in. Everything looks great!",             time:"Aug 1 · 10:10 AM" },
-    { from:"landlord", text:"Great to hear! Don't hesitate to reach out for any concerns.",       time:"Aug 1 · 10:12 AM" },
-  ]);
-  const send = () => {
-    if (!msg.trim()) return;
-    const t = new Date().toLocaleTimeString("en-PH",{hour:"2-digit",minute:"2-digit"});
-    setThread(p=>[...p,{ from:"student", text:msg.trim(), time:`Today · ${t}` }]);
-    setMsg("");
-  };
-  return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
-      <div style={{ background:"white", borderRadius:"24px 24px 0 0", height:"72%", display:"flex", flexDirection:"column" as const }}>
-        <div style={{ padding:"16px 20px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
-          <div style={{ width:42, height:42, borderRadius:14, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <User size={18} color="white"/>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{BH_DATA.landlord}</p>
-            <p style={{ margin:0, fontSize:11, color:"#16A34A", fontFamily:IN }}>● Online · Landlord</p>
-          </div>
-          <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <X size={15} color="#6B7280"/>
-          </button>
-        </div>
-        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 16px", display:"flex", flexDirection:"column" as const, gap:10 }}>
-          {thread.map((m,i)=>{
-            const isMe = m.from==="student";
-            return (
-              <div key={i} style={{ display:"flex", justifyContent:isMe?"flex-end":"flex-start" }}>
-                <div style={{ maxWidth:"76%", padding:"10px 13px", borderRadius:isMe?"16px 16px 4px 16px":"16px 16px 16px 4px", backgroundImage:isMe?GRAD:undefined, background:isMe?undefined:"#F3F4F6" }}>
-                  <p style={{ margin:"0 0 3px", fontSize:13, color:isMe?"white":"#1F2937", fontFamily:IN, lineHeight:1.4 }}>{m.text}</p>
-                  <p style={{ margin:0, fontSize:9, color:isMe?"rgba(255,255,255,.6)":"#9CA3AF", textAlign:"right", fontFamily:IN }}>{m.time}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ padding:"10px 16px 24px", borderTop:"1px solid #F3F4F6", display:"flex", gap:10, flexShrink:0 }}>
-          <input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()}
-            placeholder="Type a message…"
-            style={{ flex:1, padding:"11px 14px", borderRadius:14, border:"1.5px solid #E5E7EB", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937" }}/>
-          <button onClick={send} style={{ width:44, height:44, borderRadius:14, backgroundImage:GRAD, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 12px rgba(151,114,246,.3)" }}>
-            <ArrowRight size={18} color="white"/>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Announcement Detail Modal ─────────────────────────────────────────────────
 
 function AnnouncementModal({ ann, isRead, onMarkRead, onClose }: {
@@ -352,7 +178,6 @@ const CATEGORIES: ReportCategory[] = [
 
 function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmitted:()=>void }) {
   const [category, setCategory] = useState<ReportCategory|null>(null);
-  const [priority, setPriority] = useState<ReportPriority|null>(null);
   const [title,    setTitle]    = useState("");
   const [desc,     setDesc]     = useState("");
   const [imgColors,setImgColors]= useState<string[]>([]);
@@ -363,7 +188,6 @@ function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmi
 
   const handleSubmit = () => {
     if (!category) { setErr("Please select a concern category."); return; }
-    if (!priority) { setErr("Please select a priority level."); return; }
     if (!title.trim()) { setErr("Please enter a concern title."); return; }
     if (!desc.trim())  { setErr("Please describe your concern."); return; }
     const now = new Date();
@@ -371,7 +195,7 @@ function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmi
       id: `sr${Date.now()}`,
       studentName: STUDENT_DATA.name, studentId: STUDENT_DATA.id,
       boardingHouse: BH_DATA.name, roomNumber: ROOM_DATA.name, bedNumber: ROOM_DATA.bed,
-      category, priority, title: title.trim(), description: desc.trim(),
+      category, priority: "medium", title: title.trim(), description: desc.trim(),
       imageColors: imgColors.length > 0 ? imgColors : undefined,
       dateSubmitted: now.toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}),
       timeSubmitted: now.toLocaleTimeString("en-PH",{hour:"2-digit",minute:"2-digit"}),
@@ -379,6 +203,11 @@ function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmi
       statusHistory: [{ status: "pending", date: now.toLocaleString("en-PH",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) }],
     };
     addReport(report);
+    addNotification({
+      role: "landlord", type: "report", title: "New Student Concern",
+      description: `${report.studentName} submitted a concern: "${report.title}".`,
+      destination: "dashboard", relatedId: report.id,
+    });
     setSuccess(true);
   };
 
@@ -405,7 +234,7 @@ function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmi
         <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
         {/* Header */}
         <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12 }}>
-          <div onClick={onClose} style={{ width:34, height:34, borderRadius:11, background:"#F3F4F6", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><ChevronLeft size={17} color="#374151"/></div>
+          <div onClick={onClose} style={{ cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}><ChevronLeft size={17} color="#374151"/></div>
           <div style={{ flex:1 }}>
             <p style={{ margin:0, fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Submit a Concern</p>
             <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Your report will be sent to your landlord</p>
@@ -422,20 +251,6 @@ function SubmitReportModal({ onClose, onSubmitted }: { onClose:()=>void; onSubmi
               return (
                 <div key={c} onClick={()=>{ setCategory(c); setErr(""); }} style={{ padding:"6px 13px", borderRadius:20, cursor:"pointer", background:active?m.color:"#F3F4F6", color:active?"white":m.color, fontSize:11, fontWeight:800, fontFamily:QS, border:`1.5px solid ${active?m.color:m.bg}` }}>
                   {m.label}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Priority */}
-          <p style={{ margin:"0 0 8px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Priority Level <span style={{ color:"#EF4444" }}>*</span></p>
-          <div style={{ display:"flex", gap:10, marginBottom:18 }}>
-            {(["low","medium","high"] as ReportPriority[]).map(p=>{
-              const m = PRIORITY_META[p]; const active = priority===p;
-              return (
-                <div key={p} onClick={()=>{ setPriority(p); setErr(""); }} style={{ flex:1, height:48, borderRadius:16, cursor:"pointer", background:active?m.bg:"white", border:`2px solid ${active?m.color:"#E5E7EB"}`, display:"flex", flexDirection:"column" as const, alignItems:"center", justifyContent:"center", gap:3 }}>
-                  <span style={{ fontSize:16 }}>{m.emoji}</span>
-                  <span style={{ fontSize:10, fontWeight:800, color:active?m.color:"#9CA3AF", fontFamily:QS }}>{m.label}</span>
                 </div>
               );
             })}
@@ -508,13 +323,15 @@ function ReportDetailModal({ report, onClose }: { report: StudentReport; onClose
         <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
         {/* Header */}
         <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:10 }}>
-          <div onClick={onClose} style={{ width:34, height:34, borderRadius:11, background:"#F3F4F6", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><ChevronLeft size={17} color="#374151"/></div>
+          <div onClick={onClose} style={{ cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}><ChevronLeft size={17} color="#374151"/></div>
           <div style={{ flex:1 }}>
             <div style={{ display:"flex", gap:5, marginBottom:3, flexWrap:"wrap" as const }}>
               <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS, display:"flex", alignItems:"center", gap:3 }}>
                 <div style={{ width:5, height:5, borderRadius:"50%", background:sm.dot }}/>{sm.label}
               </span>
-              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS }}>{pm.emoji} {pm.label}</span>
+              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS, display:"flex", alignItems:"center", gap:3 }}>
+                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
+              </span>
               <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS }}>{cm.label}</span>
             </div>
             <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS, lineHeight:1.3 }}>{report.title}</p>
@@ -594,14 +411,27 @@ function ReportDetailModal({ report, onClose }: { report: StudentReport; onClose
 
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
-export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; notifCount?:number }) {
-  const [showBH, setShowBH]     = useState(false);
+export function StudentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
+  go:(s:string)=>void;
+  pendingDeepLink?: { type: NotificationType; relatedId?: string } | null;
+  onDeepLinkConsumed?: () => void;
+}) {
   const [selAnn, setSelAnn]     = useState<typeof ANNOUNCEMENTS[0]|null>(null);
-  const [showChat, setShowChat] = useState(false);
   const [readIds, setReadIds]   = useState<string[]>([]);
   const [showSubmitReport, setShowSubmitReport] = useState(false);
   const [selectedReport, setSelectedReport]     = useState<StudentReport|null>(null);
   const [reports, setReports]                   = useState<StudentReport[]>(()=>getReports());
+  const notifCount = useUnreadCount("student");
+  const chatCount = useUnreadChatCount("student");
+
+  // Opened from a "Report" notification — jump straight to that report.
+  useEffect(() => {
+    if (pendingDeepLink?.type === "report" && pendingDeepLink.relatedId) {
+      const match = reports.find(r => r.id === pendingDeepLink.relatedId);
+      if (match) setSelectedReport(match);
+      onDeepLinkConsumed?.();
+    }
+  }, [pendingDeepLink, reports, onDeepLinkConsumed]);
 
   const hour = new Date().getHours();
   const greeting = hour<12 ? "Good morning" : hour<18 ? "Good afternoon" : "Good evening";
@@ -611,15 +441,6 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
   const stayPct = Math.round((STAY_DATA.daysStayed/STAY_DATA.totalDays)*100);
   const unreadCount = ANNOUNCEMENTS.filter(a=>!readIds.includes(a.id)).length;
 
-  const quickActions = [
-    { label:"View BH",    Icon:Building2,    color:"#9772F6", bg:"#F5F0FF", action:()=>setShowBH(true)         },
-    { label:"Occupants",  Icon:Users,        color:"#3B82F6", bg:"#EFF6FF", action:()=>go("occupants")         },
-    { label:"Open Map",   Icon:Navigation,   color:"#16A34A", bg:"#DCFCE7", action:()=>go("map")               },
-    { label:"Payments",   Icon:CreditCard,   color:"#EC4899", bg:"#FCE7F3", action:()=>go("payments")          },
-    { label:"Contact",    Icon:MessageCircle,color:"#D97706", bg:"#FEF3C7", action:()=>setShowChat(true)        },
-    { label:"Announcements",Icon:Megaphone,  color:"#6366F1", bg:"#EEF2FF", action:()=>document.getElementById("ann-sec")?.scrollIntoView({behavior:"smooth"}) },
-  ];
-
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F7F8FC", position:"relative" as const, overflow:"hidden" }}>
 
@@ -628,12 +449,13 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
         <div style={{ position:"absolute" as const, top:-60, right:-60, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
         <div style={{ position:"absolute" as const, bottom:-40, left:-30, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.04)" }}/>
         <div style={{ display:"flex", justifyContent:"flex-end", gap:10, marginBottom:18, position:"relative" as const, zIndex:2 }}>
-          <button style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" as const }}>
+          <button onClick={()=>go("notifications")} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" as const }}>
             <Bell size={19} color="white"/>
-            {notifCount>0 && <span style={{ position:"absolute" as const, top:7, right:7, width:8, height:8, borderRadius:"50%", background:"#EF4444", border:"2px solid transparent" }}/>}
+            {notifCount>0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
           </button>
-          <button onClick={()=>setShowChat(true)} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <button onClick={()=>go("messages")} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" as const }}>
             <MessageCircle size={19} color="white"/>
+            {chatCount>0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(chatCount)}</span>}
           </button>
         </div>
         <div style={{ position:"relative" as const, zIndex:2 }}>
@@ -654,45 +476,8 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
       {/* ── Scrollable Content ───────────────────────────────────────────────── */}
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
 
-        {/* ── BH Summary Card ──────────────────────────────────────────────── */}
-        <div style={{ padding:"14px 16px 0" }}>
-          <div style={{ background:"white", borderRadius:22, overflow:"hidden", boxShadow:"0 4px 20px rgba(0,0,0,.09)", marginBottom:16 }}>
-            <div style={{ height:90, backgroundImage:GRAD, display:"flex", alignItems:"flex-end", padding:"0 16px 14px", position:"relative" as const, overflow:"hidden" }}>
-              <div style={{ position:"absolute" as const, top:-20, right:-20, width:110, height:110, borderRadius:"50%", background:"rgba(255,255,255,.08)" }}/>
-              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                <div style={{ width:46, height:46, borderRadius:15, background:"rgba(255,255,255,.2)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Building2 size={22} color="white"/>
-                </div>
-                <div>
-                  <p style={{ margin:0, fontSize:16, fontWeight:800, color:"white", fontFamily:QS }}>{BH_DATA.name}</p>
-                  <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:2 }}>
-                    <div style={{ width:6, height:6, borderRadius:"50%", background:"#86EFAC" }}/>
-                    <p style={{ margin:0, fontSize:10, color:"rgba(255,255,255,.8)", fontFamily:IN }}>{BH_DATA.status} · {BH_DATA.regStatus}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div style={{ padding:"14px 16px" }}>
-              {[
-                { Icon:MapPin,   val:BH_DATA.address },
-                { Icon:User,     val:BH_DATA.landlord },
-                { Icon:Phone,    val:BH_DATA.contact  },
-                { Icon:Home,     val:`${ROOM_DATA.name} · ${ROOM_DATA.bed}` },
-              ].map(({ Icon, val })=>(
-                <div key={val} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7 }}>
-                  <Icon size={12} color="#9CA3AF"/>
-                  <p style={{ margin:0, fontSize:12, color:"#374151", fontFamily:IN }}>{val}</p>
-                </div>
-              ))}
-              <button onClick={()=>setShowBH(true)} style={{ width:"100%", marginTop:10, padding:"11px 0", borderRadius:14, backgroundImage:GRAD, color:"white", fontSize:12, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:"0 4px 14px rgba(151,114,246,.3)" }}>
-                <Eye size={14} color="white"/> View Boarding House Details
-              </button>
-            </div>
-          </div>
-        </div>
-
         {/* ── Today's Overview ─────────────────────────────────────────────── */}
-        <div style={{ padding:"0 16px 0" }}>
+        <div style={{ padding:"16px 16px 0" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
             <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:0, fontFamily:QS }}>Today's Overview</p>
             <span style={{ fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Aug 3, 2026</span>
@@ -739,21 +524,6 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
           </div>
         </div>
 
-        {/* ── Quick Actions ──────────────────────────────────────────────────── */}
-        <div style={{ padding:"0 16px 0" }}>
-          <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:"0 0 12px", fontFamily:QS }}>Quick Actions</p>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:16 }}>
-            {quickActions.map(({ label, Icon, color, bg, action })=>(
-              <button key={label} onClick={action} style={{ background:"white", borderRadius:18, padding:"14px 8px 12px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", border:"none", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, transition:"transform .15s" }}>
-                <div style={{ width:42, height:42, borderRadius:14, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Icon size={19} color={color}/>
-                </div>
-                <p style={{ margin:0, fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS, textAlign:"center" as const, lineHeight:1.2 }}>{label}</p>
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* ── Report a Concern ─────────────────────────────────────────────── */}
         <div style={{ padding:"0 16px 0" }}>
           <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 18px rgba(151,114,246,.12)", marginBottom:16 }}>
@@ -768,13 +538,13 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
             </div>
             <div style={{ padding:"14px 16px 16px", display:"flex", gap:10 }}>
               {[
-                { emoji:"🔧", label:"Maintenance", cat:"maintenance" as ReportCategory },
-                { emoji:"💡", label:"Electrical", cat:"electrical" as ReportCategory },
-                { emoji:"🚿", label:"Bathroom", cat:"bathroom" as ReportCategory },
-                { emoji:"📶", label:"Internet", cat:"internet" as ReportCategory },
-              ].map(({ emoji, label })=>(
+                { Icon:Wrench,     label:"Maintenance", cat:"maintenance" as ReportCategory },
+                { Icon:Zap,        label:"Electrical", cat:"electrical" as ReportCategory },
+                { Icon:ShowerHead, label:"Bathroom", cat:"bathroom" as ReportCategory },
+                { Icon:Wifi,       label:"Internet", cat:"internet" as ReportCategory },
+              ].map(({ Icon, label })=>(
                 <button key={label} onClick={()=>setShowSubmitReport(true)} style={{ flex:1, background:"#F7F8FC", border:"1px solid #F3F4F6", borderRadius:14, padding:"10px 4px", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:4 }}>
-                  <span style={{ fontSize:18 }}>{emoji}</span>
+                  <Icon size={17} color="#9772F6"/>
                   <span style={{ fontSize:9, fontWeight:800, color:"#374151", fontFamily:QS }}>{label}</span>
                 </button>
               ))}
@@ -811,14 +581,17 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
                               <div style={{ width:4, height:4, borderRadius:"50%", background:sm.dot }}/>{sm.label}
                             </span>
                             <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS }}>{cm.label}</span>
-                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS }}>{pm.emoji} {pm.label}</span>
+                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS, display:"flex", alignItems:"center", gap:3 }}>
+                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
+              </span>
                           </div>
                           <p style={{ margin:"0 0 3px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS, lineHeight:1.3 }}>{r.title}</p>
                           <p style={{ margin:0, fontSize:11, color:"#6B7280", fontFamily:IN }}>{r.dateSubmitted} · {r.timeSubmitted}</p>
                           {r.landlordResponse && (
-                            <div style={{ marginTop:8, padding:"8px 10px", borderRadius:10, background:"#F0FDF4", border:"1px solid #BBF7D0" }}>
+                            <div style={{ marginTop:8, padding:"8px 10px", borderRadius:10, background:"#F0FDF4", border:"1px solid #BBF7D0", display:"flex", alignItems:"flex-start", gap:6 }}>
+                              <MessageCircle size={11} color="#16A34A" style={{ flexShrink:0, marginTop:2 }}/>
                               <p style={{ margin:0, fontSize:10, color:"#16A34A", fontFamily:IN, lineHeight:1.5, fontWeight:600 }}>
-                                💬 Landlord: {r.landlordResponse.length>80?r.landlordResponse.slice(0,80)+"...":r.landlordResponse}
+                                Landlord: {r.landlordResponse.length>80?r.landlordResponse.slice(0,80)+"...":r.landlordResponse}
                               </p>
                             </div>
                           )}
@@ -862,7 +635,7 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
                       <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                         <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS }}>{pm.label}</span>
                         <span style={{ fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{ann.date}</span>
-                        {isRead && <span style={{ fontSize:9, color:"#9CA3AF", fontFamily:IN }}>✓ Read</span>}
+                        {isRead && <span style={{ fontSize:9, color:"#9CA3AF", fontFamily:IN, display:"inline-flex", alignItems:"center", gap:3 }}><Check size={9}/> Read</span>}
                       </div>
                     </div>
                     <ChevronRight size={14} color="#D1D5DB" style={{ flexShrink:0, marginTop:2 }}/>
@@ -893,9 +666,7 @@ export function StudentHomeScreen({ go, notifCount=0 }: { go:(s:string)=>void; n
         </div>
       </div>
 
-      {showBH   && <BHDetailsModal onClose={()=>setShowBH(false)}/>}
       {selAnn   && <AnnouncementModal ann={selAnn} isRead={readIds.includes(selAnn.id)} onMarkRead={()=>setReadIds(p=>[...p,selAnn.id])} onClose={()=>setSelAnn(null)}/>}
-      {showChat && <ChatModal onClose={()=>setShowChat(false)}/>}
       {showSubmitReport && <SubmitReportModal onClose={()=>setShowSubmitReport(false)} onSubmitted={()=>setReports(getReports())}/>}
       {selectedReport   && <ReportDetailModal report={selectedReport} onClose={()=>setSelectedReport(null)}/>}
     </div>

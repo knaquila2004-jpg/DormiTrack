@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   ChevronLeft, Check, Eye, EyeOff, Mail, Lock, GraduationCap,
-  AlertCircle, CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen, StudentProfile } from "./shared";
 
@@ -354,12 +354,8 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
                   {showConfirm ? <Eye size={16} /> : <EyeOff size={16} />}
                 </button>
               </div>
-              {confirmPassword && password === confirmPassword && (
-                <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
-                  <CheckCircle size={13} color="#16A34A" />
-                  <span style={{ fontSize: 11, color: "#16A34A", fontFamily: IN }}>Passwords match</span>
-                </div>
-              )}
+              {confirmPassword && password !== confirmPassword && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#EF4444", fontFamily: IN }}>Passwords do not match.</p>}
+              {confirmPassword && password === confirmPassword && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#16A34A", fontFamily: IN, display: "flex", alignItems: "center", gap: 4 }}><Check size={11}/> Passwords match.</p>}
               {err("confirmPassword")}
             </div>
           </div>

@@ -42,10 +42,10 @@ export const CATEGORY_META: Record<ReportCategory, { label: string; color: strin
   "other":        { label: "Other",                color: "#6B7280", bg: "#F3F4F6" },
 };
 
-export const PRIORITY_META: Record<ReportPriority, { label: string; color: string; bg: string; emoji: string }> = {
-  low:    { label: "Low",    color: "#16A34A", bg: "#DCFCE7", emoji: "🟢" },
-  medium: { label: "Medium", color: "#D97706", bg: "#FEF3C7", emoji: "🟡" },
-  high:   { label: "High",   color: "#EF4444", bg: "#FEE2E2", emoji: "🔴" },
+export const PRIORITY_META: Record<ReportPriority, { label: string; color: string; bg: string; dot: string }> = {
+  low:    { label: "Low",    color: "#16A34A", bg: "#DCFCE7", dot: "#16A34A" },
+  medium: { label: "Medium", color: "#D97706", bg: "#FEF3C7", dot: "#D97706" },
+  high:   { label: "High",   color: "#EF4444", bg: "#FEE2E2", dot: "#EF4444" },
 };
 
 export const STATUS_META: Record<ReportStatus, { label: string; color: string; bg: string; dot: string }> = {
