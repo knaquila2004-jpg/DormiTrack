@@ -1,13 +1,21 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import {
-  MapPin, Navigation, Bell, Home, Building2, Clock, Layers,
+  MapPin, ExternalLink, Home, Building2, Clock, Layers,
   LocateFixed, ZoomIn, ZoomOut, Phone, MessageCircle,
   ChevronDown, ChevronUp, Compass, Map, User,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA } from "./StudentHome";
 import { MAP_CENTER } from "./shared";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
-import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
+import { computeWalkingRoute, RouteResult } from "./components/mapGeo";
+import { timeAgo } from "./notificationStore";
+import { getMyLinkedStudentData, MyAssignment } from "./studentAssignmentStore";
+import { getCheckInOutHistoryForStudent, CheckInOutRecord } from "./checkInOutStore";
+
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: MAP_CENTER.lat, lng: MAP_CENTER.lng, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -15,28 +23,53 @@ const QS   = "'Quicksand',sans-serif";
 const IN   = "'Inter',sans-serif";
 
 export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
-  const notifCount = useUnreadCount("parent");
   const [mapType,    setMapType]    = useState<"standard"|"satellite">("standard");
-  const [showMenu,   setShowMenu]   = useState(false);
   const [zoom,       setZoom]       = useState(17);
   const [sheetOpen,  setSheetOpen]  = useState(true);
-  const [navigating, setNavigating] = useState(false);
   const mapRef = useRef<GoogleMapHandle>(null);
 
-  // Simulated "last verified location" (no live GPS backend in this prototype) —
-  // offset a plausible walking distance from the boarding house.
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [checkins,   setCheckins]   = useState<CheckInOutRecord[]>([]);
+  useEffect(() => {
+    let active = true;
+    getMyLinkedStudentData().then(linked => {
+      if (!active) return;
+      if (linked.assignment) setAssignment(linked.assignment);
+      if (linked.studentId) getCheckInOutHistoryForStudent(linked.studentId).then(cs => { if (active) setCheckins(cs); });
+    });
+    return () => { active = false; };
+  }, []);
+  const BH_DATA = assignment.bh;
+  const ROOM_DATA = assignment.room;
   const bhPos = { lat: BH_DATA.lat, lng: BH_DATA.lng };
-  const lastVerifiedPos = { lat: BH_DATA.lat + 0.0035, lng: BH_DATA.lng + 0.0025 };
+
+  // Real distance/walk-time from BISU Calape to the boarding house — see
+  // ParentBoardingHouse.tsx's InfoTab for the same computation.
+  const [distRoute, setDistRoute] = useState<RouteResult | null>(null);
+  useEffect(() => {
+    let active = true;
+    computeWalkingRoute(MAP_CENTER, bhPos).then(r => { if (active) setDistRoute(r); });
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [BH_DATA.lat, BH_DATA.lng]);
+
+  // There is no live GPS backend in this app (see checkInOutStore.ts) — rather than fabricating
+  // a "current location" for the student, this shows only what's actually real and persisted:
+  // their most recent check-in/out record, at whatever position that record was actually logged
+  // at (if any was captured). No fake marker when nothing has ever been recorded.
+  const latest = checkins[0] ?? null;
+  const latestHasPos = latest && latest.lat != null && latest.lng != null;
 
   const markers: MapMarker[] = [
     {
       id: "bh", variant: "bh", position: bhPos, title: BH_DATA.name, zIndex: 10,
       infoContent: <MapInfoCard title={BH_DATA.name} subtitle={BH_DATA.address} rows={[["Landlord", BH_DATA.landlord], ["Contact", BH_DATA.contact]]} />,
     },
-    {
-      id: "student", variant: "student", position: lastVerifiedPos, title: "Last verified location", zIndex: 5,
-      infoContent: <MapInfoCard title="Last Verified Location" rows={[["Status", "Checked in"]]} />,
-    },
+    ...(latest && latestHasPos ? [{
+      id: "student", variant: "student" as const, position: { lat: latest.lat as number, lng: latest.lng as number },
+      title: latest.type === "checkin" ? "Last checked in" : "Last checked out", zIndex: 5,
+      infoContent: <MapInfoCard title={latest.type === "checkin" ? "Last Checked In" : "Last Checked Out"} rows={[["When", timeAgo(new Date(latest.occurredAt).getTime())]]} />,
+    }] : []),
   ];
 
   return (
@@ -45,17 +78,11 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 16px", position:"relative" as const, overflow:"hidden", zIndex:10 }}>
         <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
-        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
-          <div>
-            <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
-            <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN }}>
-              View your student's boarding house location.
-            </p>
-          </div>
-          <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Bell size={18} color="white"/>
-            {notifCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
-          </button>
+        <div>
+          <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
+          <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN }}>
+            View your student's boarding house location.
+          </p>
         </div>
       </div>
 
@@ -64,10 +91,9 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
         <GoogleMapCanvas
           ref={mapRef} center={bhPos} zoom={zoom} mapType={mapType} onZoomChange={setZoom}
           markers={markers}
-          polyline={navigating ? [lastVerifiedPos, bhPos] : undefined}
         />
 
-        {/* Distance / time badge */}
+        {/* Distance / time badge — real, computed from BISU Calape to the boarding house */}
         <div style={{ position:"absolute" as const, top:14, left:14, zIndex:20 }}>
           <div style={{ background:"white", borderRadius:14, padding:"9px 13px", boxShadow:"0 3px 14px rgba(0,0,0,.18)", display:"flex", alignItems:"center", gap:8 }}>
             <div style={{ width:28, height:28, borderRadius:9, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -75,7 +101,7 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
             </div>
             <div>
               <p style={{ margin:0, fontSize:8, color:"#9CA3AF", fontFamily:IN }}>Distance</p>
-              <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>~0.5 km</p>
+              <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{distRoute ? distRoute.distanceText : "…"}</p>
             </div>
             <div style={{ width:1, height:22, background:"#F3F4F6" }}/>
             <div style={{ width:28, height:28, borderRadius:9, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -83,25 +109,20 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
             </div>
             <div>
               <p style={{ margin:0, fontSize:8, color:"#9CA3AF", fontFamily:IN }}>Walk</p>
-              <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>~10 min</p>
+              <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{distRoute ? distRoute.durationText : "…"}</p>
             </div>
           </div>
         </div>
 
-        {/* Map type */}
+        {/* Map type — single click toggles standard/satellite directly */}
         <div style={{ position:"absolute" as const, top:14, right:14, zIndex:20 }}>
-          <button onClick={()=>setShowMenu(p=>!p)} style={{ width:40, height:40, borderRadius:13, background:"white", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 3px 12px rgba(0,0,0,.16)" }}>
-            <Layers size={16} color="#374151"/>
+          <button
+            onClick={()=>setMapType(t => t === "standard" ? "satellite" : "standard")}
+            title={mapType === "standard" ? "Switch to satellite view" : "Switch to standard view"}
+            style={{ width:40, height:40, borderRadius:13, background:"white", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 3px 12px rgba(0,0,0,.16)" }}
+          >
+            <Layers size={16} color={mapType === "satellite" ? "#9772F6" : "#374151"}/>
           </button>
-          {showMenu && (
-            <div style={{ position:"absolute" as const, top:48, right:0, background:"white", borderRadius:14, padding:6, boxShadow:"0 8px 24px rgba(0,0,0,.18)", zIndex:50, minWidth:110 }}>
-              {(["standard","satellite"] as const).map(t=>(
-                <button key={t} onClick={()=>{ setMapType(t); setShowMenu(false); }} style={{ width:"100%", padding:"8px 10px", borderRadius:9, border:"none", cursor:"pointer", background:mapType===t?"#F5F0FF":"white", color:mapType===t?"#9772F6":"#374151", fontSize:11, fontWeight:700, fontFamily:QS, textAlign:"left" as const }}>
-                  {t==="standard"?"Standard":"Satellite"}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Right controls */}
@@ -118,12 +139,14 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
           ))}
         </div>
 
-        {/* Get Directions button */}
+        {/* Get Directions — opens real Google Maps directions using the viewer's own device
+            location, instead of the app fabricating a "current position" it doesn't have. */}
         <div style={{ position:"absolute" as const, bottom:sheetOpen?276:120, left:"50%", transform:"translateX(-50%)", zIndex:20 }}>
-          <button onClick={()=>setNavigating(p=>!p)} style={{ padding:"11px 22px", borderRadius:22, backgroundImage:navigating?"linear-gradient(135deg,#16A34A,#15803D)":GRAD, border:"none", cursor:"pointer", color:"white", fontSize:13, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", gap:7, boxShadow:"0 6px 20px rgba(0,0,0,.25)" }}>
-            <Navigation size={15} color="white"/>
-            {navigating?"Stop Directions":"Get Directions"}
-          </button>
+          <a href={`https://www.google.com/maps/dir/?api=1&destination=${bhPos.lat},${bhPos.lng}`} target="_blank" rel="noopener noreferrer"
+            style={{ padding:"11px 22px", borderRadius:22, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:13, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", gap:7, boxShadow:"0 6px 20px rgba(0,0,0,.25)", textDecoration:"none" }}>
+            <ExternalLink size={15} color="white"/>
+            Get Directions
+          </a>
         </div>
       </div>
 
@@ -148,7 +171,7 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
                 { Icon:User,      label:"Landlord",    val:BH_DATA.landlord    },
                 { Icon:Phone,     label:"Contact",     val:BH_DATA.contact     },
                 { Icon:Home,      label:"Room",        val:ROOM_DATA.name      },
-                { Icon:MapPin,    label:"Distance",    val:"~0.5 km from BISU" },
+                { Icon:MapPin,    label:"Distance",    val:distRoute ? `${distRoute.distanceText} from BISU` : "…" },
               ].map(({ Icon, label, val })=>(
                 <div key={label} style={{ background:"#F9FAFB", borderRadius:13, padding:"10px 12px" }}>
                   <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:3 }}>

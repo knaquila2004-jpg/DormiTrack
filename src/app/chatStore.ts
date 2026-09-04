@@ -1,24 +1,28 @@
-// ── Chat / Messaging System — module-level store ───────────────────────────────
-// Same architecture as reportStore.ts / notificationStore.ts: one in-memory
-// store (no backend in this prototype), a tiny pub/sub layer, and
-// useSyncExternalStore-backed hooks so the inbox, unread badges, and open
-// conversation all re-render instantly and automatically — no manual refresh.
+// ── Chat / Messaging System — live Supabase-backed store ──────────────────────
+// Same external shape as the old mock (module-level cache + pub/sub +
+// useSyncExternalStore, so the inbox/badges/open thread all re-render
+// automatically), but every function/hook now reads/writes real
+// conversations/conversation_members/messages rows instead of static arrays.
 //
-// Contact model: this app only ever lets you "be" one persona per role
-// (the same singleton STUDENT_DATA/PARENT_DATA/BH_DATA pattern used
-// throughout the rest of the app). Conversations are therefore keyed by a
-// stable, order-independent pair of contact ids, so the same thread reads
-// correctly regardless of which role is currently viewing it.
+// Every function keeps its original `role: Role` parameter for call-site
+// compatibility with Chat.tsx (same strategy as notificationStore.ts) even
+// though identity is now resolved for real via auth.uid() — a session is
+// always exactly one real, specific user already, so `role` is mostly
+// vestigial here (kept only where Chat.tsx already passes it).
+//
+// Real-time note: like notifications, this polls (every 4s while a chat
+// screen is mounted, plus an immediate refresh after every local send/
+// mutation) rather than using Supabase Realtime — consistent with every
+// other "live-feeling" screen in this app (PendingVerificationScreen,
+// ParentLinkingScreen), not a full push-based chat.
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { Role } from "./shared";
-import { STUDENT_DATA, BH_DATA } from "./StudentHome";
-import { PARENT_DATA } from "./ParentHome";
-import { INITIAL_PAYMENTS } from "./LandlordPayments";
-import { addNotification } from "./notificationStore";
+import { supabase } from "../lib/supabase";
+import { getMyLinkedStudentId } from "./studentAssignmentStore";
+import { getRoommates } from "./registrationStore";
 
 export type MessageStatus = "sent" | "delivered" | "read";
-
 export type AttachmentKind = "photo" | "document";
 
 export interface ChatMessage {
@@ -40,6 +44,7 @@ export interface ChatContact {
   online: boolean;
   initials: string;
   color: string;
+  photoUrl: string | null;
   context?: { boardingHouse?: string; room?: string; bed?: string; studentName?: string };
 }
 
@@ -48,15 +53,15 @@ export interface GroupChat {
   name: string;
   photoInitials: string;
   photoColor: string;
-  hasCustomPhoto: boolean;  // false → render the default group icon instead of initials
-  createdBy: string;        // contact id of the creator / group admin
+  hasCustomPhoto: boolean;
+  createdBy: string;
   createdAt: number;
-  memberIds: string[];      // includes the creator
+  memberIds: string[];
 }
 
 export interface ConversationSummary {
   kind: "direct" | "group";
-  key: string;                 // conversationId for direct, group id for group — used to open the thread
+  key: string;
   title: string;
   subtitle: string;
   avatarInitials: string;
@@ -77,137 +82,202 @@ const initials = (name: string) => name.split(" ").map(w => w[0]).filter(Boolean
 const AVATAR_COLORS = ["#9772F6", "#3B82F6", "#16A34A", "#EC4899", "#D97706", "#0891B2", "#6366F1"];
 const colorFor = (seed: string) => AVATAR_COLORS[[...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_COLORS.length];
 
-// ── Contacts / personas ─────────────────────────────────────────────────────
-// Every registered student (from the landlord's own payment roster, so room/
-// bed context lines up with what's shown elsewhere) plus one synthetic
-// linked parent per student.
-const STUDENT_ROSTER: ChatContact[] = INITIAL_PAYMENTS.map((p, i) => ({
-  id: `student-${p.id}`, name: p.name, role: "student", roleLabel: ROLE_LABEL.student,
-  subtitle: p.id, online: i % 2 === 0,
-  initials: initials(p.name), color: colorFor(p.name),
-  context: { boardingHouse: BH_DATA.name, room: p.room, bed: p.bed },
-}));
-
-const SELF_INDEX = INITIAL_PAYMENTS.findIndex(p => p.id === STUDENT_DATA.id);
-
-const PARENT_FIRST_NAMES = ["Elena", "Rosario", "Ana", "Carlos", "Teresa", "Ramon", "Lourdes"];
-const PARENT_ROSTER: ChatContact[] = INITIAL_PAYMENTS.map((p, i) => {
-  const surname = p.name.split(" ").slice(-1)[0];
-  const isSelf = i === SELF_INDEX;
-  const name = isSelf ? PARENT_DATA.name : `${PARENT_FIRST_NAMES[i % PARENT_FIRST_NAMES.length]} ${surname}`;
-  return {
-    id: `parent-${p.id}`, name, role: "parent" as const, roleLabel: ROLE_LABEL.parent,
-    subtitle: isSelf ? PARENT_DATA.relationship : "Guardian",
-    online: isSelf ? true : i % 3 === 0,
-    initials: initials(name), color: colorFor(name),
-    context: { boardingHouse: BH_DATA.name, room: p.room, bed: p.bed, studentName: p.name },
-  };
-});
-
-export const LANDLORD_CONTACT: ChatContact = {
-  id: "landlord-1", name: BH_DATA.landlord, role: "landlord", roleLabel: ROLE_LABEL.landlord,
-  subtitle: BH_DATA.name, online: true, initials: initials(BH_DATA.landlord), color: "#9772F6",
-};
-export const ADMIN_CONTACT: ChatContact = {
-  id: "admin-1", name: "Housing Director", role: "admin", roleLabel: ROLE_LABEL.admin,
-  subtitle: "DormiTrack Housing Office", online: true, initials: "HD", color: "#3B82F6",
-};
-
-const STUDENT_SELF = STUDENT_ROSTER[SELF_INDEX];
-const PARENT_SELF = PARENT_ROSTER[SELF_INDEX];
-
-/** The one persona each role actually "is" in this single-account-per-role prototype. */
-const SELF_CONTACT: Record<Role, ChatContact> = {
-  student: STUDENT_SELF, parent: PARENT_SELF, landlord: LANDLORD_CONTACT, admin: ADMIN_CONTACT,
-};
-
-const ALL_CONTACTS: ChatContact[] = [...STUDENT_ROSTER, ...PARENT_ROSTER, LANDLORD_CONTACT, ADMIN_CONTACT];
-export function getContactById(id: string): ChatContact | undefined { return ALL_CONTACTS.find(c => c.id === id); }
-export function getSelfContact(role: Role): ChatContact { return SELF_CONTACT[role]; }
-
-/** Best-effort bridge for other screens (e.g. the Occupants roster) that key
- *  a student by name rather than this store's contact id. */
-export function findStudentContactByName(name: string): ChatContact | undefined {
-  return STUDENT_ROSTER.find(c => c.name === name);
-}
-
-/** Who each role is authorized to message — the actual permission model. */
-export function getAuthorizedContacts(role: Role): ChatContact[] {
-  switch (role) {
-    case "student":  return [LANDLORD_CONTACT, PARENT_SELF, ADMIN_CONTACT];
-    case "parent":   return [STUDENT_SELF, LANDLORD_CONTACT, ADMIN_CONTACT];
-    case "landlord": return [...STUDENT_ROSTER, ...PARENT_ROSTER, ADMIN_CONTACT];
-    case "admin":    return [...STUDENT_ROSTER, ...PARENT_ROSTER, LANDLORD_CONTACT];
-  }
-}
-
-export function isAuthorized(role: Role, contactId: string): boolean {
-  return getAuthorizedContacts(role).some(c => c.id === contactId);
-}
-
-/** Who each role may add to a group. Same relationship model as 1:1 chat,
- *  except a student may also loop in other students registered at the same
- *  boarding house (e.g. roommates) — a group-only allowance, since 1:1
- *  student-to-student messaging isn't part of the base chat feature. */
-export function getGroupEligibleContacts(role: Role): ChatContact[] {
-  if (role === "student") {
-    const roommates = STUDENT_ROSTER.filter(c => c.id !== STUDENT_SELF.id);
-    return [...roommates, LANDLORD_CONTACT, PARENT_SELF, ADMIN_CONTACT];
-  }
-  return getAuthorizedContacts(role);
-}
-
 export function conversationId(a: string, b: string): string { return [a, b].sort().join("__"); }
 
-// ── Seed data ────────────────────────────────────────────────────────────────
-let _seq = 0;
-function seedThread(idA: string, idB: string, msgs: { from: string; text: string; minutesAgo: number; unread?: boolean }[]): ChatMessage[] {
-  const cid = conversationId(idA, idB);
-  return msgs.map(m => ({
-    id: `msg_seed_${_seq++}`, conversationId: cid, senderId: m.from, text: m.text,
-    timestamp: Date.now() - m.minutesAgo * 60000,
-    status: m.unread ? "delivered" : "read",
-  }));
+function toContact(id: string, name: string, role: Role, subtitle?: string, context?: ChatContact["context"], photoUrl: string | null = null): ChatContact {
+  const n = name || "—";
+  return { id, name: n, role, roleLabel: ROLE_LABEL[role], subtitle, online: false, initials: initials(n) || "?", color: colorFor(n || id), photoUrl, context };
 }
-
-const SEED: ChatMessage[] = [
-  // Student ↔ Landlord
-  ...seedThread(STUDENT_SELF.id, LANDLORD_CONTACT.id, [
-    { from: LANDLORD_CONTACT.id, text: "Hi Juan! Just a reminder that August rent is due on the 10th.", minutesAgo: 200 },
-    { from: STUDENT_SELF.id,     text: "Good day po! I already submitted my payment for verification.", minutesAgo: 190 },
-    { from: LANDLORD_CONTACT.id, text: "Noted, I'll check it shortly. Please also send the receipt for electricity.", minutesAgo: 170 },
-    { from: STUDENT_SELF.id,     text: "Thank you, sir. I'll submit it today.", minutesAgo: 165, unread: false },
-  ]),
-  // Student ↔ Parent
-  ...seedThread(STUDENT_SELF.id, PARENT_SELF.id, [
-    { from: PARENT_SELF.id,  text: "Kumusta ka na diyan sa dorm? Ok ka lang ba?", minutesAgo: 480 },
-    { from: STUDENT_SELF.id, text: "Ok naman po ako Ma. Nag-check in na ako kanina.", minutesAgo: 470 },
-    { from: PARENT_SELF.id,  text: "Salamat sa update. Ingat lagi ha.", minutesAgo: 460, unread: true },
-  ]),
-  // Landlord ↔ other students
-  ...seedThread(LANDLORD_CONTACT.id, STUDENT_ROSTER[0].id, [
-    { from: STUDENT_ROSTER[0].id, text: "Sir, may problema po sa faucet namin sa Room A.", minutesAgo: 60, unread: true },
-  ]),
-  ...seedThread(LANDLORD_CONTACT.id, STUDENT_ROSTER[5].id, [
-    { from: LANDLORD_CONTACT.id,  text: "Hi Sofia, welcome to Naquila Boarding House! Let me know if you need anything.", minutesAgo: 1440 },
-    { from: STUDENT_ROSTER[5].id, text: "Thank you po, sir!", minutesAgo: 1430 },
-  ]),
-  // Landlord ↔ Admin
-  ...seedThread(LANDLORD_CONTACT.id, ADMIN_CONTACT.id, [
-    { from: ADMIN_CONTACT.id,    text: "Please update your boarding house's fire safety compliance documents this month.", minutesAgo: 2880 },
-    { from: LANDLORD_CONTACT.id, text: "Noted, I'll upload them by this week.", minutesAgo: 2850 },
-  ]),
-];
+const EMPTY_SELF: ChatContact = toContact("", "You", "student");
 
 // ── Store internals ─────────────────────────────────────────────────────────
-let _messages: ChatMessage[] = [...SEED];
+let _selfId: string | null = null;
+let _loadedForRole: Role | null = null;
+let _self: ChatContact = EMPTY_SELF;
+let _roster: ChatContact[] = [];          // real 1:1-authorized contacts
+let _groupEligible: ChatContact[] = [];   // roster ∪ roommates (students only)
+let _contactCache = new Map<string, ChatContact>();
+let _messages: ChatMessage[] = [];
 let _groups: GroupChat[] = [];
+let _directKeyToConvId = new Map<string, string>();
+
 const _listeners = new Set<() => void>();
 function _emit() { _listeners.forEach(l => l()); }
 function subscribe(listener: () => void): () => void { _listeners.add(listener); return () => { _listeners.delete(listener); }; }
 function getMessagesSnapshot(): ChatMessage[] { return _messages; }
 function getGroupsSnapshot(): GroupChat[] { return _groups; }
 
+async function fetchUserBasics(ids: string[]): Promise<Map<string, { name: string; role: Role; photoUrl: string | null }>> {
+  const map = new Map<string, { name: string; role: Role; photoUrl: string | null }>();
+  if (!ids.length) return map;
+  const { data } = await supabase.from("users").select("id, first_name, last_name, role, photo_url").in("id", ids);
+  for (const u of data ?? []) map.set(u.id, { name: [u.first_name, u.last_name].filter(Boolean).join(" "), role: u.role as Role, photoUrl: u.photo_url ?? null });
+  return map;
+}
+
+// ── Roster resolution (real permission model per role) ──────────────────────
+async function loadSelfAndRoster(uid: string, role: Role): Promise<{ self: ChatContact; roster: ChatContact[]; groupEligible: ChatContact[] }> {
+  const { data: selfUser } = await supabase.from("users").select("first_name, last_name, photo_url").eq("id", uid).single();
+  const self = toContact(uid, selfUser ? [selfUser.first_name, selfUser.last_name].filter(Boolean).join(" ") : "You", role, undefined, undefined, selfUser?.photo_url ?? null);
+
+  const roster: ChatContact[] = [];
+
+  if (role === "student") {
+    const { data: sa } = await supabase.from("student_assignments").select("boarding_house_id").eq("student_id", uid).eq("is_current", true).maybeSingle();
+    if (sa) {
+      const { data: bh } = await supabase.from("boarding_houses").select("landlord_id, name, landlords(display_name, users(photo_url))").eq("id", sa.boarding_house_id).maybeSingle();
+      if (bh?.landlord_id) roster.push(toContact(bh.landlord_id, (bh as any).landlords?.display_name ?? "Landlord", "landlord", bh.name, undefined, (bh as any).landlords?.users?.photo_url ?? null));
+    }
+    const { data: links } = await supabase.from("parent_student_links").select("parent_id, parents(relation, relation_other, users(first_name,last_name,photo_url))").eq("student_id", uid).eq("status", "linked");
+    for (const l of links ?? []) {
+      const u = (l as any).parents?.users;
+      const relation = (l as any).parents?.relation === "Other" ? (l as any).parents?.relation_other : (l as any).parents?.relation;
+      roster.push(toContact(l.parent_id, u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : "Parent", "parent", relation ?? undefined, undefined, u?.photo_url ?? null));
+    }
+    const { data: admins } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "admin").limit(10);
+    for (const a of admins ?? []) roster.push(toContact(a.id, [a.first_name, a.last_name].filter(Boolean).join(" ") || "Housing Director", "admin", "DormiTrack Housing Office", undefined, a.photo_url ?? null));
+
+    const groupEligible = [...roster];
+    const roommates = await getRoommates(uid);
+    for (const r of roommates) groupEligible.push(toContact(r.studentId, r.studentName, "student", r.studentIdNo, undefined, r.photo));
+    return { self, roster, groupEligible };
+  }
+
+  if (role === "parent") {
+    const studentId = await getMyLinkedStudentId();
+    if (studentId) {
+      const { data: su } = await supabase.from("users").select("first_name,last_name,photo_url").eq("id", studentId).maybeSingle();
+      roster.push(toContact(studentId, su ? [su.first_name, su.last_name].filter(Boolean).join(" ") : "Student", "student", undefined, undefined, su?.photo_url ?? null));
+      const { data: sa } = await supabase.from("student_assignments").select("boarding_house_id").eq("student_id", studentId).eq("is_current", true).maybeSingle();
+      if (sa) {
+        const { data: bh } = await supabase.from("boarding_houses").select("landlord_id, name, landlords(display_name, users(photo_url))").eq("id", sa.boarding_house_id).maybeSingle();
+        if (bh?.landlord_id) roster.push(toContact(bh.landlord_id, (bh as any).landlords?.display_name ?? "Landlord", "landlord", bh.name, undefined, (bh as any).landlords?.users?.photo_url ?? null));
+      }
+    }
+    const { data: admins } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "admin").limit(10);
+    for (const a of admins ?? []) roster.push(toContact(a.id, [a.first_name, a.last_name].filter(Boolean).join(" ") || "Housing Director", "admin", "DormiTrack Housing Office", undefined, a.photo_url ?? null));
+    return { self, roster, groupEligible: [...roster] };
+  }
+
+  if (role === "landlord") {
+    const { data: bhs } = await supabase.from("boarding_houses").select("id, name").eq("landlord_id", uid);
+    const bhIds = (bhs ?? []).map(b => b.id);
+    const bhNameById = new Map((bhs ?? []).map(b => [b.id, b.name]));
+    if (bhIds.length) {
+      const { data: sas } = await supabase.from("student_assignments").select("student_id, boarding_house_id, rooms(name), beds(label)").in("boarding_house_id", bhIds).eq("is_current", true);
+      const studentIds = (sas ?? []).map(s => s.student_id);
+      const basics = await fetchUserBasics(studentIds);
+      const nameByStudentId = new Map<string, string>();
+      for (const sa of sas ?? []) {
+        const b = basics.get(sa.student_id);
+        if (!b) continue;
+        nameByStudentId.set(sa.student_id, b.name);
+        roster.push(toContact(sa.student_id, b.name, "student", bhNameById.get(sa.boarding_house_id), {
+          boardingHouse: bhNameById.get(sa.boarding_house_id), room: (sa as any).rooms?.name, bed: (sa as any).beds?.label,
+        }, b.photoUrl));
+      }
+      const { data: links } = await supabase.from("parent_student_links").select("parent_id, student_id").in("student_id", studentIds).eq("status", "linked");
+      const parentIds = [...new Set((links ?? []).map(l => l.parent_id))];
+      const parentBasics = await fetchUserBasics(parentIds);
+      for (const l of links ?? []) {
+        if (roster.some(c => c.id === l.parent_id)) continue;
+        const b = parentBasics.get(l.parent_id);
+        if (!b) continue;
+        roster.push(toContact(l.parent_id, b.name, "parent", "Guardian", { studentName: nameByStudentId.get(l.student_id) }, b.photoUrl));
+      }
+    }
+    const { data: admins } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "admin").limit(10);
+    for (const a of admins ?? []) roster.push(toContact(a.id, [a.first_name, a.last_name].filter(Boolean).join(" ") || "Housing Director", "admin", "DormiTrack Housing Office", undefined, a.photo_url ?? null));
+    return { self, roster, groupEligible: [...roster] };
+  }
+
+  // admin: everyone
+  const { data: students } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "student").limit(500);
+  for (const s of students ?? []) roster.push(toContact(s.id, [s.first_name, s.last_name].filter(Boolean).join(" "), "student", undefined, undefined, s.photo_url ?? null));
+  const { data: parents } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "parent").limit(500);
+  for (const p of parents ?? []) roster.push(toContact(p.id, [p.first_name, p.last_name].filter(Boolean).join(" "), "parent", undefined, undefined, p.photo_url ?? null));
+  const { data: landlords } = await supabase.from("users").select("id, first_name, last_name, photo_url").eq("role", "landlord").limit(500);
+  for (const l of landlords ?? []) roster.push(toContact(l.id, [l.first_name, l.last_name].filter(Boolean).join(" "), "landlord", undefined, undefined, l.photo_url ?? null));
+  return { self, roster, groupEligible: [...roster] };
+}
+
+async function ensureRoster(role: Role): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  _selfId = uid;
+  if (_loadedForRole === role && _self.id === uid) return;
+  const { self, roster, groupEligible } = await loadSelfAndRoster(uid, role);
+  _self = self; _roster = roster; _groupEligible = groupEligible; _loadedForRole = role;
+  for (const c of roster) _contactCache.set(c.id, c);
+  for (const c of groupEligible) _contactCache.set(c.id, c);
+  _contactCache.set(uid, self);
+  _emit();
+}
+
+// ── Conversations + messages ─────────────────────────────────────────────────
+async function loadConversationsAndMessages(uid: string) {
+  const { data: myMemberships } = await supabase.from("conversation_members").select("conversation_id").eq("user_id", uid);
+  const convIds = (myMemberships ?? []).map(m => m.conversation_id);
+  if (!convIds.length) return { groups: [] as GroupChat[], messages: [] as ChatMessage[], directKeyToConvId: new Map<string, string>(), extraContacts: new Map<string, ChatContact>() };
+
+  const [{ data: convs }, { data: allMembers }, { data: msgs }] = await Promise.all([
+    supabase.from("conversations").select("id, kind, direct_key, group_name, group_photo_url, created_by, created_at").in("id", convIds),
+    supabase.from("conversation_members").select("conversation_id, user_id").in("conversation_id", convIds),
+    supabase.from("messages").select("id, conversation_id, sender_id, text, attachment_kind, status, created_at").in("conversation_id", convIds).order("created_at", { ascending: true }),
+  ]);
+
+  const membersByConv = new Map<string, string[]>();
+  for (const m of allMembers ?? []) {
+    const arr = membersByConv.get(m.conversation_id) ?? [];
+    arr.push(m.user_id);
+    membersByConv.set(m.conversation_id, arr);
+  }
+
+  const directKeyToConvId = new Map<string, string>();
+  const groups: GroupChat[] = [];
+  for (const c of convs ?? []) {
+    if (c.kind === "direct" && c.direct_key) directKeyToConvId.set(c.direct_key, c.id);
+    if (c.kind === "group") {
+      const name = c.group_name ?? "Group";
+      groups.push({
+        id: c.id, name, photoInitials: initials(name) || "GC", photoColor: colorFor(name || c.id),
+        hasCustomPhoto: !!c.group_photo_url, createdBy: c.created_by, createdAt: new Date(c.created_at).getTime(),
+        memberIds: membersByConv.get(c.id) ?? [],
+      });
+    }
+  }
+
+  const messages: ChatMessage[] = (msgs ?? []).map(m => ({
+    id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, text: m.text ?? "",
+    timestamp: new Date(m.created_at).getTime(), status: m.status as MessageStatus,
+    attachment: (m.attachment_kind ?? undefined) as AttachmentKind | undefined,
+  }));
+
+  const allMemberIds = new Set<string>();
+  for (const ids of membersByConv.values()) for (const id of ids) allMemberIds.add(id);
+  const known = new Set([..._roster.map(c => c.id), ..._groupEligible.map(c => c.id), uid]);
+  const missingIds = [...allMemberIds].filter(id => !known.has(id));
+  const extraContacts = new Map<string, ChatContact>();
+  if (missingIds.length) {
+    const basics = await fetchUserBasics(missingIds);
+    for (const [id, b] of basics) extraContacts.set(id, toContact(id, b.name, b.role, undefined, undefined, b.photoUrl));
+  }
+
+  return { groups, messages, directKeyToConvId, extraContacts };
+}
+
+async function refreshConversations(): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const { groups, messages, directKeyToConvId, extraContacts } = await loadConversationsAndMessages(uid);
+  _groups = groups; _messages = messages; _directKeyToConvId = directKeyToConvId;
+  for (const [id, c] of extraContacts) _contactCache.set(id, c);
+  _emit();
+}
+
+// ── Hooks ─────────────────────────────────────────────────────────────────────
 export function useAllMessages(): ChatMessage[] {
   return useSyncExternalStore(subscribe, getMessagesSnapshot, getMessagesSnapshot);
 }
@@ -217,28 +287,38 @@ export function useAllGroups(): GroupChat[] {
 
 export function useMessages(convId: string): ChatMessage[] {
   const all = useAllMessages();
-  return useMemo(() => all.filter(m => m.conversationId === convId).sort((a, b) => a.timestamp - b.timestamp), [all, convId]);
+  return useMemo(() => {
+    const realId = _directKeyToConvId.get(convId) ?? convId;
+    return all.filter(m => m.conversationId === realId).sort((a, b) => a.timestamp - b.timestamp);
+  }, [all, convId]);
 }
 
-/** Live view of a single group (membership, name, photo) for the open thread / info panel. */
 export function useGroup(groupId: string): GroupChat | undefined {
   const all = useAllGroups();
   return useMemo(() => all.find(g => g.id === groupId), [all, groupId]);
 }
 
 export function useConversations(role: Role): ConversationSummary[] {
+  useEffect(() => {
+    let active = true;
+    (async () => { await ensureRoster(role); if (active) await refreshConversations(); })();
+    const interval = setInterval(() => { if (active) refreshConversations(); }, 4000);
+    return () => { active = false; clearInterval(interval); };
+  }, [role]);
+
   const allMessages = useAllMessages();
   const allGroups = useAllGroups();
-  const self = SELF_CONTACT[role];
-  const contacts = getAuthorizedContacts(role);
   return useMemo(() => {
+    const self = _self;
+    const contacts = _roster;
     const direct: ConversationSummary[] = contacts.map(contact => {
-      const cid = conversationId(self.id, contact.id);
-      const msgs = allMessages.filter(m => m.conversationId === cid);
+      const key = conversationId(self.id, contact.id);
+      const realId = _directKeyToConvId.get(key);
+      const msgs = realId ? allMessages.filter(m => m.conversationId === realId) : [];
       const lastMessage = msgs.length ? msgs.reduce((a, b) => (b.timestamp > a.timestamp ? b : a)) : null;
       const unreadCount = msgs.filter(m => m.senderId !== self.id && m.status !== "read").length;
       return {
-        kind: "direct" as const, key: cid, title: contact.name, subtitle: contact.roleLabel,
+        kind: "direct" as const, key, title: contact.name, subtitle: contact.roleLabel,
         avatarInitials: contact.initials, avatarColor: contact.color, online: contact.online,
         contact, lastMessage, unreadCount,
       };
@@ -259,7 +339,8 @@ export function useConversations(role: Role): ConversationSummary[] {
       if (b.lastMessage) return 1;
       return (b.group?.createdAt ?? 0) - (a.group?.createdAt ?? 0);
     });
-  }, [allMessages, allGroups, self, contacts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMessages, allGroups, role]);
 }
 
 export function useUnreadChatCount(role: Role): number {
@@ -267,139 +348,120 @@ export function useUnreadChatCount(role: Role): number {
   return useMemo(() => list.reduce((s, c) => s + c.unreadCount, 0), [list]);
 }
 
-export function sendMessage(fromRole: Role, contactId: string, text: string, attachment?: AttachmentKind): void {
+// ── Synchronous cache reads (populated by the hooks above) ──────────────────
+export function getSelfContact(_role: Role): ChatContact { return _self; }
+export function getContactById(id: string): ChatContact | undefined {
+  if (id === _selfId) return _self;
+  return _contactCache.get(id);
+}
+export function findStudentContactByName(name: string): ChatContact | undefined {
+  return _roster.find(c => c.role === "student" && c.name === name)
+    ?? _groupEligible.find(c => c.role === "student" && c.name === name);
+}
+export function getAuthorizedContacts(_role: Role): ChatContact[] { return _roster; }
+export function isAuthorized(_role: Role, contactId: string): boolean { return _roster.some(c => c.id === contactId); }
+export function getGroupEligibleContacts(_role: Role): ChatContact[] { return _groupEligible; }
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+export async function sendMessage(_role: Role, contactId: string, text: string, attachment?: AttachmentKind): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed && !attachment) return;
-  const self = SELF_CONTACT[fromRole];
-  const cid = conversationId(self.id, contactId);
-  const msg: ChatMessage = {
-    id: `msg_${Date.now()}_${_seq++}`, conversationId: cid, senderId: self.id,
-    text: trimmed, timestamp: Date.now(), status: "sent", attachment,
-  };
-  _messages = [..._messages, msg];
-  _emit();
-
-  // Simulate a brief send → delivered transition, like a real chat client.
-  setTimeout(() => {
-    _messages = _messages.map(m => m.id === msg.id ? { ...m, status: "delivered" as MessageStatus } : m);
-    _emit();
-  }, 600);
-
-  // Only role-switchable personas have a real notification inbox to reach —
-  // the wider student/parent roster are read-only contacts for landlord/admin.
-  const recipientRole = (Object.keys(SELF_CONTACT) as Role[]).find(r => SELF_CONTACT[r].id === contactId);
-  if (recipientRole) {
-    const preview = attachment ? `Sent ${attachment === "photo" ? "a photo" : "a document"}` : trimmed;
-    addNotification({
-      role: recipientRole, type: "message", title: `New message from ${self.name}`,
-      description: preview.length > 80 ? preview.slice(0, 80) + "…" : preview,
-      destination: "messages", relatedId: self.id,
-    });
-  }
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const { data: convId, error: convErr } = await supabase.rpc("get_or_create_direct_conversation", { p_other_user_id: contactId });
+  if (convErr || !convId) { console.error("sendMessage:", convErr?.message); return; }
+  const { error } = await supabase.from("messages").insert({ conversation_id: convId, sender_id: uid, text: trimmed || null, attachment_kind: attachment ?? null });
+  if (error) { console.error("sendMessage:", error.message); return; }
+  refreshConversations();
 }
 
-export function markConversationRead(role: Role, contactId: string): void {
-  const self = SELF_CONTACT[role];
-  const cid = conversationId(self.id, contactId);
-  let changed = false;
-  _messages = _messages.map(m => {
-    if (m.conversationId === cid && m.senderId !== self.id && m.status !== "read") { changed = true; return { ...m, status: "read" as MessageStatus }; }
-    return m;
-  });
-  if (changed) _emit();
+export async function markConversationRead(_role: Role, contactId: string): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const convId = _directKeyToConvId.get(conversationId(uid, contactId));
+  if (!convId) return;
+  const { error } = await supabase.rpc("mark_conversation_read", { p_conversation_id: convId });
+  if (error) { console.error("markConversationRead:", error.message); return; }
+  refreshConversations();
 }
 
 // ── Group chat ───────────────────────────────────────────────────────────────
 
-export function createGroup(role: Role, name: string, memberContactIds: string[]): GroupChat {
-  const self = SELF_CONTACT[role];
+export async function createGroup(role: Role, name: string, memberContactIds: string[]): Promise<GroupChat> {
   const trimmedName = name.trim();
-  const group: GroupChat = {
-    id: `group_${Date.now()}_${_seq++}`,
-    name: trimmedName,
-    photoInitials: initials(trimmedName) || "GC",
-    photoColor: colorFor(trimmedName || "Group"),
-    hasCustomPhoto: false,
-    createdBy: self.id,
-    createdAt: Date.now(),
-    memberIds: Array.from(new Set([self.id, ...memberContactIds])),
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) throw new Error("Not signed in.");
+  // Goes through create_group_conversation (SECURITY DEFINER) rather than a
+  // plain client insert — see 0026_create_group_conversation_rpc.sql for why
+  // a raw insert+select here fails under RLS (the creator isn't a
+  // conversation_members row yet at the instant the RETURNING clause is
+  // evaluated).
+  const { data: convId, error } = await supabase.rpc("create_group_conversation", { p_name: trimmedName, p_member_ids: memberContactIds });
+  if (error || !convId) throw new Error(error?.message ?? "Could not create group.");
+  await ensureRoster(role);
+  await refreshConversations();
+  const memberIds = Array.from(new Set([uid, ...memberContactIds]));
+  return {
+    id: convId, name: trimmedName, photoInitials: initials(trimmedName) || "GC", photoColor: colorFor(trimmedName || "Group"),
+    hasCustomPhoto: false, createdBy: uid, createdAt: Date.now(), memberIds,
   };
-  _groups = [group, ..._groups];
-  _emit();
-  return group;
 }
 
-export function sendGroupMessage(fromRole: Role, groupId: string, text: string, attachment?: AttachmentKind): void {
+export async function sendGroupMessage(_role: Role, groupId: string, text: string, attachment?: AttachmentKind): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed && !attachment) return;
-  const self = SELF_CONTACT[fromRole];
-  const group = _groups.find(g => g.id === groupId);
-  if (!group || !group.memberIds.includes(self.id)) return;
-
-  const msg: ChatMessage = {
-    id: `msg_${Date.now()}_${_seq++}`, conversationId: groupId, senderId: self.id,
-    text: trimmed, timestamp: Date.now(), status: "sent", attachment,
-  };
-  _messages = [..._messages, msg];
-  _emit();
-
-  setTimeout(() => {
-    _messages = _messages.map(m => m.id === msg.id ? { ...m, status: "delivered" as MessageStatus } : m);
-    _emit();
-  }, 600);
-
-  const preview = attachment ? `Sent ${attachment === "photo" ? "a photo" : "a document"}` : trimmed;
-  for (const memberId of group.memberIds) {
-    if (memberId === self.id) continue;
-    const recipientRole = (Object.keys(SELF_CONTACT) as Role[]).find(r => SELF_CONTACT[r].id === memberId);
-    if (recipientRole) {
-      addNotification({
-        role: recipientRole, type: "message", title: `New message in ${group.name}`,
-        description: `${self.name}: ${preview.length > 80 ? preview.slice(0, 80) + "…" : preview}`,
-        destination: "messages", relatedId: group.id,
-      });
-    }
-  }
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const { error } = await supabase.from("messages").insert({ conversation_id: groupId, sender_id: uid, text: trimmed || null, attachment_kind: attachment ?? null });
+  if (error) { console.error("sendGroupMessage:", error.message); return; }
+  refreshConversations();
 }
 
-export function markGroupRead(role: Role, groupId: string): void {
-  const self = SELF_CONTACT[role];
-  let changed = false;
-  _messages = _messages.map(m => {
-    if (m.conversationId === groupId && m.senderId !== self.id && m.status !== "read") { changed = true; return { ...m, status: "read" as MessageStatus }; }
-    return m;
-  });
-  if (changed) _emit();
+export async function markGroupRead(_role: Role, groupId: string): Promise<void> {
+  const { error } = await supabase.rpc("mark_conversation_read", { p_conversation_id: groupId });
+  if (error) { console.error("markGroupRead:", error.message); return; }
+  refreshConversations();
 }
 
-export function renameGroup(groupId: string, name: string): void {
+export async function renameGroup(groupId: string, name: string): Promise<void> {
   const trimmed = name.trim();
   if (!trimmed) return;
-  _groups = _groups.map(g => g.id === groupId ? { ...g, name: trimmed, photoInitials: initials(trimmed) || "GC" } : g);
-  _emit();
+  const { error } = await supabase.from("conversations").update({ group_name: trimmed }).eq("id", groupId);
+  if (error) { console.error("renameGroup:", error.message); return; }
+  refreshConversations();
 }
 
-export function setGroupPhoto(groupId: string): void {
-  _groups = _groups.map(g => g.id === groupId ? { ...g, hasCustomPhoto: true } : g);
-  _emit();
+export async function setGroupPhoto(_groupId: string): Promise<void> {
+  // No real photo-upload path exists for group chat yet (same gap as report
+  // attachments) — an honest no-op rather than persisting a fabricated
+  // group_photo_url.
 }
 
-export function addGroupMembers(groupId: string, memberIds: string[]): void {
-  _groups = _groups.map(g => g.id === groupId ? { ...g, memberIds: Array.from(new Set([...g.memberIds, ...memberIds])) } : g);
-  _emit();
+export async function addGroupMembers(groupId: string, memberIds: string[]): Promise<void> {
+  const { error } = await supabase.from("conversation_members").insert(memberIds.map(user_id => ({ conversation_id: groupId, user_id })));
+  if (error) { console.error("addGroupMembers:", error.message); return; }
+  refreshConversations();
 }
 
-export function removeGroupMember(groupId: string, memberId: string): void {
-  _groups = _groups.map(g => g.id === groupId ? { ...g, memberIds: g.memberIds.filter(id => id !== memberId) } : g);
-  _emit();
+export async function removeGroupMember(groupId: string, memberId: string): Promise<void> {
+  const { error } = await supabase.from("conversation_members").delete().eq("conversation_id", groupId).eq("user_id", memberId);
+  if (error) { console.error("removeGroupMember:", error.message); return; }
+  refreshConversations();
 }
 
-export function leaveGroup(role: Role, groupId: string): void {
-  removeGroupMember(groupId, SELF_CONTACT[role].id);
+export async function leaveGroup(_role: Role, groupId: string): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  await removeGroupMember(groupId, uid);
 }
 
-export function deleteGroup(groupId: string): void {
-  _groups = _groups.filter(g => g.id !== groupId);
-  _messages = _messages.filter(m => m.conversationId !== groupId);
-  _emit();
+export async function deleteGroup(groupId: string): Promise<void> {
+  const { error } = await supabase.from("conversations").delete().eq("id", groupId);
+  if (error) { console.error("deleteGroup:", error.message); return; }
+  refreshConversations();
 }

@@ -8,6 +8,22 @@
       <title>DormiTrack UI Redesign</title>
       <meta name="description" content="DormiTrack is a premium mobile app for university students that monitors boarding house information, manages payments, and connects students with parents and landlords for a secure living experience." />
       <meta name="robots" content="noindex, nofollow" />
+
+      <!-- PWA / installability: the <link rel="manifest"> + SW registration
+           script are injected automatically at build time by vite-plugin-pwa
+           (see vite.config.ts). iOS Safari doesn't read the web manifest for
+           "Add to Home Screen" or for the status-bar/theme color, so those
+           are set explicitly here too. -->
+      <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+      <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+      <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+      <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+      <meta name="theme-color" content="#7549F6" />
+      <meta name="apple-mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+      <meta name="apple-mobile-web-app-title" content="DormiTrack" />
+      <meta name="mobile-web-app-capable" content="yes" />
+
       <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
       
     </head>

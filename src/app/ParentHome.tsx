@@ -1,52 +1,145 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Bell, Home, Building2, MapPin, Phone, MessageCircle,
   ChevronRight, User, GraduationCap, Bed, CheckCircle,
   AlertCircle, Calendar, CreditCard, Navigation, Megaphone,
-  Clock, LogIn, LogOut, RefreshCw, Star,
+  LogIn, LogOut, Star, X,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA, STUDENT_DATA, BILLING_DATA, ANNOUNCEMENTS } from "./StudentHome";
-import { getReports, CATEGORY_META, PRIORITY_META, STATUS_META } from "./reportStore";
-import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
+import { getMyAnnouncements, MyAnnouncement } from "./announcementStore";
+import { getReportsForLinkedStudent, CATEGORY_META, STATUS_META, StudentReport } from "./reportStore";
+import { useUnreadCount, fmtBadgeCount, timeAgo, NotificationType } from "./notificationStore";
 import { useUnreadChatCount } from "./chatStore";
+import { getMyParentProfile, getMyLinkedStudentData, MyParentProfile, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
+import { getCheckInOutHistoryForStudent, CheckInOutRecord } from "./checkInOutStore";
+import { getLinkedStudentBills, StudentBilling } from "./paymentStore";
+
+const EMPTY_PARENT: MyParentProfile = { name: "—", firstName: "—", relationship: "—", contact: "—", email: "—", address: "—", photo: null };
+const EMPTY_STUDENT: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
-export const PARENT_DATA = {
-  name:         "Maria Dela Cruz",
-  firstName:    "Maria",
-  relationship: "Mother",
-  contact:      "+63 917 123 4567",
-  email:        "mariadelacruz@gmail.com",
-  address:      "Purok 5, Brgy. Dao, Tagbilaran City, Bohol",
-  photo:        null as string | null,
-};
+type ActivityItem = { id:string; Icon:React.ElementType; color:string; bg:string; msg:string; ts:number };
 
-const ACTIVITIES = [
-  { Icon:LogIn,      color:"#16A34A", bg:"#DCFCE7", msg:"Student checked into the boarding house.", time:"Today, 8:02 AM"        },
-  { Icon:CreditCard, color:"#9772F6", bg:"#F5F0FF", msg:"Payment for August 2026 submitted.",       time:"Yesterday, 3:15 PM"    },
-  { Icon:Megaphone,  color:"#D97706", bg:"#FEF3C7", msg:"Landlord posted a new announcement.",      time:"Aug 2, 10:00 AM"       },
-  { Icon:RefreshCw,  color:"#3B82F6", bg:"#EFF6FF", msg:"Dormitory information was updated.",       time:"Aug 1, 9:00 AM"        },
-  { Icon:LogOut,     color:"#6B7280", bg:"#F3F4F6", msg:"Student checked out of the boarding house.", time:"Aug 1, 5:46 PM"      },
-];
-
-const ANN_COLOR: Record<string,{ bg:string; color:string }> = {
-  high:   { bg:"#FEE2E2", color:"#DC2626" },
-  medium: { bg:"#FEF3C7", color:"#D97706" },
-  low:    { bg:"#F0FDF4", color:"#16A34A" },
-};
+// Real activity feed — merges check-in/out, payment, and announcement events for the linked
+// student into one chronological timeline. Replaces what used to be a fixed 5-entry mock array
+// shown identically to every parent regardless of what actually happened on their student's
+// account (even one created seconds ago).
+function buildRecentActivity(checkins: CheckInOutRecord[], periods: StudentBilling[], anns: MyAnnouncement[], limit = 6): ActivityItem[] {
+  const items: ActivityItem[] = [];
+  for (const c of checkins) {
+    items.push(c.type === "checkin"
+      ? { id:`ci-${c.id}`, Icon:LogIn,  color:"#16A34A", bg:"#DCFCE7", msg:"Student checked into the boarding house.",  ts:new Date(c.occurredAt).getTime() }
+      : { id:`co-${c.id}`, Icon:LogOut, color:"#6B7280", bg:"#F3F4F6", msg:"Student checked out of the boarding house.", ts:new Date(c.occurredAt).getTime() });
+  }
+  for (const p of periods) for (const tx of p.transactions) {
+    const who = tx.submittedByRole === "parent" ? "You" : "Student";
+    const msg = tx.status === "verified" ? `${who} paid ${p.periodLabel} — verified by landlord.`
+      : tx.status === "rejected" ? `${who}'s payment for ${p.periodLabel} was rejected.`
+      : `${who} submitted a payment for ${p.periodLabel}.`;
+    items.push({ id:`tx-${tx.id}`, Icon:CreditCard, color:"#9772F6", bg:"#F5F0FF", msg, ts:new Date(tx.submittedAt).getTime() });
+  }
+  for (const a of anns) {
+    items.push({ id:`ann-${a.id}`, Icon:Megaphone, color:"#D97706", bg:"#FEF3C7", msg:`Landlord posted: "${a.title}"`, ts:new Date(a.createdAt).getTime() });
+  }
+  return items.sort((x,y)=>y.ts-x.ts).slice(0,limit);
+}
 
 function getGreeting() {
   const h = new Date().getHours();
   return h < 12 ? "Good Morning" : h < 18 ? "Good Afternoon" : "Good Evening";
 }
 
-export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
+export function ParentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
+  go:(s:string)=>void; pendingDeepLink?: { type: NotificationType; relatedId?: string } | null; onDeepLinkConsumed?: () => void;
+}) {
   const notifCount = useUnreadCount("parent");
   const chatCount = useUnreadChatCount("parent");
+
+  const [parentProfile, setParentProfile] = useState<MyParentProfile>(EMPTY_PARENT);
+  const [studentLinked, setStudentLinked] = useState(false);
+  const [studentProfile, setStudentProfile] = useState<MyStudentProfile>(EMPTY_STUDENT);
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [studentReports, setStudentReports] = useState<StudentReport[]>([]);
+  const [announcements, setAnnouncements] = useState<MyAnnouncement[]>([]);
+  const [checkins, setCheckins] = useState<CheckInOutRecord[]>([]);
+  const [billingPeriods, setBillingPeriods] = useState<StudentBilling[]>([]);
+  useEffect(() => { getMyAnnouncements("parents").then(setAnnouncements); }, []);
+  useEffect(() => {
+    let active = true;
+    Promise.all([getMyParentProfile(), getMyLinkedStudentData()]).then(([parent, linked]) => {
+      if (!active) return;
+      if (parent) setParentProfile(parent);
+      setStudentLinked(linked.linked);
+      if (linked.profile) setStudentProfile(linked.profile);
+      if (linked.assignment) setAssignment(linked.assignment);
+      if (linked.studentId) {
+        getReportsForLinkedStudent(linked.studentId).then(rs => { if (active) setStudentReports(rs); });
+        getCheckInOutHistoryForStudent(linked.studentId).then(cs => { if (active) setCheckins(cs); });
+        getLinkedStudentBills(linked.studentId).then(ps => { if (active) setBillingPeriods(ps); });
+      }
+    });
+    return () => { active = false; };
+  }, []);
+
+  // Opened from a "Concern Submitted" / report-status notification — scroll straight to that
+  // report in the Student Reports card below and briefly highlight it, so tapping the
+  // notification actually shows the parent the concern rather than just landing on the home
+  // screen. Gated on studentReports being loaded (it fetches async) so a fast tap right after
+  // navigating here doesn't miss the match; the effect just re-runs once that data arrives.
+  const reportRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [highlightedReportId, setHighlightedReportId] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "report" || !pendingDeepLink.relatedId) return;
+    const match = studentReports.find(r => r.id === pendingDeepLink.relatedId);
+    if (!match) return;
+    setHighlightedReportId(match.id);
+    requestAnimationFrame(() => reportRefs.current[match.id]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    onDeepLinkConsumed?.();
+  }, [pendingDeepLink, studentReports, onDeepLinkConsumed]);
+  // Fade the highlight back out a few seconds after it's shown, so it reads as a momentary
+  // "here it is" pointer rather than a permanent marker on the report.
+  useEffect(() => {
+    if (!highlightedReportId) return;
+    const t = setTimeout(() => setHighlightedReportId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightedReportId]);
+
+  // Same pattern, for an "Announcement" notification (highlightsStore.ts notifies linked
+  // parents on both create and update) — scroll to and briefly highlight that specific
+  // announcement in "Today's Highlights" below, instead of landing on a page where it's
+  // just one more item in an unmarked list.
+  const announcementRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [highlightedAnnouncementId, setHighlightedAnnouncementId] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "announcement" || !pendingDeepLink.relatedId) return;
+    const match = announcements.find(a => a.id === pendingDeepLink.relatedId);
+    if (!match) return;
+    setHighlightedAnnouncementId(match.id);
+    requestAnimationFrame(() => announcementRefs.current[match.id]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    onDeepLinkConsumed?.();
+  }, [pendingDeepLink, announcements, onDeepLinkConsumed]);
+  useEffect(() => {
+    if (!highlightedAnnouncementId) return;
+    const t = setTimeout(() => setHighlightedAnnouncementId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightedAnnouncementId]);
+
+  const PARENT_DATA = parentProfile;
+  const STUDENT_DATA = studentProfile;
+  const BH_DATA = assignment.bh;
+  // Only the 5 most recent show inline; "View All" opens the rest (up to 50) in a modal.
+  const allActivity = buildRecentActivity(checkins, billingPeriods, announcements, 50);
+  const activity = allActivity.slice(0,5);
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  const ROOM_DATA = assignment.room;
 
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F2F4F8", overflowY:"auto", scrollbarWidth:"none" as const }}>
@@ -80,10 +173,12 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
 
         {/* Student card in header */}
         <div style={{ marginTop:18, background:"rgba(255,255,255,.15)", borderRadius:18, padding:"14px 16px", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", gap:14 }}>
-          <div style={{ width:52, height:52, borderRadius:18, background:"rgba(255,255,255,.25)", border:"2px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-            <span style={{ fontSize:18, fontWeight:800, color:"white", fontFamily:QS }}>
-              {STUDENT_DATA.name.split(" ").map((n:string)=>n[0]).join("").slice(0,2)}
-            </span>
+          <div style={{ width:52, height:52, borderRadius:"50%", background:"rgba(255,255,255,.25)", border:"2px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+            {STUDENT_DATA.photo ? <img src={STUDENT_DATA.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : (
+              <span style={{ fontSize:18, fontWeight:800, color:"white", fontFamily:QS }}>
+                {STUDENT_DATA.name.split(" ").map((n:string)=>n[0]).join("").slice(0,2)}
+              </span>
+            )}
           </div>
           <div style={{ flex:1 }}>
             <p style={{ margin:"0 0 1px", fontSize:15, fontWeight:800, color:"white", fontFamily:QS }}>{STUDENT_DATA.name}</p>
@@ -98,12 +193,23 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
 
       <div style={{ flex:1, padding:"16px 16px 8px" }}>
 
-        {/* ── Student Overview Card ────────────────────────────────────────── */}
-        <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 6px 24px rgba(0,0,0,.08)", marginBottom:14 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+        {!studentLinked && (
+          <div style={{ background:"#FEF3C7", borderRadius:16, padding:"12px 14px", marginBottom:14, display:"flex", alignItems:"flex-start", gap:10 }}>
+            <AlertCircle size={14} color="#D97706" style={{ flexShrink:0, marginTop:1 }}/>
+            <p style={{ margin:0, fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.55 }}>
+              Your account isn't linked to a student yet. Once your student approves the link you submitted during sign-up, their boarding house information will appear here.
+            </p>
+          </div>
+        )}
+
+        {/* ── Student Overview Card — title sits above the card, same convention as
+             every other section here now (see Recent Activity at the bottom). ────── */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
             <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Student Overview</p>
             <span style={{ fontSize:10, fontWeight:800, padding:"3px 10px", borderRadius:20, background:"#DCFCE7", color:"#16A34A", fontFamily:QS }}>{BH_DATA.status}</span>
           </div>
+          <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 6px 24px rgba(0,0,0,.08)" }}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
             {[
               { Icon:Building2, label:"Boarding House", val:BH_DATA.name,     color:"#9772F6", bg:"#F5F0FF" },
@@ -119,6 +225,7 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
                 <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS, lineHeight:1.3 }}>{val}</p>
               </div>
             ))}
+          </div>
           </div>
         </div>
 
@@ -139,88 +246,72 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
         </div>
 
         {/* ── Today's Highlights / Announcements ───────────────────────────── */}
-        <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <div style={{ width:30, height:30, borderRadius:10, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Megaphone size={14} color="#D97706"/>
-              </div>
-              <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Today's Highlights</p>
-            </div>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Today's Highlights</p>
             <span style={{ fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:IN }}>View only</span>
           </div>
-          {ANNOUNCEMENTS.map((ann: any, i: number)=>{
-            const { bg, color } = ANN_COLOR[ann.priority] ?? ANN_COLOR.low;
+          <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
+          {announcements.length === 0 && (
+            <p style={{ margin:"6px 0", fontSize:11, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>No announcements yet.</p>
+          )}
+          {/* Priority is no longer a real, landlord-set concept — no priority badge here anymore. */}
+          {announcements.map((ann, i)=>{
+            const highlighted = highlightedAnnouncementId === ann.id;
             return (
-              <div key={ann.id} style={{ padding:"11px 0", borderBottom:i<ANNOUNCEMENTS.length-1?"1px solid #F9FAFB":"none" }}>
+              <div key={ann.id} ref={el=>{ announcementRefs.current[ann.id] = el; }} style={{ padding:"11px 10px", margin:"0 -10px", borderRadius:14, borderBottom:i<announcements.length-1?"1px solid #F9FAFB":"none", background:highlighted?"#F5F0FF":"transparent", boxShadow:highlighted?"0 0 0 2px #9772F6":"none", transition:"background .3s, box-shadow .3s" }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
-                  <span style={{ fontSize:9, fontWeight:800, padding:"3px 8px", borderRadius:20, background:bg, color, fontFamily:QS, flexShrink:0, marginTop:2 }}>{ann.priority.toUpperCase()}</span>
+                  <div style={{ width:34, height:34, borderRadius:11, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <Megaphone size={14} color="#9772F6"/>
+                  </div>
                   <div style={{ flex:1 }}>
                     <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{ann.title}</p>
-                    <p style={{ margin:"0 0 2px", fontSize:11, color:"#6B7280", fontFamily:IN, lineHeight:1.45 }}>{ann.desc}</p>
+                    {/* pre-line: a landlord's announcement with a date/time attached carries a
+                        blank-line-separated "Scheduled for…" note — without this it collapses
+                        into one run-on sentence instead of its own line. */}
+                    <p style={{ margin:"0 0 2px", fontSize:11, color:"#6B7280", fontFamily:IN, lineHeight:1.45, whiteSpace:"pre-line" }}>{ann.desc}</p>
                     <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{ann.date}</p>
                   </div>
                 </div>
               </div>
             );
           })}
-        </div>
-
-        {/* ── Recent Activity Timeline ─────────────────────────────────────── */}
-        <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
-            <div style={{ width:30, height:30, borderRadius:10, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Clock size={14} color="#9772F6"/>
-            </div>
-            <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
           </div>
-          {ACTIVITIES.map(({ Icon, color, bg, msg, time }, i)=>(
-            <div key={i} style={{ display:"flex", gap:12, paddingBottom:i<ACTIVITIES.length-1?12:0 }}>
-              <div style={{ display:"flex", flexDirection:"column" as const, alignItems:"center", width:32 }}>
-                <div style={{ width:32, height:32, borderRadius:11, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                  <Icon size={14} color={color}/>
-                </div>
-                {i<ACTIVITIES.length-1 && <div style={{ width:2, flex:1, minHeight:10, background:"#F3F4F6", marginTop:4 }}/>}
-              </div>
-              <div style={{ flex:1, paddingTop:5 }}>
-                <p style={{ margin:"0 0 1px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
-                <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{time}</p>
-              </div>
-            </div>
-          ))}
         </div>
 
         {/* ── Student Reports ─────────────────────────────────────────────── */}
         {(()=>{
-          const myReports = getReports().filter(r=>r.studentId===STUDENT_DATA.id);
+          const myReports = studentReports; // getReportsForLinkedStudent() already scopes to the linked student
           if (myReports.length===0) return null;
           return (
-            <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ width:30, height:30, borderRadius:10, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <AlertCircle size={14} color="#9772F6"/>
-                  </div>
-                  <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Student Reports</p>
-                </div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Student Reports</p>
                 <span style={{ fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:IN }}>View only</span>
               </div>
+              <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
               {myReports.map((r, i)=>{
                 const cm = CATEGORY_META[r.category];
-                const pm = PRIORITY_META[r.priority];
                 const sm = STATUS_META[r.status];
+                const highlighted = highlightedReportId === r.id;
                 return (
-                  <div key={r.id} style={{ padding:"12px 0", borderBottom:i<myReports.length-1?"1px solid #F9FAFB":"none" }}>
+                  <div key={r.id} ref={el=>{ reportRefs.current[r.id] = el; }} style={{ padding:"12px 10px", margin:"0 -10px", borderRadius:14, borderBottom:i<myReports.length-1?"1px solid #F9FAFB":"none", background:highlighted?"#F5F0FF":"transparent", boxShadow:highlighted?"0 0 0 2px #9772F6":"none", transition:"background .3s, box-shadow .3s" }}>
                     <div style={{ display:"flex", gap:5, marginBottom:5, flexWrap:"wrap" as const }}>
                       <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
                       <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS }}>{cm.label}</span>
-                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS, display:"flex", alignItems:"center", gap:3 }}>
-                        <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
-                      </span>
                     </div>
                     <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{r.title}</p>
                     <p style={{ margin:"0 0 4px", fontSize:11, color:"#6B7280", fontFamily:IN, lineHeight:1.45 }}>{r.description.length>100?r.description.slice(0,100)+"...":r.description}</p>
                     <p style={{ margin:"0 0 4px", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{r.dateSubmitted}</p>
+                    {r.imageUrls.length>0 && (
+                      <div style={{ display:"flex", gap:6, marginBottom:6, flexWrap:"wrap" as const }}>
+                        {r.imageUrls.map((url,j)=>(
+                          <a key={j} href={url} target="_blank" rel="noopener noreferrer" style={{ width:52, height:46, borderRadius:9, overflow:"hidden", display:"block" }}>
+                            <img src={url} alt={`Attachment ${j+1}`} style={{ width:"100%", height:"100%", objectFit:"cover" as const, display:"block" }}/>
+                          </a>
+                        ))}
+                      </div>
+                    )}
                     {r.landlordResponse && (
                       <div style={{ padding:"8px 10px", borderRadius:10, background:"#F0FDF4", border:"1px solid #BBF7D0", display:"flex", alignItems:"flex-start", gap:6 }}>
                         <MessageCircle size={11} color="#16A34A" style={{ flexShrink:0, marginTop:2 }}/>
@@ -230,18 +321,15 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
                   </div>
                 );
               })}
+              </div>
             </div>
           );
         })()}
 
         {/* ── Emergency Contact ────────────────────────────────────────────── */}
-        <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:24 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
-            <div style={{ width:30, height:30, borderRadius:10, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Phone size={14} color="#DC2626"/>
-            </div>
-            <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Emergency Contacts</p>
-          </div>
+        <div style={{ marginBottom:14 }}>
+          <p style={{ margin:"0 0 10px", fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Emergency Contacts</p>
+          <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
           {[
             { label:"Boarding House", number:BH_DATA.contact  },
             { label:"Landlord",       number:BH_DATA.contact  },
@@ -259,9 +347,71 @@ export function ParentHomeScreen({ go }: { go:(s:string)=>void }) {
               </a>
             </div>
           ))}
+          </div>
+        </div>
+
+        {/* ── Recent Activity — moved to the bottom of the page and styled with the
+             title outside the card, matching every other role's home screen (Student,
+             Landlord, Admin). Only the 5 most recent show here; "View All" opens the
+             rest in a modal. ──────────────────────────────────────────────────────── */}
+        <div style={{ marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
+            {allActivity.length>5 && (
+              <button onClick={()=>setShowAllActivity(true)} style={{ fontSize:11, fontWeight:700, color:"#9772F6", background:"none", border:"none", cursor:"pointer", fontFamily:QS, padding:0 }}>View All</button>
+            )}
+          </div>
+          <div style={{ background:"white", borderRadius:22, padding:"16px 18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
+            {activity.length === 0 && (
+              <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>Nothing to show yet — activity will appear here as it happens.</p>
+            )}
+            {activity.map(({ id, Icon, color, bg, msg, ts }, i)=>(
+              <div key={id} style={{ display:"flex", gap:12, paddingBottom:i<activity.length-1?12:0 }}>
+                <div style={{ display:"flex", flexDirection:"column" as const, alignItems:"center", width:32 }}>
+                  <div style={{ width:32, height:32, borderRadius:11, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <Icon size={14} color={color}/>
+                  </div>
+                  {i<activity.length-1 && <div style={{ width:2, flex:1, minHeight:10, background:"#F3F4F6", marginTop:4 }}/>}
+                </div>
+                <div style={{ flex:1, paddingTop:5 }}>
+                  <p style={{ margin:"0 0 1px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
+                  <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{timeAgo(ts)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
       </div>
+
+      {showAllActivity && (
+        <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setShowAllActivity(false)}>
+          <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"85%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+            <div style={{ padding:"18px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div>
+                <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
+                <p style={{ margin:"2px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{allActivity.length} total</p>
+              </div>
+              <button onClick={()=>setShowAllActivity(false)} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <X size={15} color="#6B7280"/>
+              </button>
+            </div>
+            <div style={{ overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"12px 20px 24px" }}>
+              {allActivity.map(({ id, Icon, color, bg, msg, ts }, i)=>(
+                <div key={id} style={{ display:"flex", gap:12, padding:"10px 0", borderBottom:i<allActivity.length-1?"1px solid #F3F4F6":"none" }}>
+                  <div style={{ width:32, height:32, borderRadius:11, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <Icon size={14} color={color}/>
+                  </div>
+                  <div style={{ flex:1, paddingTop:5 }}>
+                    <p style={{ margin:"0 0 1px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
+                    <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{timeAgo(ts)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

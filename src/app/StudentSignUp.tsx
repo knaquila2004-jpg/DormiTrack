@@ -4,6 +4,9 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen, StudentProfile } from "./shared";
+import { supabase } from "../lib/supabase";
+
+const YEAR_LEVEL_TO_INT: Record<string, number> = { "First Year": 1, "Second Year": 2, "Third Year": 3, "Fourth Year": 4 };
 
 export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void; onSignup: (p: StudentProfile) => void }) {
   const QS = "'Quicksand',sans-serif";
@@ -38,6 +41,7 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
   // ── Errors ───────────────────────────────────────────────────────────────────
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   // ── Derived: auto-generated username ─────────────────────────────────────────
   const username = (() => {
@@ -101,11 +105,68 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
       setSubmitted(false);
       setErrors({});
       if (step < 2) setStep(s => s + 1);
-      else {
-        onSignup({ firstName, middleName, lastName, username, age, birthdate, sex, contact, address, studentId, program, yearLevel, block, email });
-        go("boardingReg");
-      }
+      else createAccount();
     }
+  };
+
+  const createAccount = async () => {
+    setCreating(true);
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        data: {
+          role: "student",
+          first_name: firstName.trim(),
+          middle_name: middleName.trim(),
+          last_name: lastName.trim(),
+          sex,
+          contact_number: contact.trim(),
+          address: address.trim(),
+        },
+      },
+    });
+    if (error || !data.user) {
+      setCreating(false);
+      setSubmitted(true);
+      setErrors({ email: error?.message ?? "Could not create your account. Please try again." });
+      return;
+    }
+    // username is unique per student — two people can easily generate the same
+    // first_mi_last combination (e.g. two "Juan D. Dela Cruz"s), and so can a landlord or parent
+    // signing up separately (their own usernames follow this same pattern too, and now share this
+    // pool of the same names — see is_username_taken). Rather than letting either crash signup
+    // outright, retry with an increasing numeric suffix appended directly after the last name (no
+    // underscore): "juan_d_delacruz", then "juan_d_delacruz2", "juan_d_delacruz3", ...
+    let finalUsername = username;
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const { data: taken } = await supabase.rpc("is_username_taken", { p_username: finalUsername });
+      if (taken) { finalUsername = `${username}${attempt + 2}`; continue; }
+      const { error: profileError } = await supabase.from("students").insert({
+        user_id: data.user.id,
+        student_id_no: studentId.trim(),
+        username: finalUsername,
+        age: age ? Number(age) : null,
+        birthdate,
+        program,
+        year_level: YEAR_LEVEL_TO_INT[yearLevel] ?? null,
+        block,
+      });
+      if (!profileError) { lastError = null; break; }
+      lastError = profileError.message;
+      const isUsernameConflict = profileError.code === "23505" && profileError.message.toLowerCase().includes("username");
+      if (!isUsernameConflict) break; // a different failure (e.g. duplicate student ID) — don't mask it by retrying
+      finalUsername = `${username}${attempt + 2}`;
+    }
+    setCreating(false);
+    if (lastError) {
+      setSubmitted(true);
+      setErrors({ studentId: lastError });
+      return;
+    }
+    onSignup({ firstName, middleName, lastName, username: finalUsername, age, birthdate, sex, contact, address, studentId, program, yearLevel, block, email });
+    go("boardingReg");
   };
 
   const handleSubmit = nextStep;
@@ -327,7 +388,7 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
               <label style={labelStyle}>BISU Email <span style={{ color: "#EF4444" }}>*</span></label>
               <div style={{ position: "relative" }}>
                 <Mail size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
-                <input value={email} onChange={e => setEmail(e.target.value)} placeholder="example@bisu.edu.ph"
+                <input value={email} onChange={e => setEmail(e.target.value)} placeholder="example@bisu.edu.ph" autoComplete="off"
                   style={{ ...inputStyle(!!errors.email), paddingLeft: 38 }} />
               </div>
               {err("email")}
@@ -336,7 +397,7 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
               <label style={labelStyle}>Password <span style={{ color: "#EF4444" }}>*</span></label>
               <div style={{ position: "relative" }}>
                 <Lock size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
-                <input type={showPass ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 6 characters"
+                <input type={showPass ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 6 characters" autoComplete="new-password"
                   style={{ ...inputStyle(!!errors.password), paddingLeft: 38, paddingRight: 44 }} />
                 <button onClick={() => setShowPass(s => !s)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", padding: 4 }}>
                   {showPass ? <Eye size={16} /> : <EyeOff size={16} />}
@@ -348,7 +409,7 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
               <label style={labelStyle}>Confirm Password <span style={{ color: "#EF4444" }}>*</span></label>
               <div style={{ position: "relative" }}>
                 <Lock size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
-                <input type={showConfirm ? "text" : "password"} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Re-enter password"
+                <input type={showConfirm ? "text" : "password"} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Re-enter password" autoComplete="new-password"
                   style={{ ...inputStyle(!!errors.confirmPassword), paddingLeft: 38, paddingRight: 44 }} />
                 <button onClick={() => setShowConfirm(s => !s)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", padding: 4 }}>
                   {showConfirm ? <Eye size={16} /> : <EyeOff size={16} />}
@@ -371,9 +432,9 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
           </div>
         )}
 
-        <button onClick={nextStep}
-          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
-          {step < 2 ? "Next" : "Create Account"}
+        <button onClick={nextStep} disabled={creating}
+          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: creating ? "#C4B5FD" : GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: creating ? "default" : "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
+          {step < 2 ? "Next" : creating ? "Creating Account…" : "Create Account"}
         </button>
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#9CA3AF", marginTop: 16, fontFamily: IN }}>

@@ -1,12 +1,38 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   CreditCard, CheckCircle, Clock, AlertCircle, X, Check,
   Calendar, FileText, Camera, Hash,
   Banknote, MessageSquare, ChevronRight, Receipt, Zap, Droplet,
   Wifi, Trash2, Tag, Eye, Download,
 } from "lucide-react";
-import { BILLING_DATA, STAY_DATA, BH_DATA, STUDENT_DATA } from "./StudentHome";
-import { addNotification } from "./notificationStore";
+import { notifyLandlordOfBoardingHouse } from "./notificationStore";
+import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
+import { getMyBills, submitPaymentRecord, uploadPaymentProof, StudentBilling } from "./paymentStore";
+
+const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
+
+const BILL_VISUAL: Record<string, { icon: React.ElementType; color: string; bg: string }> = {
+  rent:        { icon: CreditCard, color: "#9772F6", bg: "#F5F0FF" },
+  water:       { icon: Droplet,    color: "#3B82F6", bg: "#EFF6FF" },
+  electricity: { icon: Zap,        color: "#D97706", bg: "#FEF3C7" },
+  garbage:     { icon: Trash2,     color: "#EF4444", bg: "#FEE2E2" },
+  internet:    { icon: Wifi,       color: "#16A34A", bg: "#DCFCE7" },
+  other:       { icon: Tag,        color: "#6B7280", bg: "#F3F4F6" },
+};
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const QS   = "'Quicksand',sans-serif";
@@ -14,23 +40,10 @@ const IN   = "'Inter',sans-serif";
 
 // ── Types & Data ──────────────────────────────────────────────────────────────
 
-type BillStatus = "awaiting-verification"|"paid"|"unpaid"|"overdue";
+type BillStatus = "awaiting-verification"|"paid"|"unpaid"|"overdue"|"partially-paid";
 
 interface BillItem { id:string; label:string; amount:number; status:BillStatus; dueDate:string; icon:React.ElementType; color:string; bg:string }
-interface PayRecord { id:string; receiptNo:string; date:string; amount:number; status:"verified"|"pending"|"rejected"; method:string; period:string; refNo:string }
-
-const BILLS: BillItem[] = [
-  { id:"rent",  label:"Monthly Rent",  amount:3500, status:"awaiting-verification", dueDate:"Aug 10, 2026", icon:CreditCard, color:"#9772F6", bg:"#F5F0FF" },
-  { id:"water", label:"Water",         amount:150,  status:"awaiting-verification", dueDate:"Aug 10, 2026", icon:Droplet,    color:"#3B82F6", bg:"#EFF6FF" },
-  { id:"elec",  label:"Electricity",   amount:350,  status:"unpaid",               dueDate:"Aug 10, 2026", icon:Zap,        color:"#D97706", bg:"#FEF3C7" },
-  { id:"garb",  label:"Garbage Fee",   amount:100,  status:"unpaid",               dueDate:"Aug 10, 2026", icon:Trash2,     color:"#EF4444", bg:"#FEE2E2" },
-];
-
-const HISTORY: PayRecord[] = [
-  { id:"p1", receiptNo:"RCP-2026-0071", date:"Jul 10, 2026", amount:4060, status:"verified", method:"GCash",         period:"July 2026",  refNo:"GCX2026071012345" },
-  { id:"p2", receiptNo:"RCP-2026-0044", date:"Jun 9, 2026",  amount:3850, status:"verified", method:"Bank Transfer", period:"June 2026",  refNo:"BNK20260609987654" },
-  { id:"p3", receiptNo:"RCP-2026-0020", date:"May 8, 2026",  amount:3750, status:"verified", method:"Maya",          period:"May 2026",   refNo:"MAYA2026050878901" },
-];
+interface PayRecord { id:string; receiptNo:string; date:string; amount:number; status:"verified"|"pending"|"rejected"; method:string; period:string; refNo:string; billLabel:string; proofUrl:string|null }
 
 const PAYMENT_METHODS = ["GCash","Maya","Bank Transfer","Cash","BPI","Landbank","SeaBank"];
 
@@ -41,6 +54,7 @@ const statusMeta = (s:BillStatus) => ({
   "awaiting-verification": { label:"Awaiting Verification", color:"#D97706", bg:"#FEF3C7", Icon:Clock       },
   "unpaid":                { label:"Unpaid",                color:"#6B7280", bg:"#F3F4F6", Icon:AlertCircle  },
   "overdue":               { label:"Overdue",               color:"#EF4444", bg:"#FEE2E2", Icon:AlertCircle  },
+  "partially-paid":        { label:"Partially Paid",        color:"#F59E0B", bg:"#FFF7ED", Icon:Clock        },
 }[s]);
 
 const payRecStatusMeta = (s:"verified"|"pending"|"rejected") => ({
@@ -51,14 +65,29 @@ const payRecStatusMeta = (s:"verified"|"pending"|"rejected") => ({
 
 // ── Submit Payment Modal ──────────────────────────────────────────────────────
 
-function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:()=>void }) {
+function SubmitPaymentModal({ bills, periodLabel, onClose, onSubmit }: {
+  bills: BillItem[]; periodLabel: string; onClose:()=>void;
+  onSubmit:(info:{ method:string; refNo:string; date:string; notes:string; proofFile:File|null })=>void;
+}) {
   const [method, setMethod] = useState("");
   const [refNo,  setRefNo]  = useState("");
   const [date,   setDate]   = useState("");
   const [notes,  setNotes]  = useState("");
-  const [hasReceipt, setHasReceipt] = useState(false);
+  const [proofFile, setProofFile] = useState<File|null>(null);
+  const [proofPreview, setProofPreview] = useState<string|null>(null);
+  const [proofError, setProofError] = useState("");
   const canSubmit = method && refNo && date;
-  const totalDue = BILLS.filter(b=>b.status==="unpaid"||b.status==="awaiting-verification").reduce((s,b)=>s+b.amount,0);
+  const totalDue = bills.filter(b=>b.status==="unpaid"||b.status==="awaiting-verification").reduce((s,b)=>s+b.amount,0);
+
+  const MAX_BYTES = 5 * 1024 * 1024;
+  const pickProof = (f: File | undefined) => {
+    if (!f) return;
+    if (!f.type.startsWith("image/") && f.type !== "application/pdf") { setProofError("Only images or PDF files are accepted."); return; }
+    if (f.size > MAX_BYTES) { setProofError("File is larger than 5MB."); return; }
+    setProofError("");
+    setProofFile(f);
+    setProofPreview(f.type.startsWith("image/") ? URL.createObjectURL(f) : null);
+  };
 
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
@@ -86,15 +115,15 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
             </div>
             <div style={{ textAlign:"right" as const }}>
               <p style={{ margin:"0 0 2px", fontSize:10, color:"rgba(255,255,255,.65)", fontFamily:IN }}>Billing Period</p>
-              <p style={{ margin:0, fontSize:13, fontWeight:700, color:"white", fontFamily:QS }}>{BILLING_DATA.period}</p>
+              <p style={{ margin:0, fontSize:13, fontWeight:700, color:"white", fontFamily:QS }}>{periodLabel}</p>
             </div>
           </div>
 
           {/* Bill breakdown */}
           <div style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:12 }}>
             <p style={{ margin:"0 0 10px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Bill Breakdown</p>
-            {BILLS.map((b,i)=>(
-              <div key={b.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:i<BILLS.length-1?"1px solid #F9FAFB":"none" }}>
+            {bills.map((b,i)=>(
+              <div key={b.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:i<bills.length-1?"1px solid #F9FAFB":"none" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   <b.icon size={13} color={b.color}/>
                   <span style={{ fontSize:12, color:"#374151", fontFamily:IN }}>{b.label}</span>
@@ -143,11 +172,24 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
           {/* Upload Receipt */}
           <div style={{ background:"white", borderRadius:18, padding:"16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:12 }}>
             <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Proof of Payment (Optional)</p>
-            <div onClick={()=>setHasReceipt(p=>!p)} style={{ border:`2px dashed ${hasReceipt?"#9772F6":"#E5E7EB"}`, borderRadius:14, padding:"22px 16px", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, background:hasReceipt?"#F5F0FF":"#FAFAFA" }}>
-              {hasReceipt ? <CheckCircle size={28} color="#9772F6"/> : <Camera size={28} color="#D1D5DB"/>}
-              <p style={{ margin:0, fontSize:12, fontWeight:700, color:hasReceipt?"#9772F6":"#9CA3AF", fontFamily:QS }}>{hasReceipt?"Receipt Attached":"Tap to Upload Receipt"}</p>
+            <label style={{ border:`2px dashed ${proofFile?"#9772F6":"#E5E7EB"}`, borderRadius:14, padding:"22px 16px", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, background:proofFile?"#F5F0FF":"#FAFAFA" }}>
+              <input type="file" accept="image/*,application/pdf" style={{ display:"none" }} onChange={e=>pickProof(e.target.files?.[0])}/>
+              {proofPreview ? (
+                <img src={proofPreview} alt="Receipt preview" style={{ width:80, height:80, objectFit:"cover", borderRadius:10 }}/>
+              ) : proofFile ? (
+                <FileText size={28} color="#9772F6"/>
+              ) : (
+                <Camera size={28} color="#D1D5DB"/>
+              )}
+              <p style={{ margin:0, fontSize:12, fontWeight:700, color:proofFile?"#9772F6":"#9CA3AF", fontFamily:QS, textAlign:"center" as const, wordBreak:"break-all" as const }}>
+                {proofFile ? proofFile.name : "Tap to Upload Receipt"}
+              </p>
               <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>Photo, screenshot, or PDF · Max 5MB</p>
-            </div>
+            </label>
+            {proofFile && (
+              <button onClick={()=>{ setProofFile(null); setProofPreview(null); }} style={{ marginTop:8, background:"none", border:"none", color:"#EF4444", fontSize:11, fontWeight:700, fontFamily:QS, cursor:"pointer", padding:0 }}>Remove file</button>
+            )}
+            {proofError && <p style={{ margin:"8px 0 0", fontSize:11, color:"#EF4444", fontFamily:IN }}>{proofError}</p>}
           </div>
 
           {/* Notes */}
@@ -159,7 +201,7 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
         </div>
         <div style={{ padding:"10px 16px 28px", background:"white", borderTop:"1px solid #F3F4F6", flexShrink:0, display:"flex", gap:10 }}>
           <button onClick={onClose} style={{ flex:1, padding:"13px 0", borderRadius:14, border:"1.5px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Cancel</button>
-          <button onClick={()=>{ if(canSubmit){ onSubmit(); onClose(); } }} style={{ flex:2, padding:"13px 0", borderRadius:14, border:"none", background:canSubmit?GRAD:"#E5E7EB", color:canSubmit?"white":"#9CA3AF", fontSize:13, fontWeight:800, cursor:canSubmit?"pointer":"default", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:canSubmit?"0 4px 14px rgba(151,114,246,.3)":undefined }}>
+          <button onClick={()=>{ if(canSubmit){ onSubmit({ method, refNo, date, notes, proofFile }); onClose(); } }} style={{ flex:2, padding:"13px 0", borderRadius:14, border:"none", background:canSubmit?GRAD:"#E5E7EB", color:canSubmit?"white":"#9CA3AF", fontSize:13, fontWeight:800, cursor:canSubmit?"pointer":"default", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:canSubmit?"0 4px 14px rgba(151,114,246,.3)":undefined }}>
             <Check size={15}/> Submit Payment
           </button>
         </div>
@@ -170,7 +212,7 @@ function SubmitPaymentModal({ onClose, onSubmit }: { onClose:()=>void; onSubmit:
 
 // ── Payment History Modal ─────────────────────────────────────────────────────
 
-function PaymentHistoryModal({ onClose, onSelect }: { onClose:()=>void; onSelect:(rec:PayRecord)=>void }) {
+function PaymentHistoryModal({ history, onClose, onSelect }: { history: PayRecord[]; onClose:()=>void; onSelect:(rec:PayRecord)=>void }) {
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:75, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
       <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"85%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
@@ -180,14 +222,20 @@ function PaymentHistoryModal({ onClose, onSelect }: { onClose:()=>void; onSelect
           </div>
           <div style={{ flex:1 }}>
             <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Payment History</p>
-            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{HISTORY.length} past payments</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{history.length} past payments</p>
           </div>
           <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <X size={15} color="#6B7280"/>
           </button>
         </div>
         <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 16px 28px", display:"flex", flexDirection:"column" as const, gap:10 }}>
-          {HISTORY.map(rec=>{
+          {history.length === 0 && (
+            <div style={{ textAlign:"center", paddingTop:40 }}>
+              <Receipt size={36} color="#D1D5DB"/>
+              <p style={{ fontSize:13, color:"#9CA3AF", marginTop:10, fontFamily:IN }}>No payment submissions yet.</p>
+            </div>
+          )}
+          {history.map(rec=>{
             const sm = payRecStatusMeta(rec.status);
             return (
               <div key={rec.id} onClick={()=>onSelect(rec)} style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", cursor:"pointer" }}>
@@ -222,14 +270,8 @@ function PaymentHistoryModal({ onClose, onSelect }: { onClose:()=>void; onSelect
 
 // ── Payment Detail Modal ──────────────────────────────────────────────────────
 
-function PaymentDetailModal({ rec, onClose }: { rec:PayRecord; onClose:()=>void }) {
+function PaymentDetailModal({ rec, bhName, onClose }: { rec:PayRecord; bhName:string; onClose:()=>void }) {
   const sm = payRecStatusMeta(rec.status);
-  const billBreakdown = [
-    { label:"Monthly Rent",  amount:3500 },
-    { label:"Water",         amount:140  },
-    { label:"Electricity",   amount:320  },
-    { label:"Garbage Fee",   amount:100  },
-  ];
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
       <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"88%", display:"flex", flexDirection:"column" as const }}>
@@ -269,24 +311,28 @@ function PaymentDetailModal({ rec, onClose }: { rec:PayRecord; onClose:()=>void 
               { label:"Payment Date",    val:rec.date        },
               { label:"Billing Period",  val:rec.period      },
               { label:"Payment Method",  val:rec.method      },
-              { label:"Boarding House",  val:BH_DATA.name    },
+              { label:"Boarding House",  val:bhName          },
             ].map(({ label, val })=>(
               <div key={label} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderBottom:"1px solid #F9FAFB" }}>
                 <p style={{ margin:0, fontSize:12, color:"#9CA3AF", fontFamily:IN }}>{label}</p>
                 <p style={{ margin:0, fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:QS, textAlign:"right" as const, maxWidth:"55%" }}>{val}</p>
               </div>
             ))}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0" }}>
+              <p style={{ margin:0, fontSize:12, color:"#9CA3AF", fontFamily:IN }}>Proof of Payment</p>
+              {rec.proofUrl
+                ? <a href={rec.proofUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:12, color:"#9772F6", fontFamily:QS, fontWeight:800, textDecoration:"none" }}>View File</a>
+                : <p style={{ margin:0, fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:QS }}>Not attached</p>}
+            </div>
           </div>
-          {/* Breakdown */}
+          {/* This payment's bill */}
           <div style={{ background:"white", borderRadius:18, padding:"16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:12 }}>
-            <p style={{ margin:"0 0 12px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Payment Breakdown</p>
-            {billBreakdown.map((b,i)=>(
-              <div key={b.label} style={{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:i<billBreakdown.length-1?"1px solid #F9FAFB":"none" }}>
-                <span style={{ fontSize:12, color:"#374151", fontFamily:IN }}>{b.label}</span>
-                <span style={{ fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{php(b.amount)}</span>
-              </div>
-            ))}
-            <div style={{ display:"flex", justifyContent:"space-between", paddingTop:10, borderTop:"1.5px solid #F3F4F6", marginTop:4 }}>
+            <p style={{ margin:"0 0 12px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Payment For</p>
+            <div style={{ display:"flex", justifyContent:"space-between", paddingBottom:10, borderBottom:"1px solid #F9FAFB" }}>
+              <span style={{ fontSize:12, color:"#374151", fontFamily:IN }}>{rec.billLabel}</span>
+              <span style={{ fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{php(rec.amount)}</span>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", paddingTop:10 }}>
               <span style={{ fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Total</span>
               <span style={{ fontSize:15, fontWeight:800, color:"#9772F6", fontFamily:QS }}>{php(rec.amount)}</span>
             </div>
@@ -309,17 +355,92 @@ function PaymentDetailModal({ rec, onClose }: { rec:PayRecord; onClose:()=>void 
 
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
-export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
+export function StudentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { go:(s:string)=>void; relatedId?: string; onDeepLinkConsumed?: () => void }) {
   const [showSubmit, setShowSubmit] = useState(false);
   const [submitted, setSubmitted]   = useState(false);
   const [selRec, setSelRec]         = useState<PayRecord|null>(null);
   const [histOpen, setHistOpen]     = useState(false);
   const [selBill, setSelBill]       = useState<BillItem|null>(null);
 
-  const totalDue  = BILLS.reduce((s,b)=>s+b.amount,0);
-  const totalPaid = submitted ? BILLS.filter(b=>b.status==="unpaid").reduce((s,b)=>s+b.amount,0) : 0;
+  const [profile, setProfile] = useState<MyStudentProfile>(EMPTY_PROFILE);
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [current, setCurrent] = useState<StudentBilling | null>(null);
+  const [allHistory, setAllHistory] = useState<PayRecord[]>([]);
+  const [proofUploadWarning, setProofUploadWarning] = useState("");
+
+  // Opened from a "Payment Verified"/"Payment Rejected" notification tap — jump straight to
+  // that exact transaction's receipt, instead of leaving the student to hunt through their
+  // whole payment history for it. Re-checks as allHistory loads in since that's async.
+  useEffect(() => {
+    if (!relatedId) return;
+    const match = allHistory.find(r => r.id === relatedId);
+    if (match) { setSelRec(match); onDeepLinkConsumed?.(); }
+  }, [relatedId, allHistory, onDeepLinkConsumed]);
+
+  const refresh = async () => {
+    const periods = await getMyBills();
+    const latest = periods[0] ?? null;
+    setCurrent(latest);
+    setAllHistory(periods.flatMap(p => p.transactions.map((tx): PayRecord => ({
+      id: tx.id, receiptNo: `RCP-${tx.id.slice(0, 8).toUpperCase()}`,
+      date: fmtDate(tx.paymentDate ?? tx.submittedAt), amount: tx.amount, status: tx.status,
+      method: tx.method ?? "—", period: p.periodLabel, refNo: tx.referenceNo ?? "—", billLabel: tx.billLabel, proofUrl: tx.proofUrl ?? null,
+    }))));
+  };
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([getMyProfile(), getMyAssignment()]).then(([p, a]) => {
+      if (!active) return;
+      if (p) setProfile(p);
+      if (a) setAssignment(a);
+    });
+    refresh();
+    return () => { active = false; };
+  }, []);
+
+  const bills: BillItem[] = (current?.bills ?? []).map(b => ({
+    id: b.id, label: b.label, amount: b.amount,
+    status: submitted && b.status === "unpaid" ? "awaiting-verification" : b.status,
+    dueDate: fmtDate(current?.dueDate), ...(BILL_VISUAL[b.key] ?? BILL_VISUAL.other),
+  }));
+  const periodLabel = current?.periodLabel ?? "—";
+
+  const totalDue  = bills.reduce((s,b)=>s+b.amount,0);
+  const totalPaid = (current?.bills ?? []).reduce((s,b)=>s+b.paidAmount,0);
   const balance   = totalDue - totalPaid;
   const pct       = totalDue>0 ? Math.round((totalPaid/totalDue)*100) : 0;
+
+  const doSubmit = async (info: { method:string; refNo:string; date:string; notes:string; proofFile:File|null }) => {
+    setProofUploadWarning("");
+    const outstanding = (current?.bills ?? []).filter(b => b.status === "unpaid" || b.status === "overdue");
+    if (outstanding.length === 0) return;
+    // One receipt covers the whole submission — uploaded once against the first bill, then the
+    // same URL is attached to every payment_records row this submission creates, rather than
+    // re-uploading (and duplicating storage of) the identical file per bill.
+    let proofUrl: string | undefined;
+    if (info.proofFile) {
+      const up = await uploadPaymentProof(info.proofFile, outstanding[0].id);
+      if (up.ok === false) setProofUploadWarning(`Payment submitted, but the receipt file couldn't be uploaded: ${up.error}`);
+      else proofUrl = up.url;
+    }
+    let firstRecordId: string | undefined;
+    for (const b of outstanding) {
+      const res = await submitPaymentRecord({ billId: b.id, amount: b.amount, role: "student", method: info.method, referenceNo: info.refNo, paymentDate: info.date, proofUrl });
+      if (res.ok === false) { console.error("submitPaymentRecord failed:", res.error); continue; }
+      if (!firstRecordId) firstRecordId = res.id;
+    }
+    setSubmitted(true);
+    // relatedId lets the landlord's notification tap open this exact transaction directly
+    // (same deep-link pattern as a registration request), instead of just a generic nudge
+    // to go check the Payments screen themselves.
+    notifyLandlordOfBoardingHouse(assignment.bh.id, {
+      type: "payment", title: "Payment Awaiting Verification",
+      description: `${profile.name} submitted a payment for verification.`,
+      destination: "payments", relatedId: firstRecordId,
+    });
+    refresh();
+  };
 
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F7F8FC", position:"relative" as const }}>
@@ -328,7 +449,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
       <div style={{ flexShrink:0, padding:"52px 20px 24px", backgroundImage:GRAD, position:"relative" as const, overflow:"hidden" }}>
         <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
         <p style={{ margin:"0 0 2px", fontSize:13, color:"rgba(255,255,255,.7)", fontFamily:IN }}>Billing Period</p>
-        <h1 style={{ margin:"0 0 16px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>{BILLING_DATA.period}</h1>
+        <h1 style={{ margin:"0 0 16px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>{periodLabel}</h1>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:14 }}>
           {[
             { label:"Total Due", val:php(totalDue),  color:"rgba(255,255,255,.85)" },
@@ -344,10 +465,25 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
         <div style={{ height:6, background:"rgba(255,255,255,.2)", borderRadius:4, overflow:"hidden" }}>
           <div style={{ height:"100%", borderRadius:4, background:"#86EFAC", width:`${pct}%`, transition:"width .4s ease" }}/>
         </div>
-        <p style={{ margin:"5px 0 0", fontSize:10, color:"rgba(255,255,255,.65)", fontFamily:IN }}>Due by {BILLING_DATA.dueDate}</p>
+        <p style={{ margin:"5px 0 0", fontSize:10, color:"rgba(255,255,255,.65)", fontFamily:IN }}>Due by {fmtDate(current?.dueDate)}</p>
       </div>
 
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
+
+        {/* Landlord's note for this billing period, e.g. "water rate increased this month" */}
+        {current?.note && (
+          <div style={{ margin:"14px 16px 0", background:"#F5F0FF", borderRadius:16, padding:"12px 14px", display:"flex", alignItems:"flex-start", gap:10 }}>
+            <FileText size={14} color="#9772F6" style={{ flexShrink:0, marginTop:1 }}/>
+            <p style={{ margin:0, fontSize:11, color:"#6B21D9", fontFamily:IN, lineHeight:1.55 }}>{current.note}</p>
+          </div>
+        )}
+
+        {proofUploadWarning && (
+          <div style={{ margin:"14px 16px 0", background:"#FEF3C7", borderRadius:16, padding:"12px 14px", display:"flex", alignItems:"flex-start", gap:10 }}>
+            <AlertCircle size={14} color="#D97706" style={{ flexShrink:0, marginTop:1 }}/>
+            <p style={{ margin:0, fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.55 }}>{proofUploadWarning}</p>
+          </div>
+        )}
 
         {/* Success banner */}
         {submitted && (
@@ -364,20 +500,20 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
         <div style={{ padding:"14px 16px 0" }}>
           <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:"0 0 12px", fontFamily:QS }}>Payment Summary</p>
           <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 2px 10px rgba(0,0,0,.05)", marginBottom:6 }}>
-            {[
-              { label:"Monthly Rent",   amount:BILLING_DATA.amount, color:"#9772F6" },
-              { label:"Electric Bill",  amount:BILLING_DATA.electricity, color:"#D97706" },
-              { label:"Water Bill",     amount:BILLING_DATA.water,       color:"#3B82F6" },
-              { label:"Garbage Fee",    amount:BILLING_DATA.garbage,     color:"#EF4444" },
-            ].map(({ label, amount, color },i,arr)=>(
-              <div key={label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px" }}>
+            {bills.length === 0 && (
+              <div style={{ padding:"18px 16px", textAlign:"center" as const }}>
+                <span style={{ fontSize:12, color:"#9CA3AF", fontFamily:IN }}>No bills for this period yet.</span>
+              </div>
+            )}
+            {bills.map(({ id, label, amount, color })=>(
+              <div key={id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px" }}>
                 <span style={{ fontSize:12, color:"#374151", fontFamily:IN }}>{label}</span>
                 <span style={{ fontSize:13, fontWeight:700, color, fontFamily:QS }}>{php(amount)}</span>
               </div>
             ))}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px", background:"#F9FAFB", borderTop:"1.5px solid #F3F4F6" }}>
               <span style={{ fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Estimated Monthly Total</span>
-              <span style={{ fontSize:16, fontWeight:800, color:"#9772F6", fontFamily:QS }}>{php(BILLING_DATA.total)}</span>
+              <span style={{ fontSize:16, fontWeight:800, color:"#9772F6", fontFamily:QS }}>{php(totalDue)}</span>
             </div>
           </div>
         </div>
@@ -386,11 +522,11 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
         <div style={{ padding:"14px 16px 0" }}>
           <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:"0 0 12px", fontFamily:QS }}>Current Bill</p>
           <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 2px 10px rgba(0,0,0,.05)", marginBottom:6 }}>
-            {BILLS.map((bill,i)=>{
+            {bills.map((bill,i)=>{
               const sm = statusMeta(submitted && bill.status==="unpaid" ? "awaiting-verification" : bill.status);
               const SIcon = sm.Icon;
               return (
-                <div key={bill.id} onClick={()=>setSelBill(bill)} style={{ padding:"14px 16px", borderBottom:i<BILLS.length-1?"1px solid #F3F4F6":"none", cursor:"pointer" }}>
+                <div key={bill.id} onClick={()=>setSelBill(bill)} style={{ padding:"14px 16px", borderBottom:i<bills.length-1?"1px solid #F3F4F6":"none", cursor:"pointer" }}>
                   <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                     <div style={{ width:40, height:40, borderRadius:13, background:bill.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
                       <bill.icon size={18} color={bill.color}/>
@@ -412,7 +548,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
             <div style={{ padding:"12px 16px", background:"#FAFAFA", borderTop:"1px solid #F3F4F6" }}>
               <div style={{ display:"flex", justifyContent:"space-between" }}>
                 <span style={{ fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Billing Period</span>
-                <span style={{ fontSize:11, fontWeight:700, color:"#374151", fontFamily:QS }}>{BILLING_DATA.period}</span>
+                <span style={{ fontSize:11, fontWeight:700, color:"#374151", fontFamily:QS }}>{periodLabel}</span>
               </div>
             </div>
           </div>
@@ -436,7 +572,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
               </div>
               <div style={{ textAlign:"left" as const }}>
                 <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Payment History</p>
-                <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{HISTORY.length} past payments</p>
+                <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{allHistory.length} past payments</p>
               </div>
             </div>
             <ChevronRight size={16} color="#9CA3AF"/>
@@ -463,7 +599,7 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
             {[
               { label:"Amount Due",    val:php(selBill.amount) },
               { label:"Due Date",      val:selBill.dueDate     },
-              { label:"Billing Month", val:BILLING_DATA.period },
+              { label:"Billing Month", val:periodLabel },
               { label:"Status",        val:statusMeta(selBill.status).label },
             ].map(({ label, val })=>(
               <div key={label} style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", borderBottom:"1px solid #F3F4F6" }}>
@@ -476,16 +612,9 @@ export function StudentPaymentsScreen({ go }: { go:(s:string)=>void }) {
         </div>
       )}
 
-      {showSubmit && <SubmitPaymentModal onClose={()=>setShowSubmit(false)} onSubmit={()=>{
-        setSubmitted(true);
-        addNotification({
-          role: "landlord", type: "payment", title: "Payment Awaiting Verification",
-          description: `${STUDENT_DATA.name} submitted a payment for verification.`,
-          destination: "payments",
-        });
-      }}/>}
-      {histOpen  && <PaymentHistoryModal onClose={()=>setHistOpen(false)} onSelect={rec=>setSelRec(rec)}/>}
-      {selRec    && <PaymentDetailModal rec={selRec} onClose={()=>setSelRec(null)}/>}
+      {showSubmit && <SubmitPaymentModal bills={bills} periodLabel={periodLabel} onClose={()=>setShowSubmit(false)} onSubmit={doSubmit}/>}
+      {histOpen  && <PaymentHistoryModal history={allHistory} onClose={()=>setHistOpen(false)} onSelect={rec=>setSelRec(rec)}/>}
+      {selRec    && <PaymentDetailModal rec={selRec} bhName={assignment.bh.name} onClose={()=>setSelRec(null)}/>}
     </div>
   );
 }

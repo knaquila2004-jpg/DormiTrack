@@ -1,35 +1,47 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  MapPin, Navigation, Home, Building2, Clock, Layers,
+  Navigation, Home, Building2, Layers,
   LocateFixed, ZoomIn, ZoomOut, CheckCircle, XCircle, AlertCircle,
-  LogIn, LogOut, Wifi, Compass, Shield, ChevronDown, ChevronUp,
-  Radio, Check, X, Crosshair, RefreshCw, Eye,
+  LogIn, LogOut, Wifi, Shield, ChevronDown, ChevronUp,
+  Radio, Check, X, Crosshair, RefreshCw, Eye, Maximize2,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA, STUDENT_DATA, STAY_DATA } from "./StudentHome";
 import { MAP_CENTER } from "./shared";
+import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment, MyBoardingHouse, MyRoom } from "./studentAssignmentStore";
+import { FullScreenBHMap } from "./components/FullScreenBHMap";
+
+const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: MAP_CENTER.lat, lng: MAP_CENTER.lng, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
-import { addNotification } from "./notificationStore";
+import { addNotification, notifyLandlordOfBoardingHouse } from "./notificationStore";
+import { getMyCheckInOutHistory, recordCheckInOut, todaysAttendanceStatus, CheckInOutRecord } from "./checkInOutStore";
+import { haversineMeters, reverseGeocode } from "./components/mapGeo";
+import { supabase } from "../lib/supabase";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
+// A GPS fix's own reported accuracy radius is real uncertainty, not a rendering bug — a pin that
+// looks like it's "on the road" is very often an honestly-drawn fix whose true position (anywhere
+// within its accuracy circle) is actually indoors. Rather than comparing straight-line distance
+// against the bare geofence radius (which would reject a student who is genuinely on-site just
+// because their device's fix landed a little outside it), the vicinity check below gives the
+// fix's own accuracy as a benefit of the doubt: accepted whenever the *closest possible* real
+// position (distance minus accuracy) could still be inside the radius. A fix whose accuracy is
+// worse than MAX_USABLE_ACCURACY is too noisy to make either call confidently, so that case asks
+// for a retry instead of silently accepting or rejecting off a effectively meaningless number.
+const MAX_USABLE_ACCURACY = 150;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type AttendanceStatus = "not-checked-in" | "checked-in" | "checked-out";
-type GpsStatus        = "active" | "disabled" | "denied";
-type LocationProximity = "within" | "outside";
 
-interface VerificationRecord {
-  id: string;
-  type: "checkin" | "checkout";
-  date: string;
-  time: string;
-  address: string;
-  coords: string;
-  result: "verified" | "failed";
-}
+interface GeoFix { lat: number; lng: number; accuracyMeters: number }
 
 interface ActivityLog {
   id: string;
@@ -53,19 +65,79 @@ const NOW = new Date();
 const TODAY_STR  = fmtDate(NOW);
 const NOW_TIME   = fmtTime(NOW);
 
-// ── Seed data ─────────────────────────────────────────────────────────────────
+// Real device geolocation — no simulation. `freshnessMs` controls how old a cached browser fix
+// is allowed to be: a generous cache is fine for the passive "Current Location" status card, but
+// the actual check-in/check-out decision (fetchPosition(0) inside doAction below) always demands
+// a brand-new fix so a stale position from earlier in the session can never be used to fake being
+// on-site.
+//
+// A single getCurrentPosition() call is what used to back this — but the very first fix a browser
+// hands back is routinely a coarse, cell-tower/Wi-Fi-triangulated position (accuracy in the tens to
+// low hundreds of meters), not an actual GPS lock. That's what makes the student's own pin look
+// like it's "on the road" instead of at their real position — the fix itself is genuinely that far
+// off, nothing is misplacing an otherwise-correct coordinate. watchPosition() lets the device's GPS
+// chip keep refining for a few seconds; this keeps whichever sample reports the smallest accuracy
+// radius, and returns early the moment a tight (<=15m) fix comes in instead of always waiting out
+// the full window.
+function fetchPosition(freshnessMs = 30000): Promise<GeoFix | null> {
+  return new Promise(resolve => {
+    if (!("geolocation" in navigator)) { resolve(null); return; }
+    let best: GeoFix | null = null;
+    let settled = false;
+    let watchId: number | null = null;
+    const finish = (result: GeoFix | null) => {
+      if (settled) return;
+      settled = true;
+      if (watchId != null) navigator.geolocation.clearWatch(watchId);
+      clearTimeout(timer);
+      resolve(result);
+    };
+    watchId = navigator.geolocation.watchPosition(
+      pos => {
+        const fix: GeoFix = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracyMeters: pos.coords.accuracy };
+        if (!best || fix.accuracyMeters < best.accuracyMeters) best = fix;
+        if (fix.accuracyMeters <= 15) finish(fix);
+      },
+      () => finish(best),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: freshnessMs },
+    );
+    // Give the GPS chip a real window to refine its fix rather than settling for whatever
+    // (possibly coarse) reading arrives first.
+    const timer = setTimeout(() => finish(best), 8000);
+  });
+}
 
-const SEED_LOGS: ActivityLog[] = [
-  { id:"l1", msg:"Checked Out — Aug 3, 5:46 PM",         time:"Yesterday", color:"#D97706", bg:"#FEF3C7", Icon: LogOut      },
-  { id:"l2", msg:"Checked In — Aug 3, 8:02 AM",          time:"Yesterday", color:"#16A34A", bg:"#DCFCE7", Icon: LogIn       },
-  { id:"l3", msg:"Location Verified — within 18m",        time:"Yesterday", color:"#9772F6", bg:"#F5F0FF", Icon: CheckCircle },
-  { id:"l4", msg:"GPS Enabled — location acquired",       time:"2d ago",    color:"#3B82F6", bg:"#EFF6FF", Icon: Radio       },
-  { id:"l5", msg:"Verification Failed — outside radius",  time:"3d ago",    color:"#EF4444", bg:"#FEE2E2", Icon: XCircle     },
-];
+// ── Real check-in/out history → activity log rows ──────────────────────────
+
+function timeAgoLabel(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return "Just now";
+  if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
+  const day = Math.floor(hr / 24);
+  if (day === 1) return "Yesterday";
+  return `${day}d ago`;
+}
+
+function toActivityLog(rec: CheckInOutRecord): ActivityLog {
+  const isIn = rec.type === "checkin";
+  return {
+    id: rec.id,
+    msg: `${isIn ? "Checked In" : "Checked Out"} — ${fmtDate(new Date(rec.occurredAt))}, ${fmtTime(new Date(rec.occurredAt))}`,
+    time: timeAgoLabel(rec.occurredAt),
+    color: isIn ? "#16A34A" : "#D97706", bg: isIn ? "#DCFCE7" : "#FEF3C7",
+    Icon: isIn ? LogIn : LogOut,
+  };
+}
 
 // ── Success Modal ─────────────────────────────────────────────────────────────
 
-function SuccessModal({ type, time, onClose }: { type:"checkin"|"checkout"; time:string; onClose:()=>void }) {
+function SuccessModal({ type, time, onClose, studentData: STUDENT_DATA, bhData: BH_DATA, roomData: ROOM_DATA }: {
+  type:"checkin"|"checkout"; time:string; onClose:()=>void;
+  studentData: MyStudentProfile; bhData: MyBoardingHouse; roomData: MyRoom;
+}) {
   const isIn = type === "checkin";
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.6)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}
@@ -118,98 +190,67 @@ function SuccessModal({ type, time, onClose }: { type:"checkin"|"checkout"; time
 
 // ── Map SVG Component ─────────────────────────────────────────────────────────
 
-function MapView({ withinRadius, zoom, onZoomIn, onZoomOut, onRecenter, simDistance }: {
-  withinRadius: boolean; zoom: number; onZoomIn:()=>void; onZoomOut:()=>void; onRecenter:()=>void; simDistance: number;
+function MapView({ withinRadius, zoom, onZoomIn, onZoomOut, onRecenter, studentPos, accuracyMeters, distanceMeters, radiusMeters, bhData: BH_DATA }: {
+  withinRadius: boolean; zoom: number; onZoomIn:()=>void; onZoomOut:()=>void; onRecenter:()=>void;
+  studentPos: { lat: number; lng: number } | null; accuracyMeters: number | null; distanceMeters: number | null; radiusMeters: number;
+  bhData: MyBoardingHouse;
 }) {
   const [mapType, setMapType] = useState<"standard"|"satellite">("standard");
-  const [showMenu, setShowMenu] = useState(false);
+  const [showFullMap, setShowFullMap] = useState(false);
   const mapRef = useRef<GoogleMapHandle>(null);
 
-  const travelMin  = Math.round(simDistance / 80);
-
-  // Simulated GPS position (no live location backend in this prototype) — offset
-  // due north of the boarding house by `simDistance` meters.
   const bhPos = { lat: BH_DATA.lat, lng: BH_DATA.lng };
-  const studentPos = { lat: BH_DATA.lat + simDistance / 111320, lng: BH_DATA.lng };
 
+  // Just the boarding house pin now — no "student" marker/dashed line to it, and no
+  // accuracy circle (that was only ever drawn around that same removed marker).
+  // withinRadius/distanceMeters (from real geolocation) still drive the geofence
+  // circle below and the Check In/Check Out button state; only the visual "you are
+  // here" pin + connecting line + the Distance/Est. Walk badge were removed.
   const markers: MapMarker[] = [
     {
       id: "bh", variant: "bh", position: bhPos, title: BH_DATA.name, zIndex: 10,
       infoContent: <MapInfoCard title={BH_DATA.name} subtitle={BH_DATA.address} rows={[["Landlord", BH_DATA.landlord], ["Contact", BH_DATA.contact]]} />,
     },
-    {
-      id: "student", variant: "student", position: studentPos, title: "You", zIndex: 5,
-      infoContent: <MapInfoCard title="Your Location" rows={[["Status", withinRadius ? "Within radius" : "Outside radius"], ["Distance", `${simDistance} m`]]} />,
-    },
   ];
 
   return (
     <div style={{ position:"relative" as const, height:280, background:"#E8EDF5", overflow:"hidden", flexShrink:0 }}>
-      {/* Base map */}
       <GoogleMapCanvas
         ref={mapRef} center={bhPos} zoom={zoom} mapType={mapType}
         markers={markers}
-        polyline={[studentPos, bhPos]}
-        circle={{ center: bhPos, radiusMeters: 50, color: withinRadius ? "#9772F6" : "#EF4444" }}
+        circle={{ center: bhPos, radiusMeters, color: withinRadius ? "#9772F6" : "#EF4444" }}
       />
 
-      {/* Top-left distance badge */}
-      <div style={{ position:"absolute" as const, top:10, left:12, zIndex:20 }}>
-        <div style={{ background:"white", borderRadius:13, padding:"8px 12px", boxShadow:"0 3px 12px rgba(0,0,0,.14)", display:"flex", alignItems:"center", gap:8 }}>
-          <div style={{ width:28, height:28, borderRadius:9, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <MapPin size={13} color="white"/>
-          </div>
-          <div>
-            <p style={{ margin:0, fontSize:8, color:"#9CA3AF", fontFamily:IN }}>Distance</p>
-            <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{simDistance}m away</p>
-          </div>
-          <div style={{ width:1, height:22, background:"#F3F4F6" }}/>
-          <div style={{ width:28, height:28, borderRadius:9, background:"#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Clock size={13} color="#D97706"/>
-          </div>
-          <div>
-            <p style={{ margin:0, fontSize:8, color:"#9CA3AF", fontFamily:IN }}>Est. Walk</p>
-            <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{travelMin < 1 ? "<1 min" : `${travelMin} min`}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Top-right map type */}
-      <div style={{ position:"absolute" as const, top:10, right:12, zIndex:20 }}>
-        <button onClick={()=>setShowMenu(p=>!p)} style={{ width:38, height:38, borderRadius:12, background:"white", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 3px 12px rgba(0,0,0,.14)" }}>
-          <Layers size={16} color="#374151"/>
-        </button>
-        {showMenu && (
-          <div style={{ position:"absolute" as const, top:44, right:0, background:"white", borderRadius:14, padding:6, boxShadow:"0 8px 24px rgba(0,0,0,.18)", zIndex:50, minWidth:110 }}>
-            {(["standard","satellite"] as const).map(t=>(
-              <button key={t} onClick={()=>{ setMapType(t); setShowMenu(false); }} style={{ width:"100%", padding:"8px 10px", borderRadius:9, border:"none", cursor:"pointer", background:mapType===t?"#F5F0FF":"white", color:mapType===t?"#9772F6":"#374151", fontSize:11, fontWeight:700, fontFamily:QS, textAlign:"left" as const }}>
-                {t === "standard" ? "Standard" : "Satellite"}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Right zoom controls */}
+      {/* Right-side controls — one vertical stack, all 5 evenly spaced (used to be a
+          separate top-right map-type button plus a differently-spaced 4-button
+          group below it, so the gap above the stack never matched the gaps within it). */}
       <div style={{ position:"absolute" as const, right:12, top:"50%", transform:"translateY(-50%)", display:"flex", flexDirection:"column" as const, gap:6, zIndex:20 }}>
         {[
-          { Icon:ZoomIn,     onClick:onZoomIn  },
-          { Icon:ZoomOut,    onClick:onZoomOut  },
-          { Icon:LocateFixed,onClick:()=>mapRef.current?.recenter() },
-          { Icon:Compass,    onClick:()=>{}     },
-        ].map(({ Icon, onClick },i)=>(
-          <button key={i} onClick={onClick} style={{ width:36, height:36, borderRadius:11, background:"white", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 2px 8px rgba(0,0,0,.12)" }}>
-            <Icon size={15} color={i===2?"#3B82F6":"#374151"}/>
+          { Icon:Layers,     onClick:()=>setMapType(t => t === "standard" ? "satellite" : "standard"), title: mapType === "standard" ? "Switch to satellite view" : "Switch to standard view", color: mapType==="satellite" ? "#9772F6" : "#374151" },
+          { Icon:ZoomIn,     onClick:onZoomIn,                                        color:"#374151" },
+          { Icon:ZoomOut,    onClick:onZoomOut,                                       color:"#374151" },
+          { Icon:LocateFixed,onClick:()=>mapRef.current?.recenter(),                  color:"#3B82F6" },
+          { Icon:Maximize2,  onClick:()=>setShowFullMap(true),                        color:"#374151" },
+        ].map(({ Icon, onClick, title, color },i)=>(
+          <button key={i} onClick={onClick} title={title} style={{ width:36, height:36, borderRadius:11, background:"white", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 2px 8px rgba(0,0,0,.12)" }}>
+            <Icon size={15} color={color}/>
           </button>
         ))}
       </div>
+      {showFullMap && (
+        <FullScreenBHMap
+          bh={{ name: BH_DATA.name, address: BH_DATA.address, landlord: BH_DATA.landlord, contact: BH_DATA.contact, lat: BH_DATA.lat, lng: BH_DATA.lng }}
+          onClose={()=>setShowFullMap(false)}
+          showDistanceInfo={false}
+        />
+      )}
 
       {/* Radius label */}
       <div style={{ position:"absolute" as const, bottom:10, left:"50%", transform:"translateX(-50%)", zIndex:20 }}>
         <div style={{ background:withinRadius?"rgba(22,163,74,.9)":"rgba(239,68,68,.9)", borderRadius:20, padding:"5px 14px", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", gap:5 }}>
           {withinRadius ? <Check size={12} color="white"/> : <X size={12} color="white"/>}
           <span style={{ fontSize:10, fontWeight:800, color:"white", fontFamily:QS }}>
-            {withinRadius ? "Within Verification Radius (50m)" : "Outside Verification Radius"}
+            {withinRadius ? `Within Verification Radius (${radiusMeters}m)` : "Outside Verification Radius"}
           </span>
         </div>
       </div>
@@ -235,27 +276,83 @@ function ReqRow({ label, ok }: { label:string; ok:boolean }) {
 
 export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
   const [attendanceStatus, setAttendanceStatus] = useState<AttendanceStatus>("not-checked-in");
-  const [gpsStatus,        setGpsStatus]        = useState<GpsStatus>("active");
-  const [proximity,        setProximity]        = useState<LocationProximity>("within");
-  const [simDistance,      setSimDistance]      = useState(18);
   const [zoom,             setZoom]             = useState(15);
   const [successModal,     setSuccessModal]     = useState<"checkin"|"checkout"|null>(null);
   const [successTime,      setSuccessTime]      = useState("");
-  const [actLogs,          setActLogs]          = useState<ActivityLog[]>(SEED_LOGS);
+  const [actLogs,          setActLogs]          = useState<ActivityLog[]>([]);
   const [logsOpen,         setLogsOpen]         = useState(true);
   const [currentTime,      setCurrentTime]      = useState(new Date());
   const [isLoading,        setIsLoading]        = useState(false);
 
+  // Real device location — no simulation. Auto-requested on mount (and via the "Refresh
+  // Location" button) purely to drive the passive status card/map below; the actual
+  // check-in/check-out decision in doAction always takes its own brand-new fix rather than
+  // trusting this potentially-stale one.
+  const [myPos,     setMyPos]     = useState<GeoFix | null>(null);
+  const [myAddress, setMyAddress] = useState<string | null>(null);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError,  setGeoError]  = useState<string | null>(null);
+  // Set only in response to an actual Check In/Check Out tap — the reason that specific
+  // attempt was rejected (wrong location, no GPS fix, a server error, ...). Cleared at the
+  // start of every new attempt so a stale rejection never lingers on screen.
+  const [checkInError, setCheckInError] = useState<string | null>(null);
+
+  const refreshLocation = async () => {
+    setGeoLoading(true); setGeoError(null);
+    const pos = await fetchPosition();
+    setGeoLoading(false);
+    if (!pos) { setGeoError("Location access is off or unavailable. Enable it in your browser/device settings."); setMyPos(null); return; }
+    setMyPos(pos);
+    // Fire-and-forget — the address is a nice-to-have for the status card, never a blocker.
+    reverseGeocode(pos).then(r => setMyAddress(r.address || null)).catch(() => {});
+  };
   useEffect(() => {
+    refreshLocation();
     const t = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const withinRadius  = proximity === "within";
-  const gpsActive     = gpsStatus === "active";
-  const canVerify     = gpsActive && withinRadius;
-  const hasApprovedBH = BH_DATA.regStatus === "Approved";
-  const hasInternet   = true;
+  // Real signed-in student + their current assignment, and their real check-in/out
+  // history. Only the location fix itself comes from the browser's geolocation API (no
+  // separate location backend) — every check-in/out the student actually submits is a
+  // real, persisted check_in_out_records row, and is only ever submitted after a fresh
+  // fix confirms they're within the boarding house's configured radius.
+  const [myProfile, setMyProfile] = useState<MyStudentProfile>(EMPTY_PROFILE);
+  const [myAssignment, setMyAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  const refreshHistory = () => {
+    getMyCheckInOutHistory().then(history => {
+      setActLogs(history.map(toActivityLog));
+      setAttendanceStatus(todaysAttendanceStatus(history));
+    });
+  };
+  useEffect(() => {
+    let active = true;
+    Promise.all([getMyProfile(), getMyAssignment(), supabase.auth.getSession()]).then(([profile, assignment, { data: { session } }]) => {
+      if (!active) return;
+      if (profile) setMyProfile(profile);
+      if (assignment) setMyAssignment(assignment);
+      setMyUserId(session?.user?.id ?? null);
+    });
+    refreshHistory();
+    return () => { active = false; };
+  }, []);
+  const STUDENT_DATA = myProfile;
+  const BH_DATA = myAssignment.bh;
+  const ROOM_DATA = myAssignment.room;
+
+  const radiusMeters    = BH_DATA.checkinRadiusMeters || 50;
+  const accuracyMeters  = myPos ? Math.round(myPos.accuracyMeters) : null;
+  const tooImprecise    = accuracyMeters != null && accuracyMeters > MAX_USABLE_ACCURACY;
+  const distanceMeters  = myPos ? Math.round(haversineMeters(myPos, { lat: BH_DATA.lat, lng: BH_DATA.lng })) : null;
+  // Gives the fix's own accuracy margin the benefit of the doubt (see MAX_USABLE_ACCURACY above)
+  // rather than a bare straight-line comparison against the radius.
+  const withinRadius    = distanceMeters != null && accuracyMeters != null && !tooImprecise
+    && distanceMeters <= radiusMeters + accuracyMeters;
+  const gpsActive       = !!myPos && !geoError;
+  const hasApprovedBH   = BH_DATA.regStatus === "Approved";
+  const hasInternet     = true;
 
   const allReqsMet = gpsActive && withinRadius && hasApprovedBH && hasInternet;
 
@@ -270,53 +367,73 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
   const bhStatusBg     = attendanceStatus === "checked-in"  ? "#DCFCE7"
     : attendanceStatus === "checked-out" ? "#F3F4F6" : "#FEF3C7";
 
-  function doAction(type: "checkin"|"checkout") {
-    if (!allReqsMet) return;
+  async function doAction(type: "checkin"|"checkout") {
+    if (!BH_DATA.id || isLoading) return;
+    setCheckInError(null);
     setIsLoading(true);
-    setTimeout(() => {
-      const t = fmtTime(new Date());
-      setSuccessTime(t);
-      setSuccessModal(type);
-      setAttendanceStatus(type === "checkin" ? "checked-in" : "checked-out");
-      const newRec: VerificationRecord = {
-        id: `h${Date.now()}`, type,
-        date: TODAY_STR, time: t,
-        address: "Km 4 National Highway, Tagbilaran City",
-        coords: "9.6533° N, 123.8527° E",
-        result: "verified",
-      };
-      const newLog: ActivityLog = {
-        id: `l${Date.now()}`,
-        msg: type === "checkin" ? `Checked In — ${t}` : `Checked Out — ${t}`,
-        time: "Just now",
-        color: type === "checkin" ? "#16A34A" : "#D97706",
-        bg:    type === "checkin" ? "#DCFCE7" : "#FEF3C7",
-        Icon:  type === "checkin" ? LogIn : LogOut,
-      };
-      setActLogs(l => [newLog, ...l]);
-      setIsLoading(false);
-      const label = type === "checkin" ? "Check-In" : "Check-Out";
-      const notifType = type === "checkin" ? "check-in" : "check-out" as const;
-      addNotification({
-        role: "student", type: notifType, title: `${label} Recorded`,
-        description: `Your ${label.toLowerCase()} was successfully verified at ${BH_DATA.name}.`,
-        destination: "map", relatedId: newRec.id,
-      });
-      addNotification({
-        role: "landlord", type: notifType, title: `Student ${label}`,
-        description: `${STUDENT_DATA.name} ${type === "checkin" ? "checked in" : "checked out"} at ${t}.`,
-        destination: "occupants", relatedId: newRec.id,
-      });
-    }, 1400);
-  }
 
-  // Simulate toggling GPS / proximity for demo
-  function toggleGps() { setGpsStatus(g => g === "active" ? "disabled" : "active"); }
-  function toggleProximity() {
-    setProximity(p => {
-      const next = p === "within" ? "outside" : "within";
-      setSimDistance(next === "within" ? 18 : 380);
-      return next;
+    // Always take a brand-new fix at the moment of the actual attempt — this is the real
+    // enforcement, independent of whatever `myPos` currently shows (which could be several
+    // seconds/minutes stale). A student who is genuinely outside the boarding house's
+    // radius is rejected here every time, regardless of the button's earlier enabled state.
+    const pos = await fetchPosition(0);
+    if (!pos) {
+      setIsLoading(false);
+      setMyPos(null);
+      setCheckInError("We couldn't determine your location. Please enable GPS and try again.");
+      return;
+    }
+    setMyPos(pos);
+
+    const dist = Math.round(haversineMeters(pos, { lat: BH_DATA.lat, lng: BH_DATA.lng }));
+    const accuracy = Math.round(pos.accuracyMeters);
+    if (accuracy > MAX_USABLE_ACCURACY) {
+      setIsLoading(false);
+      setCheckInError(`Your location isn't accurate enough to verify right now (±${accuracy}m). Move outdoors or near a window, then try again.`);
+      return;
+    }
+    // Same accuracy-aware tolerance as the passive `withinRadius` above — a fix that's ${accuracy}m
+    // off can still genuinely be inside the radius, so only reject once even the closest possible
+    // real position (dist - accuracy) would still fall outside it.
+    if (dist > radiusMeters + accuracy) {
+      setIsLoading(false);
+      setCheckInError(`You are not within the boarding house vicinity — you're ${dist}m away (±${accuracy}m accuracy), but must be within ${radiusMeters}m to check ${type === "checkin" ? "in" : "out"}.`);
+      return;
+    }
+    if (!hasApprovedBH) { setIsLoading(false); return; }
+
+    // Best-effort human-readable address for the record — never blocks the check-in/out
+    // itself if the reverse-geocode lookup fails or is slow.
+    const geocoded = await reverseGeocode(pos).catch(() => null);
+    if (geocoded?.address) setMyAddress(geocoded.address);
+
+    const res = await recordCheckInOut({
+      type, boardingHouseId: BH_DATA.id,
+      address: geocoded?.address || undefined, lat: pos.lat, lng: pos.lng, result: "verified",
+    });
+    setIsLoading(false);
+    if (res.ok === false) { setCheckInError(res.error || "Something went wrong. Please try again."); return; }
+
+    const t = fmtTime(new Date(res.record.occurredAt));
+    setSuccessTime(t);
+    setSuccessModal(type);
+    refreshHistory();
+
+    const label = type === "checkin" ? "Check-In" : "Check-Out";
+    const notifType = type === "checkin" ? "check-in" : "check-out" as const;
+    if (myUserId) {
+      addNotification({
+        userId: myUserId, type: notifType, title: `${label} Recorded`,
+        description: `Your ${label.toLowerCase()} was successfully verified at ${BH_DATA.name}.`,
+        destination: "map", relatedId: res.record.id,
+      });
+    }
+    // relatedId is the student's own user id (not the check-in record id) — LandlordOccupantsScreen
+    // keys its occupant list by student id, which is what it needs to open the right profile.
+    notifyLandlordOfBoardingHouse(BH_DATA.id, {
+      type: notifType, title: `Student ${label}`,
+      description: `${STUDENT_DATA.name} ${type === "checkin" ? "checked in" : "checked out"} at ${t}.`,
+      destination: "occupants", relatedId: myUserId ?? undefined,
     });
   }
 
@@ -325,12 +442,12 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
 
       {/* Success Modal */}
       {successModal && (
-        <SuccessModal type={successModal} time={successTime} onClose={()=>setSuccessModal(null)}/>
+        <SuccessModal type={successModal} time={successTime} onClose={()=>setSuccessModal(null)} studentData={STUDENT_DATA} bhData={BH_DATA} roomData={ROOM_DATA}/>
       )}
 
       {/* Loading overlay */}
       {isLoading && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:150, display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:150, display:"flex", alignItems:"center", justifyContent:"center" }}>
           <div style={{ background:"white", borderRadius:20, padding:"24px 28px", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:14 }}>
             <div style={{ width:48, height:48, borderRadius:"50%", backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 16px rgba(151,114,246,.4)" }}>
               <Crosshair size={22} color="white"/>
@@ -355,32 +472,35 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
       {/* ── Scrollable Body ─────────────────────────────────────────────────── */}
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
 
-        {/* MAP */}
+        {/* MAP — real device position (myPos, from browser geolocation), not simulated */}
         <MapView withinRadius={withinRadius} zoom={zoom}
           onZoomIn={()=>setZoom(z=>Math.min(z+1,20))}
           onZoomOut={()=>setZoom(z=>Math.max(z-1,10))}
           onRecenter={()=>{}}
-          simDistance={simDistance}
+          studentPos={myPos}
+          accuracyMeters={myPos ? Math.round(myPos.accuracyMeters) : null}
+          distanceMeters={distanceMeters}
+          radiusMeters={radiusMeters}
+          bhData={BH_DATA}
         />
 
         <div style={{ padding:"16px 16px 32px" }}>
 
-          {/* ── Demo toggles (simulation controls) ────────────────────────── */}
-          <div style={{ background:"white", borderRadius:18, padding:"12px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.06)", marginBottom:14, display:"flex", gap:10 }}>
-            <div style={{ flex:1 }}>
-              <p style={{ margin:"0 0 3px", fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Simulate GPS</p>
-              <button onClick={toggleGps} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:gpsActive?"#DCFCE7":"#FEE2E2", color:gpsActive?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"inline-flex", alignItems:"center", gap:5 }}>
-                <div style={{ width:6, height:6, borderRadius:"50%", background:gpsActive?"#16A34A":"#EF4444" }}/>
-                {gpsActive ? "GPS Active" : "GPS Off"}
-              </button>
+          {/* ── Device Location ──────────────────────────────────────────── */}
+          <div style={{ background:"white", borderRadius:18, padding:"12px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.06)", marginBottom:14, display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:"0 0 3px", fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Device Location</p>
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", background:gpsActive?"#16A34A":"#EF4444", flexShrink:0 }}/>
+                <span style={{ fontSize:12, fontWeight:800, color:gpsActive?"#16A34A":"#EF4444", fontFamily:QS }}>
+                  {gpsActive ? "GPS Active" : geoLoading ? "Locating…" : "GPS Unavailable"}
+                </span>
+              </div>
+              {geoError && <p style={{ margin:"4px 0 0", fontSize:10, color:"#EF4444", fontFamily:IN, lineHeight:1.4 }}>{geoError}</p>}
             </div>
-            <div style={{ width:1, background:"#F3F4F6" }}/>
-            <div style={{ flex:1 }}>
-              <p style={{ margin:"0 0 3px", fontSize:10, fontWeight:700, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Simulate Location</p>
-              <button onClick={toggleProximity} style={{ height:30, padding:"0 14px", borderRadius:20, border:"none", cursor:"pointer", background:withinRadius?"#DCFCE7":"#FEE2E2", color:withinRadius?"#16A34A":"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"inline-flex", alignItems:"center", gap:4 }}>
-                {withinRadius ? <Check size={11}/> : <X size={11}/>} {withinRadius ? "Within Range" : "Outside Range"}
-              </button>
-            </div>
+            <button onClick={refreshLocation} disabled={geoLoading} style={{ height:34, padding:"0 14px", borderRadius:14, border:"none", cursor:geoLoading?"default":"pointer", background:"#F5F0FF", color:"#9772F6", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", gap:6, flexShrink:0, opacity:geoLoading?0.6:1 }}>
+              <RefreshCw size={13}/> Refresh
+            </button>
           </div>
 
           {/* ── Current Location Status ────────────────────────────────────── */}
@@ -399,21 +519,49 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               </div>
             </div>
             {[
-              { label:"Current Address",       val:"Km 4 National Highway, Tagbilaran City, Bohol"  },
-              { label:"GPS Accuracy",          val: gpsActive ? "±5 meters (High)"  : "—"           },
-              { label:"Distance to BH",        val:`${simDistance} meters`                           },
-              { label:"Verification Radius",   val: withinRadius ? "Within Allowed Area (50m)" : "Outside Area (50m)" },
+              { label:"Current Address",       val: myAddress ?? (geoLoading ? "Locating…" : gpsActive ? "Address unavailable" : "—") },
+              { label:"GPS Accuracy",          val: gpsActive && myPos ? `±${Math.round(myPos.accuracyMeters)} meters` : "—" },
+              { label:"Distance to BH",        val: distanceMeters != null ? `${distanceMeters} meters` : "—" },
+              { label:"Verification Radius",   val: distanceMeters == null ? "—" : withinRadius ? `Within Allowed Area (${radiusMeters}m)` : `Outside Area (${radiusMeters}m)` },
             ].map(({ label, val }, i, arr)=>(
               <div key={label} style={{ padding:"9px 0", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
                 <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{label}</p>
                 <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, fontFamily:IN, color:
                   label==="Verification Radius" ? (withinRadius?"#16A34A":"#EF4444")
                   : label==="GPS Accuracy" && !gpsActive ? "#9CA3AF"
+                  : label==="GPS Accuracy" && myPos && myPos.accuracyMeters > radiusMeters ? "#D97706"
                   : "#1F2937"
                 }}>{val}</p>
               </div>
             ))}
           </div>
+
+          {/* ── Low-accuracy notice ──────────────────────────────────────────
+              Shown whenever the device's own reported error margin is wider than the whole
+              geofence — the exact situation that makes an honestly-placed pin look "wrong"
+              (e.g. snapped onto a nearby road) even though nothing actually misplaced it. This is
+              a real device/GPS limitation (common indoors, or on desktop browsers with no GPS
+              chip at all), not a bug in what's drawn on the map — the blue accuracy halo around
+              your pin above shows the same margin visually. Text adapts to whether the check-in
+              logic can still work around it (tolerant math, see MAX_USABLE_ACCURACY) or not. */}
+          {accuracyMeters != null && accuracyMeters > radiusMeters && (
+            <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:16, padding:"12px 14px", marginBottom:14, display:"flex", gap:8, alignItems:"flex-start" }}>
+              <AlertCircle size={14} color="#D97706" style={{ flexShrink:0, marginTop:1 }}/>
+              <p style={{ margin:0, fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.55 }}>
+                {tooImprecise ? (
+                  <>Your device currently reports a location accuracy of only ±{accuracyMeters}m — too wide to reliably
+                  verify against the {radiusMeters}m check-in area, so check-in/out is disabled for now. This is a
+                  device/GPS limitation, not a map error. Try moving outdoors or near a window, tapping Refresh
+                  again, or using a phone instead of a desktop browser.</>
+                ) : (
+                  <>Your device reports a location accuracy of ±{accuracyMeters}m — wider than the {radiusMeters}m
+                  check-in area, which is why your pin can look off (even landing near a nearby road) even while
+                  you're actually inside. Check-in still works — it allows for this margin — but a tighter fix
+                  (move outdoors/near a window, or tap Refresh) will make the map itself more accurate.</>
+                )}
+              </p>
+            </div>
+          )}
 
           {/* ── Boarding House Status ──────────────────────────────────────── */}
           <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 20px rgba(0,0,0,.07)", marginBottom:14 }}>
@@ -475,22 +623,28 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               {/* Verification requirements */}
               <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS }}>Verification Requirements</p>
               <div style={{ marginBottom:16 }}>
-                <ReqRow label="GPS is enabled"                    ok={gpsActive}     />
-                <ReqRow label="Within verification radius (50m)"  ok={withinRadius}  />
-                <ReqRow label="Approved boarding house"           ok={hasApprovedBH} />
-                <ReqRow label="Internet connection"               ok={hasInternet}   />
+                <ReqRow label="GPS is enabled"                              ok={gpsActive}       />
+                <ReqRow label="Location accurate enough to verify"         ok={!tooImprecise}   />
+                <ReqRow label={`Within verification radius (${radiusMeters}m)`} ok={withinRadius}  />
+                <ReqRow label="Approved boarding house"                     ok={hasApprovedBH} />
+                <ReqRow label="Internet connection"                         ok={hasInternet}   />
               </div>
 
-              {/* Failure reason */}
-              {!allReqsMet && (
+              {/* Failure reason — prefers checkInError (the actual reason a real Check In/Check
+                  Out tap was just rejected, from a fresh GPS fix taken at that moment) over the
+                  passive requirements-based guess below, so what's shown always matches what
+                  really just happened. */}
+              {(checkInError || !allReqsMet) && (
                 <div style={{ background:"#FEF2F2", borderRadius:14, padding:"11px 14px", marginBottom:16, display:"flex", gap:8, alignItems:"flex-start" }}>
                   <AlertCircle size={14} color="#EF4444" style={{ flexShrink:0, marginTop:1 }}/>
                   <div>
                     <p style={{ margin:"0 0 3px", fontSize:11, fontWeight:800, color:"#DC2626", fontFamily:QS }}>Cannot verify attendance</p>
                     <p style={{ margin:0, fontSize:11, color:"#B91C1C", fontFamily:IN, lineHeight:1.5 }}>
-                      {!gpsActive    ? "GPS is turned off. Please enable location services."
-                      : !withinRadius ? "You are outside your assigned boarding house. Move closer to verify."
-                      : "One or more requirements are not met."}
+                      {checkInError
+                        ?? (!gpsActive    ? "GPS is turned off. Please enable location services."
+                          : tooImprecise  ? `Your location isn't accurate enough to verify (±${accuracyMeters}m). Move outdoors or near a window, or try a phone instead of a desktop browser.`
+                          : !withinRadius ? "You are not within the boarding house vicinity. Move closer to check in."
+                          : "One or more requirements are not met.")}
                     </p>
                   </div>
                 </div>

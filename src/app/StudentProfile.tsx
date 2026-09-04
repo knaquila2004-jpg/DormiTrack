@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 import {
   User, Mail, Lock, Phone, MapPin, Building2, ChevronDown, ChevronUp,
   Edit3, Save, X, Camera, LogOut, Shield, BookOpen,
@@ -6,7 +7,20 @@ import {
   Calendar, Clock, GraduationCap, CreditCard, Users,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen } from "./shared";
-import { STUDENT_DATA, BH_DATA, ROOM_DATA, STAY_DATA, BILLING_DATA } from "./StudentHome";
+import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
+import { getMyBills, StudentBilling } from "./paymentStore";
+import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
+// Role-agnostic real Supabase Auth password change (re-authenticate then update) — lives in
+// landlordProfileStore.ts historically but has no landlord-specific logic, reused here instead
+// of duplicating it. See its own comment for why re-authentication happens first.
+import { changeMyPassword } from "./landlordProfileStore";
+
+const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -93,24 +107,71 @@ function GradBtn({ children, onClick, outline = false, danger = false, small = f
 export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
   // ── Personal Info ────────────────────────────────────────────────────────
   // Every field here is student-editable — nothing is locked. Held in local
-  // state (seeded from STUDENT_DATA) so edits don't mutate the shared module
-  // data other screens also read from.
+  // state, seeded from the real signed-in student's profile below.
+  const [uid, setUid] = useState<string | null>(null);
   const [editPersonal, setEditPersonal] = useState(false);
-  const [fullName, setFullName]   = useState(STUDENT_DATA.name);
-  const [studentId, setStudentId] = useState(STUDENT_DATA.id);
-  const [program, setProgram]     = useState(STUDENT_DATA.program);
-  const [yearLevel, setYearLevel] = useState(STUDENT_DATA.year);
-  const [block, setBlock]         = useState(STUDENT_DATA.block);
-  const [contact, setContact] = useState(STUDENT_DATA.contact);
-  const [address, setAddress] = useState(STUDENT_DATA.address);
+  const [fullName, setFullName]   = useState("—");
+  const [studentId, setStudentId] = useState("—");
+  const [program, setProgram]     = useState("—");
+  const [yearLevel, setYearLevel] = useState("—");
+  const [block, setBlock]         = useState("—");
+  const [contact, setContact] = useState("—");
+  const [address, setAddress] = useState("—");
+  const [studentEmail, setStudentEmail] = useState("—");
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [billing, setBilling] = useState<StudentBilling | null>(null);
   const [personalDraft, setPersonalDraft] = useState({ fullName, studentId, program, yearLevel, block, contact, address });
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const [profile, myAssignment, bills] = await Promise.all([getMyProfile(), getMyAssignment(), getMyBills()]);
+      if (!active) return;
+      if (session?.user) setUid(session.user.id);
+      if (profile) {
+        setFullName(profile.name); setStudentId(profile.id); setProgram(profile.program);
+        setYearLevel(profile.year); setBlock(profile.block); setContact(profile.contact);
+        setAddress(profile.address); setStudentEmail(profile.email);
+        setPersonalDraft({ fullName: profile.name, studentId: profile.id, program: profile.program, yearLevel: profile.year, block: profile.block, contact: profile.contact, address: profile.address });
+        if (profile.photo) setPhoto(profile.photo);
+      }
+      if (myAssignment) setAssignment(myAssignment);
+      setBilling(bills[0] ?? null);
+    })();
+    return () => { active = false; };
+  }, []);
+  const BH_DATA = assignment.bh;
+  const ROOM_DATA = assignment.room;
+  const STAY_DATA = assignment.stay;
+  const billByKey = new Map((billing?.bills ?? []).map(b => [b.key, b]));
+  const BILLING_DATA = {
+    period: billing?.periodLabel ?? "—",
+    dueDate: billing?.dueDate ? new Date(billing.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—",
+    amount: billByKey.get("rent")?.amount ?? 0,
+    water: billByKey.get("water")?.amount ?? 0,
+    electricity: billByKey.get("electricity")?.amount ?? 0,
+    garbage: billByKey.get("garbage")?.amount ?? 0,
+    total: (billing?.bills ?? []).reduce((s, b) => s + b.amount, 0),
+  };
+
   const startEditPersonal = () => { setPersonalDraft({ fullName, studentId, program, yearLevel, block, contact, address }); setEditPersonal(true); };
-  const savePersonal = () => {
+  const savePersonal = async () => {
     setFullName(personalDraft.fullName); setStudentId(personalDraft.studentId);
     setProgram(personalDraft.program); setYearLevel(personalDraft.yearLevel); setBlock(personalDraft.block);
     setContact(personalDraft.contact); setAddress(personalDraft.address);
-    setEditPersonal(false); showToast("Personal information updated.");
+    setEditPersonal(false);
+    // Contact/address/block are freeform and safe to persist directly; name/
+    // studentId/program/yearLevel edits stay local-only here — round-tripping
+    // them back into their constrained columns (regex'd student ID, the
+    // fixed program list, "2nd Year" → year_level int) needs real validation
+    // this quick-edit form doesn't have, so persisting them risks silently
+    // corrupting a constrained field rather than just not saving.
+    if (uid) {
+      await supabase.from("users").update({ contact_number: personalDraft.contact, address: personalDraft.address }).eq("id", uid);
+      await supabase.from("students").update({ block: personalDraft.block }).eq("user_id", uid);
+    }
+    showToast("Personal information updated.");
   };
 
   // ── Account / Password ───────────────────────────────────────────────────
@@ -119,11 +180,14 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
   const [showCur, setShowCur] = useState(false); const [showNew, setShowNew] = useState(false); const [showCon, setShowCon] = useState(false);
   const [pwError, setPwError] = useState("");
 
-  const savePw = () => {
+  const savePw = async () => {
     if (!curPw) { setPwError("Enter your current password."); return; }
     if (newPw.length < 6) { setPwError("New password must be at least 6 characters."); return; }
     if (newPw !== conPw) { setPwError("Passwords do not match."); return; }
-    setPwError(""); setCurPw(""); setNewPw(""); setConPw(""); setShowPwModal(false); showToast("Password changed successfully.");
+    setPwError("");
+    const res = await changeMyPassword(curPw, newPw);
+    if (res.ok === false) { setPwError(res.error); return; }
+    setCurPw(""); setNewPw(""); setConPw(""); setShowPwModal(false); showToast("Password changed successfully.");
   };
 
   // ── Profile photo ────────────────────────────────────────────────────────
@@ -133,8 +197,11 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
   const [toast, setToast] = useState("");
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2800); };
 
+  // ── Logout confirmation ──────────────────────────────────────────────────
+  const [showLogout, setShowLogout] = useState(false);
+
   const inputStyle: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "11px 14px", borderRadius: 12, border: "1.5px solid #E5E7EB", background: "#F9FAFB", color: "#1F2937", fontSize: 13, fontFamily: IN, outline: "none" };
-  const initials = STUDENT_DATA.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
+  const initials = fullName.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
 
   // Quick stats
   const paidAmt = 0;
@@ -152,9 +219,23 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
         </div>
       )}
 
+      {/* Logout Confirm — matches ParentProfile.tsx's icon-less card exactly */}
+      {showLogout && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowLogout(false)}>
+          <div style={{ background: "white", borderRadius: 24, padding: "28px 22px", width: "100%", maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>Log Out?</h3>
+            <p style={{ margin: "0 0 20px", fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.5, textAlign: "center" as const }}>You will be returned to the login screen.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <button onClick={() => setShowLogout(false)} style={{ height: 44, borderRadius: 18, border: "2px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "#374151", fontFamily: QS }}>Cancel</button>
+              <button onClick={() => { supabase.auth.signOut(); go("landing"); }} style={{ height: 44, borderRadius: 18, border: "none", background: "#EF4444", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS }}>Log Out</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Change Password Modal */}
       {showPwModal && (
-        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowPwModal(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowPwModal(false)}>
           <div style={{ background: "white", borderRadius: 24, padding: "24px 20px", width: "100%", maxWidth: 340 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 18px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Change Password</h3>
             {pwError && (
@@ -193,25 +274,32 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
         <div style={{ padding: "52px 20px 24px", backgroundImage: GRAD_H, textAlign: "center" as const }}>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 20px", fontFamily: QS, textAlign: "left" as const }}>My Profile</h1>
           <div style={{ position: "relative", display: "inline-block" }}>
-            <div style={{ width: 84, height: 84, borderRadius: 28, background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {photo
                 ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="profile"/>
                 : <span style={{ fontSize: 30, fontWeight: 800, color: "white", fontFamily: QS }}>{initials}</span>}
             </div>
             <label style={{ position: "absolute", bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
               <Camera size={13} color="#9772F6" />
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) setPhoto(URL.createObjectURL(f)); }} />
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+                const res = await uploadProfilePhoto(f);
+                if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+                else setPhoto(res.url);
+              }} />
             </label>
           </div>
           {photo && (
-            <button onClick={() => setPhoto(null)} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
+            <button onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
           )}
-          <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{STUDENT_DATA.name}</h2>
+          <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{fullName}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const, justifyContent: "center" }}>
-            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>{STUDENT_DATA.id}</span>
+            <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>{studentId}</span>
             <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}><GraduationCap size={11}/> Student</span>
           </div>
-          <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: "8px 0 0", fontFamily: QS }}>{STUDENT_DATA.program} · {STUDENT_DATA.year}</p>
+          <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: "8px 0 0", fontFamily: QS }}>{program} · {yearLevel}</p>
         </div>
 
         {/* Statistics quick card */}
@@ -234,7 +322,7 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
         <div style={{ padding: "0 16px 32px" }}>
 
           {/* ── Personal Information ── */}
-          <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6" />} defaultOpen>
+          <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6" />}>
             {!editPersonal ? (
               <>
                 <InfoRow label="Full Name"       value={fullName}   />
@@ -267,7 +355,7 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
 
           {/* ── Account Information ── */}
           <SectionCard title="Account Information" icon={<Mail size={16} color="#9772F6" />}>
-            <InfoRow label="Email Address" value={STUDENT_DATA.email} />
+            <InfoRow label="Email Address" value={studentEmail} />
             <div style={{ padding: "10px 0 0" }}>
               <p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 700, margin: "0 0 2px", fontFamily: QS, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Password</p>
               <p style={{ fontSize: 14, letterSpacing: 4, color: "#1F2937", margin: "0 0 14px", fontFamily: IN }}>••••••••••</p>
@@ -368,7 +456,7 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
           </div>
 
           {/* ── Logout ── */}
-          <button onClick={() => go("landing")} style={{ width: "100%", background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
+          <button onClick={() => setShowLogout(true)} style={{ width: "100%", background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
             <div style={{ width: 36, height: 36, borderRadius: 12, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <LogOut size={16} color="#DC2626" />
             </div>

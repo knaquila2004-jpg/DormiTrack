@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from "react";
 import {
   ChevronLeft, ChevronRight, Check, Eye, EyeOff, Mail, Lock,
-  MapPin, Camera, Plus, X, Phone,
+  MapPin, Camera, Plus, X, Phone, AlertTriangle,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen, LBed, LRoom, LPaymentExtra } from "./shared";
 import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationPicker";
 import { AddressComponents } from "./components/mapGeo";
+import { supabase } from "../lib/supabase";
+import { createBoardingHouseWithRooms } from "./boardingHouseStore";
 
 // ── Payment Setup helpers ─────────────────────────────────────────────────────
 // Hoisted to module scope (not redeclared per-render) so they keep a stable
@@ -37,6 +39,27 @@ function PaymentAmtInput({ value, onChange, placeholder = "500" }: { value: stri
       <span style={{ position:"absolute" as const, left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"#9CA3AF", fontFamily:"'Quicksand',sans-serif" }}>₱</span>
       <input type="number" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
         style={{ width:"100%", boxSizing:"border-box" as const, padding:"13px 14px", borderRadius:14, border:"1.5px solid #E5E7EB", background:"#F9FAFB", color:"#1F2937", fontSize:14, fontFamily:"'Inter',sans-serif", outline:"none", paddingLeft:28 }}/>
+    </div>
+  );
+}
+
+// ── Confirm Dialog ────────────────────────────────────────────────────────────
+function ConfirmDialog({ title, msg, confirmLabel = "Confirm", onConfirm, onCancel }: {
+  title: string; msg: string; confirmLabel?: string; onConfirm: () => void; onCancel: () => void;
+}) {
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.6)", zIndex:900, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }} onClick={onCancel}>
+      <div style={{ background:"white", borderRadius:26, padding:"26px 22px 20px", width:"100%", maxWidth:320, boxShadow:"0 24px 60px rgba(0,0,0,.3)" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ width:52, height:52, borderRadius:18, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 14px" }}>
+          <AlertTriangle size={24} color="#EF4444" />
+        </div>
+        <h3 style={{ margin:"0 0 8px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:"'Quicksand',sans-serif", textAlign:"center" as const }}>{title}</h3>
+        <p style={{ margin:"0 0 22px", fontSize:12, color:"#6B7280", fontFamily:"'Inter',sans-serif", lineHeight:1.65, textAlign:"center" as const }}>{msg}</p>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <button onClick={onCancel} style={{ height:48, borderRadius:18, border:"2px solid #E5E7EB", background:"white", cursor:"pointer", fontSize:13, fontWeight:800, color:"#374151", fontFamily:"'Quicksand',sans-serif" }}>Cancel</button>
+          <button onClick={onConfirm} style={{ height:48, borderRadius:18, border:"none", background:"#EF4444", cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:"'Quicksand',sans-serif" }}>{confirmLabel}</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -82,6 +105,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const [bhPlaceName, setBhPlaceName] = useState<string | null>(null);
   const [bhPlaceId, setBhPlaceId] = useState<string | null>(null);
   const [bhLocationConfirmed, setBhLocationConfirmed] = useState(false);
+  const [bhRadius, setBhRadius] = useState(50); // the only area a student's check-in/check-out is accepted from
   const [bhLandlord, setBhLandlord] = useState("");
   const [bhContact, setBhContact] = useState("");
   const [bhDesc, setBhDesc] = useState("");
@@ -93,7 +117,6 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const [vfContact, setVfContact] = useState(true);
   const [vfRelationship, setVfRelationship] = useState(true);
   const [vfPurpose, setVfPurpose] = useState(true);
-  const [vfVisitDate, setVfVisitDate] = useState(true);
   const [allowLengthOfStay, setAllowLengthOfStay] = useState(true);
   const [allowMoveIn, setAllowMoveIn] = useState(true);
   const [allowPersonality, setAllowPersonality] = useState(true);
@@ -113,7 +136,37 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const [internetType, setInternetType] = useState<"fixed"|"metered">("fixed");
   const [internetAmt, setInternetAmt] = useState("");
   const [extraPayments, setExtraPayments] = useState<LPaymentExtra[]>([]);
-  const [galleryImages, setGalleryImages] = useState<{label: string; added: boolean}[]>([]);
+  const [galleryImages, setGalleryImages] = useState<{ id: string; label: string; url: string }[]>([]);
+  const addGalleryImages = (files: FileList | null, presetLabel?: string) => {
+    if (!files || files.length === 0) return;
+    // createObjectURL is a side effect (it allocates a real resource) — it has to run here,
+    // synchronously in the event handler, and NOT inside the setState updater below. The caller
+    // resets the <input>'s value right after this returns, which can invalidate the FileList a
+    // deferred updater would still be holding onto; computing the URLs up front avoids that race
+    // and matches the same synchronous pattern every other photo upload in this file already uses.
+    if (presetLabel) {
+      const url = URL.createObjectURL(files[0]);
+      setGalleryImages(prev => {
+        // A preset category row (e.g. "Exterior") holds exactly one photo — picking a new one for
+        // that row replaces its existing entry instead of piling up duplicates.
+        const idx = prev.findIndex(g => g.label === presetLabel);
+        if (idx !== -1) {
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], url };
+          return copy;
+        }
+        return [...prev, { id: `gal-${Date.now()}-${Math.random().toString(36).slice(2)}`, label: presetLabel, url }];
+      });
+      return;
+    }
+    const added = Array.from(files).map((f, i) => ({
+      id: `gal-${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`, label: "", url: URL.createObjectURL(f),
+    }));
+    setGalleryImages(prev => [...prev, ...added]);
+  };
+  const removeGalleryImage = (id: string) => setGalleryImages(prev => prev.filter(g => g.id !== id));
+  const updateGalleryLabel = (id: string, label: string) => setGalleryImages(prev => prev.map(g => g.id === id ? { ...g, label } : g));
+  const GALLERY_PRESET_LABELS = ["Exterior","Entrance","Living Area","Kitchen","Dining Area","Common Room"];
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -145,8 +198,26 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
   const toggleRoomAmenity = (id: string, a: string) => {
     setRooms(prev => prev.map(r => r.id === id ? { ...r, amenities: r.amenities.includes(a) ? r.amenities.filter(x => x !== a) : [...r.amenities, a] } : r));
   };
-  const setBedStatus = (rid: string, bi: number, status: "available"|"occupied"|"reserved") => {
+  // "reserved" deliberately isn't a manually-settable option here — it's now a real,
+  // system-only status (submit_boarding_registration reserves a bed the instant a
+  // student's registration is pending, reject_registration releases it; see
+  // 0047_reserve_bed_on_registration.sql). Nothing exists to actually reserve at
+  // account-creation time, so offering it here just let a landlord accidentally mark
+  // a brand-new bed as reserved with no real registration behind it — the exact bug
+  // this comment is here to prevent from coming back.
+  const setBedStatus = (rid: string, bi: number, status: "available"|"occupied") => {
     setRooms(prev => prev.map(r => r.id !== rid ? r : { ...r, beds: r.beds.map((b,i) => i===bi ? {...b, status} : b) }));
+  };
+  // Removing a bed card directly (instead of editing Capacity above) drops that one bed, renumbers
+  // the rest so labels stay sequential, and syncs Capacity down to match — the two stay in lockstep
+  // either way the landlord chooses to resize.
+  const [bedToRemove, setBedToRemove] = useState<{ roomId: string; bedIndex: number; label: string } | null>(null);
+  const removeBed = (rid: string, bi: number) => {
+    setRooms(prev => prev.map(r => {
+      if (r.id !== rid) return r;
+      const beds = r.beds.filter((_, i) => i !== bi).map((b, i) => ({ ...b, label: `Bed ${i+1}` }));
+      return { ...r, beds, cap: String(beds.length) };
+    }));
   };
   const setBedPhoto = (rid: string, bi: number, photo: string) => {
     setRooms(prev => prev.map(r => r.id !== rid ? r : { ...r, beds: r.beds.map((b,i) => i===bi ? {...b, photo} : b) }));
@@ -213,6 +284,89 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
     if (Object.keys(e).length === 0) setStep(s => s + 1);
   };
   const prevStep = () => { setErrors({}); setStep(s => s - 1); };
+
+  // Boarding house / rooms / beds persistence (the data collected in this
+  // same wizard's setup step) lands in a later phase — this creates the real
+  // account + landlord profile row so the account itself is genuine.
+  const [creatingAccount, setCreatingAccount] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const finishSetup = async () => {
+    setCreatingAccount(true);
+    setSubmitError("");
+    const authEmail = emailNA ? `landlord.${contact.trim()}@dormitrack.local` : email.trim();
+    const { data, error } = await supabase.auth.signUp({
+      email: authEmail,
+      password,
+      options: {
+        data: {
+          role: "landlord",
+          first_name: firstName.trim(),
+          middle_name: middleName.trim(),
+          last_name: lastName.trim(),
+          sex,
+          contact_number: contact.trim(),
+          address: address.trim(),
+        },
+      },
+    });
+    if (error || !data.user) {
+      setCreatingAccount(false);
+      setSubmitError(error?.message ?? "Could not create your account. Please try again.");
+      return;
+    }
+    // `username` above (Step 2's read-only field) is only ever shown to the landlord unless it's
+    // actually persisted here — checked against every role's usernames (not just other landlords',
+    // since a landlord and a parent could easily generate the identical name+initial) before each
+    // insert attempt, retrying with a numeric suffix exactly like student signup does for the same
+    // first_mi_last collision case.
+    let finalUsername = username;
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const { data: taken } = await supabase.rpc("is_username_taken", { p_username: finalUsername });
+      if (taken) { finalUsername = `${username}${attempt + 2}`; continue; }
+      const { error: profileError } = await supabase.from("landlords").insert({
+        user_id: data.user.id,
+        display_name: bhLandlord.trim() || `${firstName.trim()} ${lastName.trim()}`.trim(),
+        username: finalUsername,
+      });
+      if (!profileError) { lastError = null; break; }
+      lastError = profileError.message;
+      const isUsernameConflict = profileError.code === "23505" && profileError.message.toLowerCase().includes("username");
+      if (!isUsernameConflict) break; // a different failure — don't mask it by retrying
+      finalUsername = `${username}${attempt + 2}`;
+    }
+    if (lastError) {
+      setCreatingAccount(false);
+      setSubmitError(lastError);
+      return;
+    }
+
+    const bhResult = await createBoardingHouseWithRooms(data.user.id, {
+      name: bhName, address: bhAddress, municipality: bhComponents.municipality || "",
+      lat: bhLat as number, lng: bhLng as number,
+      checkinRadiusMeters: bhRadius,
+      description: bhDesc, contactNumber: bhContact,
+      amenities: bhAmenities, customAmenities: bhCustomAmenities,
+      rulesText: bhRules,
+      rent: { enabled: rentEnabled, amount: rentAmt },
+      electric: { enabled: electricEnabled, type: electricType, amount: electricAmt },
+      water: { enabled: waterEnabled, type: waterType, amount: waterAmt },
+      internet: { enabled: internetEnabled, type: internetType, amount: internetAmt },
+      extraFees: extraPayments.map(ep => ({ name: ep.name, type: ep.type, amount: ep.amount, enabled: ep.enabled })),
+      visitorRecordsEnabled,
+      visitorFields: { name: vfName, contact: vfContact, relationship: vfRelationship, purpose: vfPurpose },
+      highlightsEnabled,
+      stayInfo: { lengthOfStay: allowLengthOfStay, moveIn: allowMoveIn, personality: allowPersonality, hobbies: allowHobbies, lifestyle: allowLifestyle, notes: allowNotes },
+      rooms,
+      galleryPhotos: galleryImages.map(g => ({ label: g.label.trim() || "Photo", url: g.url })),
+    });
+    setCreatingAccount(false);
+    if ("error" in bhResult) {
+      setSubmitError(bhResult.error);
+      return;
+    }
+    go("dashboard");
+  };
 
   const err = (k: string) => errors[k] ? <p style={{ margin:"4px 0 0", fontSize:11, color:"#EF4444", fontFamily:IN }}>{errors[k]}</p> : null;
 
@@ -363,14 +517,14 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                 <span style={{ fontSize:11, color: emailNA ? "#9772F6" : "#9CA3AF", fontWeight:700, fontFamily:QS }}>Not Applicable</span>
               </button>
             </div>
-            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="kylanaquila@gmail.com" disabled={emailNA}
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="kylanaquila@gmail.com" disabled={emailNA} autoComplete="off"
               style={{ ...inputStyle(!!errors.email), opacity: emailNA ? 0.5 : 1, cursor: emailNA ? "not-allowed" : "text" }}/>
             {err("email")}
           </div>
           <div style={fieldStyle}>
             <label style={labelStyle}>Password <span style={{color:"#EF4444"}}>*</span></label>
             <div style={{ position:"relative" as const }}>
-              <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Min. 6 characters"
+              <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Min. 6 characters" autoComplete="new-password"
                 style={{ ...inputStyle(!!errors.password), paddingRight:44 }}/>
               <button onClick={()=>setShowPw(!showPw)} style={{ position:"absolute" as const, right:12, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", padding:4 }}>
                 {showPw ? <EyeOff size={18} color="#9CA3AF"/> : <Eye size={18} color="#9CA3AF"/>}
@@ -381,7 +535,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           <div style={fieldStyle}>
             <label style={labelStyle}>Confirm Password <span style={{color:"#EF4444"}}>*</span></label>
             <div style={{ position:"relative" as const }}>
-              <input type={showCpw?"text":"password"} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter password"
+              <input type={showCpw?"text":"password"} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter password" autoComplete="new-password"
                 style={{ ...inputStyle(!!errors.confirmPw), paddingRight:44 }}/>
               <button onClick={()=>setShowCpw(!showCpw)} style={{ position:"absolute" as const, right:12, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", padding:4 }}>
                 {showCpw ? <EyeOff size={18} color="#9CA3AF"/> : <Eye size={18} color="#9CA3AF"/>}
@@ -434,6 +588,8 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             onConfirmedChange={setBhLocationConfirmed}
             hasError={!!errors.bhLocation}
             onLocationChange={(r)=>{ setBhLat(r.lat); setBhLng(r.lng); setBhAddress(r.address); setBhComponents(r.components); setBhLocationType(r.locationType); setBhPlaceName(r.placeName); setBhPlaceId(r.placeId); }}
+            radiusMeters={bhRadius}
+            onRadiusChange={setBhRadius}
           />
           {err("bhLocation")}
 
@@ -441,17 +597,13 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             <label style={labelStyle}>Boarding House Address <span style={{color:"#EF4444"}}>*</span></label>
             <textarea
               value={bhAddress}
-              disabled
-              readOnly
-              placeholder="Select a location on the map above to set the address."
+              onChange={e=>setBhAddress(e.target.value)}
+              placeholder="Select a location on the map above, then refine the address here if needed."
               rows={2}
-              style={{
-                ...inputStyle(!!errors.bhAddress), resize:"none" as const, lineHeight:1.5,
-                background: "#F3F4F6", color: bhAddress ? "#1F2937" : "#9CA3AF", cursor: "not-allowed",
-              }}
+              style={{ ...inputStyle(!!errors.bhAddress), resize:"none" as const, lineHeight:1.5 }}
             />
             <p style={{ margin:"4px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>
-              {bhAddress ? "Synced from the map location selected above." : "Select a location on the map above to set the address."}
+              Auto-filled from the map location selected above — feel free to edit it to be more specific.
             </p>
             {err("bhAddress")}
           </div>
@@ -475,22 +627,53 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
 
         {/* F: Gallery — moved above amenities */}
         {sCard("Boarding House Gallery", "Upload photos of your boarding house.", <>
-          <div style={{ borderRadius:16, border:"2px dashed #DDD6FE", background:"#FAFAFE", padding:"24px 16px", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:10, marginBottom:14, cursor:"pointer" }}>
+          <label style={{ borderRadius:16, border:"2px dashed #DDD6FE", background:"#FAFAFE", padding:"24px 16px", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:10, marginBottom:14, cursor:"pointer" }}>
+            <input type="file" accept="image/*" multiple style={{ display:"none" }} onChange={e=>{ addGalleryImages(e.target.files); e.target.value=""; }}/>
             <div style={{ width:48, height:48, borderRadius:16, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <Camera size={22} color="#9772F6"/>
             </div>
             <p style={{ fontSize:13, fontWeight:700, color:"#9772F6", margin:0, fontFamily:QS }}>Upload Photos</p>
             <p style={{ fontSize:11, color:"#9CA3AF", margin:0 }}>Drag & drop or tap to upload</p>
-          </div>
-          {["Exterior","Entrance","Living Area","Kitchen","Dining Area","Common Room"].map(lbl => (
-            <div key={lbl} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, background:"#F9FAFB", marginBottom:8 }}>
-              <div style={{ width:40, height:40, borderRadius:10, background:"#E5E7EB", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                <Camera size={16} color="#9CA3AF"/>
-              </div>
-              <span style={{ flex:1, fontSize:12, color:"#6B7280", fontFamily:QS }}>{lbl}</span>
-              <button style={{ padding:"4px 10px", borderRadius:8, border:"1.5px solid #DDD6FE", background:"white", color:"#9772F6", fontSize:11, fontWeight:700, fontFamily:QS, cursor:"pointer" }}>+ Add</button>
+          </label>
+
+          {/* Freeform uploads from the dropzone above — each needs its own name since nothing
+              picks a label for them automatically. */}
+          {galleryImages.filter(g => !GALLERY_PRESET_LABELS.includes(g.label)).map(g => (
+            <div key={g.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, background:"#F9FAFB", marginBottom:8 }}>
+              <img src={g.url} style={{ width:40, height:40, borderRadius:10, objectFit:"cover" as const, flexShrink:0 }} alt="Boarding house"/>
+              <input
+                value={g.label}
+                onChange={e=>updateGalleryLabel(g.id, e.target.value)}
+                placeholder="Name this photo (e.g. Exterior, Kitchen...)"
+                style={{ flex:1, padding:"7px 10px", borderRadius:8, border:"1.5px solid #E5E7EB", background:"white", color:"#1F2937", fontSize:12, fontFamily:IN, outline:"none" }}
+              />
+              <button onClick={()=>removeGalleryImage(g.id)} style={{ width:26, height:26, borderRadius:8, border:"none", background:"#FEE2E2", color:"#EF4444", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                <X size={13}/>
+              </button>
             </div>
           ))}
+
+          {/* Suggested categories — one-tap upload, pre-labeled with the category itself. */}
+          {GALLERY_PRESET_LABELS.map(lbl => {
+            const existing = galleryImages.find(g => g.label === lbl);
+            return (
+              <div key={lbl} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, background:"#F9FAFB", marginBottom:8 }}>
+                <div style={{ width:40, height:40, borderRadius:10, overflow:"hidden", background:"#E5E7EB", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  {existing ? <img src={existing.url} style={{ width:"100%", height:"100%", objectFit:"cover" as const }} alt={lbl}/> : <Camera size={16} color="#9CA3AF"/>}
+                </div>
+                <span style={{ flex:1, fontSize:12, color:"#6B7280", fontFamily:QS }}>{lbl}</span>
+                <label style={{ padding:"4px 10px", borderRadius:8, border:"1.5px solid #DDD6FE", background:"white", color:"#9772F6", fontSize:11, fontWeight:700, fontFamily:QS, cursor:"pointer" }}>
+                  <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>{ addGalleryImages(e.target.files, lbl); e.target.value=""; }}/>
+                  {existing ? "Change" : "+ Add"}
+                </label>
+                {existing && (
+                  <button onClick={()=>removeGalleryImage(existing.id)} style={{ width:22, height:22, borderRadius:7, border:"none", background:"#FEE2E2", color:"#EF4444", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <X size={11}/>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </>)}
 
         {/* B: Amenities */}
@@ -593,18 +776,20 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
                     <div style={{ display:"flex", flexDirection:"column" as const, gap:10, marginBottom:4 }}>
                       {r.beds.map((bed, bi) => {
                         const col = bed.status==="available" ? "#16A34A" : bed.status==="occupied" ? "#EF4444" : "#D97706";
-                        const bg = bed.status==="available" ? "#DCFCE7" : bed.status==="occupied" ? "#FEE2E2" : "#FEF3C7";
                         return (
                           <div key={bi} style={{ borderRadius:12, border:`1.5px solid ${col}`, background:"white", padding:12 }}>
                             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
                               <p style={{ fontSize:12, fontWeight:800, color:"#1F2937", margin:0, fontFamily:QS }}>{bed.label}</p>
-                              <span style={{ fontSize:10, fontWeight:700, color:col, background:bg, borderRadius:8, padding:"2px 8px", fontFamily:QS, textTransform:"capitalize" as const }}>{bed.status}</span>
+                              <button onClick={()=>setBedToRemove({ roomId:r.id, bedIndex:bi, label:bed.label })} title="Remove this bed"
+                                style={{ width:24, height:24, borderRadius:8, border:"none", background:"#FEE2E2", color:"#EF4444", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                                <X size={13}/>
+                              </button>
                             </div>
                             {/* Status buttons */}
                             <div style={{ display:"flex", gap:6, marginBottom:10 }}>
-                              {(["available","occupied","reserved"] as const).map(s => {
-                                const sc = s==="available" ? "#16A34A" : s==="occupied" ? "#EF4444" : "#D97706";
-                                const sb = s==="available" ? "#DCFCE7" : s==="occupied" ? "#FEE2E2" : "#FEF3C7";
+                              {(["available","occupied"] as const).map(s => {
+                                const sc = s==="available" ? "#16A34A" : "#EF4444";
+                                const sb = s==="available" ? "#DCFCE7" : "#FEE2E2";
                                 const on = bed.status === s;
                                 return <button key={s} onClick={()=>setBedStatus(r.id,bi,s)} style={{ flex:1, padding:"6px 0", borderRadius:8, border:`1.5px solid ${on?sc:"#E5E7EB"}`, background: on?sb:"white", color: on?sc:"#9CA3AF", fontSize:10, fontWeight:800, fontFamily:QS, cursor:"pointer", textTransform:"capitalize" as const }}>{s}</button>;
                               })}
@@ -650,13 +835,11 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           const totalRooms = rooms.length;
           const totalCap = rooms.reduce((s,r)=>s+r.beds.length,0);
           const totalOcc = rooms.reduce((s,r)=>s+r.beds.filter(b=>b.status==="occupied").length,0);
-          const totalRes = rooms.reduce((s,r)=>s+r.beds.filter(b=>b.status==="reserved").length,0);
-          const avail = totalCap - totalOcc - totalRes;
+          const avail = totalCap - totalOcc;
           const stats = [
             { label:"Total Rooms", value: totalRooms },
             { label:"Total Capacity", value: totalCap },
             { label:"Occupied", value: totalOcc },
-            { label:"Reserved", value: totalRes },
           ];
           return sCard("Boarding House Statistics", "Auto-calculated from your room setup.", <>
             {stats.map(s=>(
@@ -728,7 +911,6 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
               <Row title="Contact Number"   desc="Mobile number of the visitor."                 on={vfContact}      onToggle={()=>setVfContact(!vfContact)}/>
               <Row title="Relationship"     desc="Visitor's relation to the student."             on={vfRelationship} onToggle={()=>setVfRelationship(!vfRelationship)}/>
               <Row title="Purpose of Visit" desc="Reason the visitor is coming."                  on={vfPurpose}      onToggle={()=>setVfPurpose(!vfPurpose)}/>
-              <Row title="Visit Date"       desc="Scheduled date of the visit."                   on={vfVisitDate}    onToggle={()=>setVfVisitDate(!vfVisitDate)}/>
             </>}
           </>);
         })()}
@@ -878,6 +1060,15 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           <button onClick={nextStep} style={{ flex:2, height:52, borderRadius:24, border:"none", background:GRAD, color:"white", fontSize:14, fontWeight:800, fontFamily:QS, cursor:"pointer", boxShadow:"0 8px 24px rgba(151,114,246,.35)" }}>Review & Confirm</button>
         </div>
       </div>
+      {bedToRemove && (
+        <ConfirmDialog
+          title="Remove Bed?"
+          msg={`Are you sure you want to remove ${bedToRemove.label}? This will lower the room's capacity by one and cannot be undone.`}
+          confirmLabel="Remove"
+          onConfirm={()=>{ removeBed(bedToRemove.roomId, bedToRemove.bedIndex); setBedToRemove(null); }}
+          onCancel={()=>setBedToRemove(null)}
+        />
+      )}
     </div>
   );
 
@@ -927,6 +1118,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           {rvRow("Latitude", bhLat != null ? bhLat.toFixed(6) : "")}
           {rvRow("Longitude", bhLng != null ? bhLng.toFixed(6) : "")}
           {rvRow("Location Type", bhLocationType === "existing" ? "Existing Map Location" : bhLocationType === "custom" ? "Custom Boarding House Pin" : "")}
+          {rvRow("Check-In/Check-Out Radius", `${bhRadius}m`)}
           {bhComponents.street && rvRow("Street", bhComponents.street)}
           {bhComponents.purok && rvRow("Purok", bhComponents.purok)}
           {bhComponents.sitio && rvRow("Sitio", bhComponents.sitio)}
@@ -948,7 +1140,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           {rooms.map((r,i)=>(
             <div key={r.id} style={{ marginBottom: i<rooms.length-1?12:0, paddingBottom: i<rooms.length-1?12:0, borderBottom: i<rooms.length-1?"1px solid #F3F4F6":"none" }}>
               <p style={{ fontSize:12, fontWeight:800, color:"#7549F6", margin:"0 0 4px", fontFamily:QS }}>{r.name}</p>
-              <p style={{ fontSize:11, color:"#6B7280", margin:"0 0 6px" }}>Capacity: {r.cap || 0} · Occupied: {r.beds.filter(b=>b.status==="occupied"||b.status==="reserved").length}</p>
+              <p style={{ fontSize:11, color:"#6B7280", margin:"0 0 6px" }}>Capacity: {r.cap || 0} · Occupied: {r.beds.filter(b=>b.status==="occupied").length}</p>
               {r.beds.length > 0 && (
                 <div style={{ display:"flex", flexWrap:"wrap" as const, gap:4 }}>
                   {r.beds.map((b,bi)=>{
@@ -974,7 +1166,6 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
             {rvRow("Contact Number",   vfContact      ? "Collect" : "Skip")}
             {rvRow("Relationship",     vfRelationship ? "Collect" : "Skip")}
             {rvRow("Purpose of Visit", vfPurpose      ? "Collect" : "Skip")}
-            {rvRow("Visit Date",       vfVisitDate    ? "Collect" : "Skip")}
           </>}
         </>)}
         {rvCard("Stay Info Settings", ()=>setStep(2), <>
@@ -987,11 +1178,16 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
         </>)}
 
         {/* Confirm button */}
-        <button onClick={()=>go("dashboard")}
-          style={{ width:"100%", height:56, borderRadius:24, border:"none", background:GRAD, color:"white", fontSize:15, fontWeight:800, fontFamily:QS, cursor:"pointer", boxShadow:"0 8px 28px rgba(151,114,246,.4)", marginBottom:12 }}>
-          Confirm & Finish Setup
+        {submitError && (
+          <div style={{ background:"#FEF2F2", borderRadius:16, padding:"12px 16px", marginBottom:12, border:"1px solid #FECACA" }}>
+            <p style={{ fontSize:12, color:"#DC2626", margin:0, fontFamily:IN, lineHeight:1.55 }}>{submitError}</p>
+          </div>
+        )}
+        <button onClick={finishSetup} disabled={creatingAccount}
+          style={{ width:"100%", height:56, borderRadius:24, border:"none", background: creatingAccount ? "#C4B5FD" : GRAD, color:"white", fontSize:15, fontWeight:800, fontFamily:QS, cursor: creatingAccount ? "default" : "pointer", boxShadow:"0 8px 28px rgba(151,114,246,.4)", marginBottom:12 }}>
+          {creatingAccount ? "Creating Account…" : "Confirm & Finish Setup"}
         </button>
-        <button onClick={prevStep} style={{ width:"100%", height:48, borderRadius:24, border:"2px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:14, fontWeight:800, fontFamily:QS, cursor:"pointer" }}>
+        <button onClick={prevStep} disabled={creatingAccount} style={{ width:"100%", height:48, borderRadius:24, border:"2px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:14, fontWeight:800, fontFamily:QS, cursor:"pointer" }}>
           Back
         </button>
       </div>

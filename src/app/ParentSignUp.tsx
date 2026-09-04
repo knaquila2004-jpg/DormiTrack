@@ -5,8 +5,10 @@ import {
   RefreshCw, Edit3, HelpCircle,
 } from "lucide-react";
 import { GRAD, GRAD_H, Screen } from "./shared";
+import { supabase } from "../lib/supabase";
+import { acknowledgeParentLink } from "./parentLinkStore";
 
-const STEPS = ["Personal", "Student", "Account"];
+const STEPS = ["Personal", "Account", "Student"];
 
 const RELATIONS = [
   "Father", "Mother", "Guardian", "Grandfather", "Grandmother",
@@ -20,6 +22,13 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
   const [step, setStep] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [creating, setCreating] = useState(false);
+  // Separate from per-field `errors` — a signup failure (network issue, duplicate account, a
+  // transient Supabase error, etc.) isn't tied to any single visible field, and can happen while
+  // the user is sitting on the Student step, which never rendered an `errors.email`-style message
+  // for it. Reusing the field-error mechanism buried the real message under a field the current
+  // step doesn't display, leaving just an unhelpful "Please fix 1 error" with nothing to act on.
+  const [submitError, setSubmitError] = useState("");
 
   // ── Step 0: Personal Info ─────────────────────────────────────────────────
   const [firstName, setFirstName]     = useState("");
@@ -31,10 +40,10 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
   const [contact, setContact]         = useState("");
   const [address, setAddress]         = useState("");
 
-  // ── Step 1: Student Info ──────────────────────────────────────────────────
+  // ── Step 2: Student Info ──────────────────────────────────────────────────
   const [studentId, setStudentId]     = useState("");
 
-  // ── Step 2: Account ───────────────────────────────────────────────────────
+  // ── Step 1: Account ───────────────────────────────────────────────────────
   const username = (() => {
     const f  = firstName.trim().toLowerCase().replace(/\s+/g, "");
     const mi = middleName.trim().toLowerCase().replace(/\s+/g, "")[0] ?? "";
@@ -96,6 +105,8 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
     return e;
   };
 
+  // Student Info — now the 3rd step, still called validate1 (matches its state's own step
+  // comment above) since it's keyed by content, not by display position.
   const validate1 = () => {
     const e: Record<string, string> = {};
     if (!studentId.trim()) e.studentId = "Student ID is required.";
@@ -103,6 +114,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
     return e;
   };
 
+  // Account Details — now the 2nd step.
   const validate2 = () => {
     const e: Record<string, string> = {};
     if (!username) e.username = "Username is auto-generated — please fill in your name first.";
@@ -119,15 +131,73 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
 
   const nextStep = () => {
     setSubmitted(true);
-    const validators = [validate0, validate1, validate2];
+    setSubmitError("");
+    // Indexed by displayed step order: 0=Personal, 1=Account, 2=Student.
+    const validators = [validate0, validate2, validate1];
     const e = validators[step]();
     setErrors(e);
     if (Object.keys(e).length === 0) {
       setSubmitted(false);
       setErrors({});
       if (step < 2) setStep(s => s + 1);
-      else onComplete(studentId);
+      else createAccount();
     }
+  };
+
+  const createAccount = async () => {
+    setCreating(true);
+    setSubmitError("");
+    // Supabase Auth always needs a real email — when the parent has none,
+    // synthesize one from their (required, validated) contact number so the
+    // "Not applicable" option in the UI keeps working.
+    const authEmail = emailNA ? `parent.${contact.trim()}@dormitrack.local` : email.trim();
+    const { data, error } = await supabase.auth.signUp({
+      email: authEmail,
+      password,
+      options: {
+        data: {
+          role: "parent",
+          first_name: firstName.trim(),
+          middle_name: middleName.trim(),
+          last_name: lastName.trim(),
+          sex,
+          contact_number: contact.trim(),
+          address: address.trim(),
+        },
+      },
+    });
+    if (error || !data.user) {
+      setCreating(false);
+      setSubmitError(error?.message ?? "Could not create your account. Please try again.");
+      return;
+    }
+    // `username` above is only ever shown on this screen unless it's actually persisted here —
+    // checked against every role's usernames (students' and landlords' too, since a parent could
+    // easily generate the identical name+initial) before each insert attempt, retrying with a
+    // numeric suffix exactly like student signup does for the same first_mi_last collision case.
+    let finalUsername = username;
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const { data: taken } = await supabase.rpc("is_username_taken", { p_username: finalUsername });
+      if (taken) { finalUsername = `${username}${attempt + 2}`; continue; }
+      const { error: profileError } = await supabase.from("parents").insert({
+        user_id: data.user.id,
+        relation: relation === "Other" ? "Other" : relation,
+        relation_other: relation === "Other" ? specifyRelation.trim() : null,
+        username: finalUsername,
+      });
+      if (!profileError) { lastError = null; break; }
+      lastError = profileError.message;
+      const isUsernameConflict = profileError.code === "23505" && profileError.message.toLowerCase().includes("username");
+      if (!isUsernameConflict) break; // a different failure — don't mask it by retrying
+      finalUsername = `${username}${attempt + 2}`;
+    }
+    setCreating(false);
+    if (lastError) {
+      setSubmitError(lastError);
+      return;
+    }
+    onComplete(studentId);
   };
 
   // ── Progress bar (identical to StudentSignUpScreen) ───────────────────────
@@ -138,7 +208,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
           <React.Fragment key={s}>
             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
               <div
-                onClick={() => i < step && setStep(i)}
+                onClick={() => { if (i < step) { setStep(i); setErrors({}); setSubmitted(false); setSubmitError(""); } }}
                 style={{
                   width: 28, height: 28, borderRadius: "50%",
                   background: i <= step ? GRAD : "#E5E7EB",
@@ -163,11 +233,11 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
     </div>
   );
 
-  const stepHeadings = ["Personal Information", "Student Information", "Account Details"];
+  const stepHeadings = ["Personal Information", "Account Details", "Student Information"];
   const stepSubtitles = [
     "Provide your personal information to continue.",
-    "Enter the student ID to link your account.",
     "Set up your login credentials.",
+    "Enter the student ID to link your account.",
   ];
 
   const card = (children: React.ReactNode) => (
@@ -182,7 +252,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
       {/* Header */}
       <div style={{ flexShrink: 0, padding: "48px 20px 24px", backgroundImage: GRAD_H, position: "relative" as const }}>
         <button
-          onClick={() => step === 0 ? go("roleSelect") : setStep(s => s - 1)}
+          onClick={() => { if (step === 0) { go("roleSelect"); } else { setStep(s => s - 1); setErrors({}); setSubmitted(false); setSubmitError(""); } }}
           style={{ position: "absolute" as const, top: 48, left: 16, background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", padding: 0 }}>
           <ChevronLeft size={24} />
         </button>
@@ -251,7 +321,6 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
               <option value="" disabled hidden>Select</option>
               <option value="Male">Male</option>
               <option value="Female">Female</option>
-              <option value="Prefer not to say">Prefer not to say</option>
             </select>
             {err("sex")}
           </div>
@@ -277,8 +346,8 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
           </div>
         </>)}
 
-        {/* ── STEP 1: Student Info ── */}
-        {step === 1 && card(<>
+        {/* ── STEP 2: Student Info ── */}
+        {step === 2 && card(<>
           <div>
             <label style={labelStyle}>Student ID Number <span style={{ color: "#EF4444" }}>*</span></label>
             <input value={studentId} onChange={e => setStudentId(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -290,8 +359,8 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
           </div>
         </>)}
 
-        {/* ── STEP 2: Account Details ── */}
-        {step === 2 && card(<>
+        {/* ── STEP 1: Account Details ── */}
+        {step === 1 && card(<>
           {/* Username — auto */}
           <div style={fieldStyle}>
             <label style={labelStyle}>Username <span style={{ color: "#EF4444" }}>*</span></label>
@@ -329,7 +398,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
             <div style={{ position: "relative" }}>
               <Mail size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
               <input value={email} onChange={e => setEmail(e.target.value)} disabled={emailNA}
-                placeholder="kylanaquila@gmail.com"
+                placeholder="kylanaquila@gmail.com" autoComplete="off"
                 style={{ ...inputStyle(!!errors.email), paddingLeft: 38, opacity: emailNA ? 0.45 : 1, cursor: emailNA ? "not-allowed" : "text", background: emailNA ? "#F3F4F6" : "#F9FAFB" }} />
             </div>
             {err("email")}
@@ -341,7 +410,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
             <div style={{ position: "relative" }}>
               <Lock size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
               <input type={showPass ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="Min. 6 characters"
+                placeholder="Min. 6 characters" autoComplete="new-password"
                 style={{ ...inputStyle(!!errors.password), paddingLeft: 38, paddingRight: 44 }} />
               <button onClick={() => setShowPass(s => !s)}
                 style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", padding: 4 }}>
@@ -357,19 +426,15 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
             <div style={{ position: "relative" }}>
               <Lock size={15} color="#9CA3AF" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)" }} />
               <input type={showConfirm ? "text" : "password"} value={confirmPassword} onChange={e => setConfirmPw(e.target.value)}
-                placeholder="Re-enter password"
+                placeholder="Re-enter password" autoComplete="new-password"
                 style={{ ...inputStyle(!!errors.confirmPassword), paddingLeft: 38, paddingRight: 44 }} />
               <button onClick={() => setShowConfirm(s => !s)}
                 style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", padding: 4 }}>
                 {showConfirm ? <Eye size={16} /> : <EyeOff size={16} />}
               </button>
             </div>
-            {confirmPassword && password === confirmPassword && (
-              <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
-                <CheckCircle size={13} color="#16A34A" />
-                <span style={{ fontSize: 11, color: "#16A34A", fontFamily: IN }}>Passwords match</span>
-              </div>
-            )}
+            {confirmPassword && password !== confirmPassword && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#EF4444", fontFamily: IN }}>Passwords do not match.</p>}
+            {confirmPassword && password === confirmPassword && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#16A34A", fontFamily: IN, display: "flex", alignItems: "center", gap: 4 }}><Check size={11}/> Passwords match.</p>}
             {err("confirmPassword")}
           </div>
         </>)}
@@ -384,9 +449,19 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
           </div>
         )}
 
-        <button onClick={nextStep}
-          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
-          {step < 2 ? "Next" : "Create Account"}
+        {/* Account creation failure — a real error from Supabase (network issue, duplicate
+            account, etc.), not a field validation problem, so it's shown as its own clear
+            message with the actual reason, not folded into the generic per-field error count. */}
+        {submitError && (
+          <div style={{ background: "#FEF2F2", borderRadius: 16, padding: "12px 16px", marginBottom: 16, border: "1px solid #FECACA", display: "flex", gap: 10 }}>
+            <AlertCircle size={16} color="#EF4444" style={{ flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12, color: "#DC2626", margin: 0, fontFamily: IN, lineHeight: 1.55 }}>{submitError}</p>
+          </div>
+        )}
+
+        <button onClick={nextStep} disabled={creating}
+          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: creating ? "#C4B5FD" : GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: creating ? "default" : "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
+          {step < 2 ? "Next" : creating ? "Creating Account…" : "Create Account"}
         </button>
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#9CA3AF", marginTop: 16, fontFamily: IN }}>
@@ -399,32 +474,51 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
   );
 }
 
-// ── Mock student IDs that "exist" in the DormiTrack database ──────────────────
-const KNOWN_STUDENT_IDS = new Set(["123456", "654321", "111111", "202425", "200001"]);
-
 const LOADING_MESSAGES = [
   "Connecting to the student's account...",
   "Searching for the Student ID...",
   "Verifying student information...",
   "Establishing a secure connection...",
-  "Linking parent and student accounts...",
+  "Sending your link request...",
   "Almost done...",
+];
+
+const WAITING_MESSAGES = [
+  "Request sent to your student...",
+  "Waiting for your student to approve...",
+  "Your student can approve this from their Home screen...",
+  "This may take a while — feel free to check back later...",
 ];
 
 export function ParentLinkingScreen({
   go,
   studentId,
-  onEditStudentId,
+  resume,
 }: {
   go: (s: Screen) => void;
   studentId: string;
-  onEditStudentId: () => void;
+  // Set when this screen is reached from login (App.tsx's parent access gate,
+  // getMyParentGateStatus) rather than fresh out of the signup wizard — drops
+  // the parent straight into their real, already-existing state instead of
+  // re-running the 3.5s "verifying" animation and re-sending a new request.
+  resume?: { kind: "pending" | "rejected" | "none"; linkId: string | null; studentIdNo: string };
 }) {
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
 
-  type Phase = "loading" | "success" | "error";
-  const [phase, setPhase] = useState<Phase>("loading");
+  type Phase = "loading" | "waiting" | "success" | "rejected" | "error";
+  const [phase, setPhase] = useState<Phase>(
+    resume ? (resume.kind === "pending" ? "waiting" : resume.kind === "rejected" ? "rejected" : "error") : "loading",
+  );
+  // The parent's account is already created by the time this screen shows — "wrong ID" only
+  // needs a corrected ID re-verified, never a trip back through the whole signup wizard (which
+  // would also lose everything already entered and try to re-run signup on an existing account).
+  // Held as local editable state, seeded from the id the wizard collected (or, on a resumed
+  // login-gate visit, the id already on file for that link).
+  const [studentIdVal, setStudentIdVal] = useState(resume ? resume.studentIdNo : studentId);
+  const [editingId, setEditingId] = useState(resume?.kind === "none");
+  const [editIdInput, setEditIdInput] = useState(resume ? resume.studentIdNo : studentId);
+  const [linkId, setLinkId] = useState<string | null>(resume ? resume.linkId : null);
   const [msgIdx, setMsgIdx] = useState(0);
   const [fadeMsg, setFadeMsg] = useState(true);
   const [angle, setAngle] = useState(0);
@@ -432,9 +526,9 @@ export function ParentLinkingScreen({
   const rafRef = useRef<number>(0);
   const startRef = useRef<number>(0);
 
-  // Spinner animation
+  // Spinner animation — spins through the initial lookup and the (open-ended) wait for the student's decision.
   useEffect(() => {
-    if (phase !== "loading") return;
+    if (phase !== "loading" && phase !== "waiting") return;
     const spin = (ts: number) => {
       if (!startRef.current) startRef.current = ts;
       setAngle(((ts - startRef.current) / 1000) * 360);
@@ -444,39 +538,87 @@ export function ParentLinkingScreen({
     return () => cancelAnimationFrame(rafRef.current);
   }, [phase]);
 
-  // Cycle loading messages
+  // Cycle loading/waiting messages
+  const messages = phase === "waiting" ? WAITING_MESSAGES : LOADING_MESSAGES;
   useEffect(() => {
-    if (phase !== "loading") return;
+    if (phase !== "loading" && phase !== "waiting") return;
+    setMsgIdx(0);
     const cycle = setInterval(() => {
       setFadeMsg(false);
       setTimeout(() => {
-        setMsgIdx(i => (i + 1) % LOADING_MESSAGES.length);
+        setMsgIdx(i => (i + 1) % messages.length);
         setFadeMsg(true);
       }, 300);
     }, 1600);
     return () => clearInterval(cycle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Auto-verify after 3.5 s
+  // Looks up the Student ID for real, then records a `pending`
+  // parent_student_links row from the now-authenticated parent — returns its
+  // id so the caller can poll it. Actual linking only happens once the
+  // student approves it from their own Home screen (see parentLinkStore.ts).
+  const verifyAndLink = async (idOverride?: string): Promise<string | null> => {
+    const { data: studentUserId } = await supabase.rpc("find_student_user_id", { p_student_id_no: (idOverride ?? studentIdVal).trim() });
+    if (!studentUserId) return null;
+    const { data: { session } } = await supabase.auth.getSession();
+    const parentId = session?.user?.id;
+    if (!parentId) return null;
+    const { data: link, error } = await supabase.from("parent_student_links")
+      .upsert({ parent_id: parentId, student_id: studentUserId, status: "pending", decided_at: null, decided_by: null }, { onConflict: "parent_id,student_id" })
+      .select("id").single();
+    if (error || !link) return null;
+    return link.id;
+  };
+
+  // Auto-verify after 3.5 s — skipped when resuming into an already-known
+  // state from the login gate (there's nothing to (re-)send yet).
   useEffect(() => {
-    const t = setTimeout(() => {
-      const found = KNOWN_STUDENT_IDS.has(studentId.trim());
+    if (resume) return;
+    const t = setTimeout(async () => {
+      const id = await verifyAndLink();
       setFadePhase(false);
-      setTimeout(() => { setPhase(found ? "success" : "error"); setFadePhase(true); }, 400);
+      setTimeout(() => {
+        if (id) { setLinkId(id); setPhase("waiting"); } else setPhase("error");
+        setFadePhase(true);
+      }, 400);
     }, 3500);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId]);
 
-  const tryAgain = () => {
+  // Once a request is out there, poll for the student's real decision —
+  // mirrors PendingVerificationScreen's real polling for boarding-house
+  // registration approval (App.tsx), not a fake timer.
+  useEffect(() => {
+    if (phase !== "waiting" || !linkId) return;
+    const checkStatus = async () => {
+      const { data } = await supabase.from("parent_student_links").select("status").eq("id", linkId).single();
+      // Mark it seen right away — this card *is* the confirmation, so a later login must not
+      // show App.tsx's own "You're Linked!" modal on top of one the parent already watched happen.
+      if (data?.status === "linked") { setPhase("success"); acknowledgeParentLink(); }
+      else if (data?.status === "rejected") setPhase("rejected");
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => clearInterval(interval);
+  }, [phase, linkId]);
+
+  const tryAgain = (newId?: string) => {
+    if (newId) setStudentIdVal(newId);
+    setEditingId(false);
     setPhase("loading");
     setMsgIdx(0);
     setFadeMsg(true);
     setFadePhase(true);
     startRef.current = 0;
-    const t = setTimeout(() => {
-      const found = KNOWN_STUDENT_IDS.has(studentId.trim());
+    const t = setTimeout(async () => {
+      const id = await verifyAndLink(newId);
       setFadePhase(false);
-      setTimeout(() => { setPhase(found ? "success" : "error"); setFadePhase(true); }, 400);
+      setTimeout(() => {
+        if (id) { setLinkId(id); setPhase("waiting"); } else setPhase("error");
+        setFadePhase(true);
+      }, 400);
     }, 3000);
     return () => clearTimeout(t);
   };
@@ -503,8 +645,8 @@ export function ParentLinkingScreen({
       {/* Body */}
       <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "24px 16px 32px", opacity: fadePhase ? 1 : 0, transition: "opacity .35s" }}>
 
-        {/* ── LOADING ── */}
-        {phase === "loading" && (
+        {/* ── LOADING / WAITING ── */}
+        {(phase === "loading" || phase === "waiting") && (
           <>
             <div style={{ ...card, textAlign: "center", padding: "40px 20px" }}>
               {/* Outer ring */}
@@ -546,16 +688,34 @@ export function ParentLinkingScreen({
               </div>
 
               <p style={{ fontSize: 13, fontWeight: 700, color: "#4B5563", fontFamily: QS, margin: "0 0 6px", opacity: fadeMsg ? 1 : 0, transition: "opacity .3s" }}>
-                {LOADING_MESSAGES[msgIdx]}
+                {messages[msgIdx]}
               </p>
-              <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>Student ID: <strong style={{ color: "#9772F6" }}>{studentId}</strong></p>
+              <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>Student ID: <strong style={{ color: "#9772F6" }}>{studentIdVal}</strong></p>
             </div>
 
-            <div style={{ ...card, background: "#FAFAFA", border: "1px dashed #E5E7EB", padding: "14px 18px" }}>
-              <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0, fontFamily: IN, lineHeight: 1.6, textAlign: "center" }}>
-                Please do not close or navigate away from this screen while verification is in progress.
-              </p>
-            </div>
+            {phase === "loading" ? (
+              <div style={{ ...card, background: "#FAFAFA", border: "1px dashed #E5E7EB", padding: "14px 18px" }}>
+                <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0, fontFamily: IN, lineHeight: 1.6, textAlign: "center" }}>
+                  Please do not close or navigate away from this screen while verification is in progress.
+                </p>
+              </div>
+            ) : (
+              // No "Continue to Dashboard" here on purpose — the link is still unconfirmed, and
+              // the parent must not reach the real dashboard until the student approves it (see
+              // getMyParentGateStatus / App.tsx's login gate, which sends them right back to this
+              // same waiting screen even if they logged out and back in to get around it).
+              <div style={{ ...card, background: "#FAFAFA", border: "1px dashed #E5E7EB", padding: "14px 18px" }}>
+                <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0, fontFamily: IN, lineHeight: 1.6, textAlign: "center" }}>
+                  Your student needs to approve this request from their DormiTrack Home screen. You'll see this update automatically once they do — it's safe to leave and check back later.
+                </p>
+              </div>
+            )}
+            {/* The dashboard's Profile tab (with its own Log Out) is exactly what's gated off
+                here, so this needs to be reachable directly instead of stranding the parent. */}
+            <button onClick={() => { supabase.auth.signOut(); go("landing"); }}
+              style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", fontSize: 12, fontWeight: 700, fontFamily: QS, padding: "0", textAlign: "center" as const }}>
+              Log Out
+            </button>
           </>
         )}
 
@@ -597,7 +757,42 @@ export function ParentLinkingScreen({
         )}
 
         {/* ── ERROR ── */}
-        {phase === "error" && (
+        {phase === "error" && editingId && (
+          <>
+            {/* Inline edit, right here — the account's already created, so this just needs a
+                corrected Student ID and a re-verify, not a trip back through the whole wizard. */}
+            <div style={card}>
+              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1F2937", margin: "0 0 4px", fontFamily: QS }}>Edit Student ID</h2>
+              <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 16px", fontFamily: IN, lineHeight: 1.5 }}>
+                Double-check the ID and try again.
+              </p>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, marginBottom: 6, display: "block" }}>Student ID Number</label>
+              <input
+                value={editIdInput}
+                onChange={e => setEditIdInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="XXXXXX (6 digits)"
+                autoFocus
+                style={{ width: "100%", boxSizing: "border-box" as const, padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", color: "#1F2937", fontSize: 14, fontFamily: IN, outline: "none" }}
+              />
+              {editIdInput && !/^\d{6}$/.test(editIdInput) && (
+                <p style={{ margin: "6px 0 0", fontSize: 11, color: "#EF4444", fontFamily: IN }}>Student ID must be exactly 6 digits.</p>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+              <button onClick={() => setEditingId(false)} style={{ flex: 1, height: 52, borderRadius: 24, border: "2px solid #E5E7EB", background: "white", color: "#6B7280", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => { if (/^\d{6}$/.test(editIdInput)) tryAgain(editIdInput); }}
+                disabled={!/^\d{6}$/.test(editIdInput)}
+                style={{ flex: 2, height: 52, borderRadius: 24, border: "none", background: /^\d{6}$/.test(editIdInput) ? GRAD : "#E5E7EB", color: /^\d{6}$/.test(editIdInput) ? "white" : "#9CA3AF", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: /^\d{6}$/.test(editIdInput) ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <RefreshCw size={16} /> Save & Retry
+              </button>
+            </div>
+          </>
+        )}
+
+        {phase === "error" && !editingId && (
           <>
             <div style={{ ...card, textAlign: "center", padding: "36px 20px" }}>
               {/* Warning icon */}
@@ -615,18 +810,24 @@ export function ParentLinkingScreen({
                 </p>
               </div>
               <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>
-                Entered ID: <strong style={{ color: "#EF4444" }}>{studentId}</strong>
+                Entered ID: <strong style={{ color: "#EF4444" }}>{studentIdVal}</strong>
               </p>
             </div>
 
             {/* Action buttons */}
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 12, marginBottom: 16 }}>
-              <button onClick={onEditStudentId} style={{ width: "100%", height: 52, borderRadius: 24, border: "2px solid #9772F6", background: "white", color: "#9772F6", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <button onClick={() => { setEditIdInput(studentIdVal); setEditingId(true); }} style={{ width: "100%", height: 52, borderRadius: 24, border: "2px solid #9772F6", background: "white", color: "#9772F6", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 <Edit3 size={16} /> Edit Student ID
               </button>
-              <button onClick={tryAgain} style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: GRAD, color: "white", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 8px 24px rgba(151,114,246,.3)" }}>
+              <button onClick={() => tryAgain()} style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: GRAD, color: "white", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 8px 24px rgba(151,114,246,.3)" }}>
                 <RefreshCw size={16} /> Try Again
               </button>
+              {resume && (
+                <button onClick={() => { supabase.auth.signOut(); go("landing"); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", fontSize: 12, fontWeight: 700, fontFamily: QS, padding: "4px 0 0", textAlign: "center" as const }}>
+                  Log Out
+                </button>
+              )}
             </div>
 
             {/* Info box */}
@@ -645,6 +846,38 @@ export function ParentLinkingScreen({
                   <span style={{ fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.55 }}>{reason}</span>
                 </div>
               ))}
+            </div>
+          </>
+        )}
+
+        {/* ── REJECTED ── */}
+        {phase === "rejected" && (
+          <>
+            <div style={{ ...card, textAlign: "center", padding: "36px 20px" }}>
+              <div style={{ width: 80, height: 80, borderRadius: "50%", background: "linear-gradient(135deg,#F97316,#EF4444)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", boxShadow: "0 8px 24px rgba(239,68,68,.25)" }}>
+                <AlertCircle size={40} color="white" strokeWidth={2} />
+              </div>
+
+              <h2 style={{ fontSize: 18, fontWeight: 800, color: "#DC2626", margin: "0 0 10px", fontFamily: QS }}>Link Request Declined</h2>
+              <p style={{ fontSize: 13, color: "#4B5563", margin: "0 0 12px", fontFamily: IN, lineHeight: 1.6 }}>
+                Your student declined this link request. If this was a mistake, ask them to check their Home screen the next time you send a new request.
+              </p>
+              <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0, fontFamily: IN }}>
+                Student ID: <strong style={{ color: "#EF4444" }}>{studentId}</strong>
+              </p>
+            </div>
+
+            {/* No "Continue to Dashboard" here either — a declined request still leaves the
+                parent unlinked, so the only way forward is a new request (see the waiting-phase
+                note above; the same login gate applies). */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12, marginBottom: 16 }}>
+              <button onClick={() => tryAgain()} style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: GRAD, color: "white", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 8px 24px rgba(151,114,246,.3)" }}>
+                <RefreshCw size={16} /> Send New Request
+              </button>
+              <button onClick={() => { supabase.auth.signOut(); go("landing"); }}
+                style={{ width: "100%", background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", fontSize: 12, fontWeight: 700, fontFamily: QS, padding: "4px 0 0", textAlign: "center" as const }}>
+                Log Out
+              </button>
             </div>
           </>
         )}

@@ -65,6 +65,13 @@ interface GoogleMapCanvasProps {
   onInfoWindowClose?: () => void;
   polyline?: { lat: number; lng: number }[];
   circle?: { center: { lat: number; lng: number }; radiusMeters: number; color?: string };
+  /** A second, independent circle reserved for a device GPS fix's own reported accuracy radius —
+   *  kept separate from `circle` (typically a verification/geofence radius) so a screen that needs
+   *  both at once (e.g. "you must be within this area" + "your GPS fix could be off by this much")
+   *  can show them simultaneously without fighting over the same overlay. Styled as a fixed, subtle
+   *  translucent halo (matches the "blue dot" accuracy ring convention from native map apps) rather
+   *  than taking a color prop, since it's never the thing being visually emphasized. */
+  accuracyCircle?: { center: { lat: number; lng: number }; radiusMeters: number } | null;
   enableClustering?: boolean;
 }
 
@@ -204,7 +211,7 @@ async function fetchPlaceDetailsViaNewApi(g: any, placeId: string): Promise<Plac
 
 export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>(
   (
-    { center, zoom, mapType, onZoomChange, style, markers, draggableMarker, onMarkerDragEnd, onMapClick, clickablePois, onPoiClick, onPoiClickStart, onPoiClickFailed, infoWindow, onInfoWindowClose, polyline, circle, enableClustering },
+    { center, zoom, mapType, onZoomChange, style, markers, draggableMarker, onMarkerDragEnd, onMapClick, clickablePois, onPoiClick, onPoiClickStart, onPoiClickFailed, infoWindow, onInfoWindowClose, polyline, circle, accuracyCircle, enableClustering },
     ref,
   ) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -220,6 +227,7 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
     const dragMarkerObjRef = useRef<any>(null);
     const polylineObjRef = useRef<any>(null);
     const circleObjRef = useRef<any>(null);
+    const accuracyCircleObjRef = useRef<any>(null);
     const infoWindowRef = useRef<any>(null);
     const infoWindowDivRef = useRef<HTMLDivElement | null>(null);
     if (!infoWindowDivRef.current) infoWindowDivRef.current = document.createElement("div");
@@ -291,6 +299,21 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
     useEffect(() => {
       if (mapRef.current && mapRef.current.getZoom() !== zoom) mapRef.current.setZoom(zoom);
     }, [zoom]);
+
+    // ── Keep the view synced to `center` after the map already exists ───────────
+    // The map is only ever *created* once, at mount, using whatever `center` was
+    // at that instant — often still a placeholder/fallback, since the caller's
+    // real position (a boarding house's pinned location, a student's assigned
+    // BH, ...) usually finishes loading from the database a beat after first
+    // render. Without this, the map would silently keep showing that first,
+    // possibly-wrong center forever once real data arrives — nothing else here
+    // ever re-applies `center` to an already-mounted map. `mapReady` is in the
+    // dependency list too so this also catches the reverse ordering (real data
+    // resolves before the Maps API itself finishes loading).
+    useEffect(() => {
+      if (mapReady && mapRef.current) mapRef.current.setCenter(center);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mapReady, center.lat, center.lng]);
 
     // ── Floating info popup anchored to a map position (e.g. the existing-place popup) ─────
     useEffect(() => {
@@ -468,6 +491,29 @@ export const GoogleMapCanvas = forwardRef<GoogleMapHandle, GoogleMapCanvasProps>
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mapReady, circle?.center.lat, circle?.center.lng, circle?.radiusMeters, circle?.color]);
+
+    // ── Accuracy circle (a device GPS fix's own reported error margin) — independent of `circle`
+    //    above so both can be shown at once. ─────────────────────────────────────────────────
+    useEffect(() => {
+      if (!mapReady) return;
+      const g = (window as any).google;
+      accuracyCircleObjRef.current?.setMap(null);
+      accuracyCircleObjRef.current = null;
+      if (accuracyCircle) {
+        accuracyCircleObjRef.current = new g.maps.Circle({
+          map: mapRef.current,
+          center: accuracyCircle.center,
+          radius: accuracyCircle.radiusMeters,
+          strokeColor: "#3B82F6",
+          strokeOpacity: 0.5,
+          strokeWeight: 1,
+          fillColor: "#3B82F6",
+          fillOpacity: 0.12,
+          clickable: false,
+        });
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mapReady, accuracyCircle?.center.lat, accuracyCircle?.center.lng, accuracyCircle?.radiusMeters]);
 
     useImperativeHandle(ref, () => ({
       zoomIn: () => mapRef.current?.setZoom((mapRef.current.getZoom() ?? zoom) + 1),

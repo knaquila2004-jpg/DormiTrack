@@ -1,3 +1,12 @@
+import { supabase } from "../lib/supabase";
+import type { Session } from "@supabase/supabase-js";
+import { getBoardingHousesForLandlord, getMyBHFeatureConfig, updateBHFeatureConfig } from "./boardingHouseStore";
+import { getMyHighlights, createHighlight, updateHighlight, deleteHighlight } from "./highlightsStore";
+import { getPendingRegistrationsForLandlord, approveRegistration, rejectRegistration, getOccupancyStatsForLandlord, getMyStudentGateStatus, PendingRegistration, OccupancyStats, PendingRegInfo } from "./registrationStore";
+import { getMyLandlordAccount } from "./landlordProfileStore";
+import { getCheckInOutActivityForLandlord } from "./checkInOutStore";
+import { getPaymentActivityForLandlord } from "./paymentStore";
+import { getVisitorRecordsForLandlord, markVisitorLeft as markVisitorLeftApi, toLocalISODate, loggedLabel } from "./visitorStore";
 import React, { useState, useEffect, useRef } from "react";
 import {
   Home, Map, Bell, User, Eye, EyeOff, Search, Shield, CreditCard,
@@ -6,7 +15,7 @@ import {
   HelpCircle, FileText, Megaphone, Calendar, ChevronRight, ChevronLeft,
   Navigation, Signal, Wifi, Battery, RefreshCcw, Filter,
   Globe, MessageCircle, Layers, Smartphone, Heart, Check, Star,
-  BarChart2, UserCheck, Wallet, Flag,
+  BarChart2, UserCheck, Wallet, Flag, LogIn,
   Droplet, Zap, Utensils, Car, BookOpen, Video, Shirt, Plus, Minus, X,
   Sparkles, DoorOpen, Hourglass,
 } from "lucide-react";
@@ -14,20 +23,22 @@ import { ImageWithFallback } from "./components/figma/ImageWithFallback";
 import {
   GRAD, GRAD_H, Screen, NavTab, Role,
   BedStatus, BedData, RoomData, Amenity, BoardingHouse, RegRequest, StudentProfile,
-  AMENITIES, BOARDING_HOUSES, roomStatus, IMG,
+  AMENITIES, roomStatus, IMG, MAP_CENTER,
 } from "./shared";
 import { LandlordOccupantsScreen } from "./LandlordOccupants";
 import { LandlordSignUpScreen } from "./LandlordSignUp";
 import { StudentSignUpScreen } from "./StudentSignUp";
 import { ParentSignUpScreen, ParentLinkingScreen } from "./ParentSignUp";
+import { getMyParentGateStatus, acknowledgeParentLink } from "./parentLinkStore";
 import { LandlordProfileScreen } from "./LandlordProfile";
-import { HighlightsDashboardSection, Highlight, INITIAL_HIGHLIGHTS, HL_TODAY } from "./LandlordHighlights";
+import { HighlightsDashboardSection, Highlight, HL_TODAY } from "./LandlordHighlights";
 import { LandlordPaymentsScreen } from "./LandlordPayments";
-import { StudentHomeScreen, BH_DATA } from "./StudentHome";
+import { StudentHomeScreen } from "./StudentHome";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
-import { getReports, updateReport as updateStudentReport, CATEGORY_META, PRIORITY_META, STATUS_META, StudentReport, ReportStatus } from "./reportStore";
+import { getReportsForLandlord, respondToReport, CATEGORY_META, STATUS_META, StudentReport, ReportStatus } from "./reportStore";
 import {
   useNotifications, useUnreadCount, markNotificationRead, markAllRead, addNotification,
+  notifyLandlordOfBoardingHouse, notifyLinkedParents,
   NOTIF_META, timeAgo, fmtBadgeCount, AppNotification, NotificationType,
 } from "./notificationStore";
 import { MessagesScreen } from "./Chat";
@@ -148,6 +159,31 @@ function MobileShell({ children, visible }: { children: React.ReactNode; visible
   );
 }
 
+// One-time "You're Linked!" confirmation for a parent who logs in after
+// their student has already approved the link — see acknowledgeParentLink
+// in parentLinkStore.ts for why this only ever fires once. Rendered as a
+// sibling of render()'s output (inside MobileShell) so it overlays whatever
+// tab the parent happens to land on, not just the dashboard specifically.
+function ParentLinkedModal({ onDismiss }: { onDismiss: () => void }) {
+  const QS = "'Quicksand',sans-serif"; const IN = "'Inter',sans-serif";
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ background: "white", borderRadius: 24, padding: "32px 24px", maxWidth: 320, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.3)" }}>
+        <div style={{ width: 64, height: 64, borderRadius: "50%", background: "linear-gradient(135deg,#16A34A,#15803D)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px", boxShadow: "0 8px 24px rgba(22,163,74,.3)" }}>
+          <CheckCircle size={32} color="white" strokeWidth={2} />
+        </div>
+        <h2 style={{ fontSize: 18, fontWeight: 800, color: "#15803D", margin: "0 0 8px", fontFamily: QS }}>You're Linked!</h2>
+        <p style={{ fontSize: 13, color: "#4B5563", margin: "0 0 22px", lineHeight: 1.6, fontFamily: IN }}>
+          Your parent account is now linked to your student's DormiTrack account. You can monitor their boarding house info, payments, and more.
+        </p>
+        <button onClick={onDismiss} style={{ width: "100%", height: 48, borderRadius: 20, border: "none", background: GRAD, color: "white", fontSize: 14, fontWeight: 800, fontFamily: QS, cursor: "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.3)" }}>
+          Got it
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
 function GradBtn({ children, onClick, disabled = false }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
@@ -170,15 +206,15 @@ function OutlineBtn({ children, onClick }: { children: React.ReactNode; onClick?
   );
 }
 
-function Input({ label, placeholder, type = "text", value, onChange, right }: {
-  label?: string; placeholder: string; type?: string; value: string; onChange: (v: string) => void; right?: React.ReactNode;
+function Input({ label, placeholder, type = "text", value, onChange, right, autoComplete }: {
+  label?: string; placeholder?: string; type?: string; value: string; onChange: (v: string) => void; right?: React.ReactNode; autoComplete?: string;
 }) {
   const [focused, setFocused] = useState(false);
   return (
     <div className="mb-4">
       {label && <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#7549F6", marginBottom: 6, fontFamily: "'Quicksand',sans-serif" }}>{label}</label>}
       <div style={{ position: "relative" }}>
-        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} autoComplete={autoComplete}
           onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
           style={{ width: "100%", boxSizing: "border-box", padding: "14px 44px 14px 16px", borderRadius: 16, border: `2px solid ${focused ? "#9772F6" : "#E5E7EB"}`, background: "#F7F8FC", color: "#1F2937", fontSize: 14, fontFamily: "'Inter',sans-serif", outline: "none", transition: "border-color 0.2s" }} />
         {right && <div style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", color: "#9CA3AF" }}>{right}</div>}
@@ -304,6 +340,10 @@ function BottomNav({
   const LEFT  = leftTabs;
   const RIGHT = rightTabs;
   const mapActive = active === "map";
+  // On the Profile page the Map FAB (and the notch it sits in) is hidden entirely — the bar
+  // becomes a plain, unbroken pill and the remaining tabs redistribute evenly across its full
+  // width instead of leaving a gap where the FAB used to clear.
+  const showFab = active !== "profile";
 
   // ── Geometry ──────────────────────────────────────────────────────────────
   //
@@ -337,6 +377,21 @@ function BottomNav({
     `C ${cx - nh - q + ent} 0 ${cx - flat - sout} ${nd} ${cx - flat} ${nd}`,
     `L ${cx + flat} ${nd}`,
     `C ${cx + flat + sout} ${nd} ${cx + nh + q - ent} 0 ${cx + nh + q} 0`,
+    `L ${W - C} 0`,
+    `Q ${W} 0 ${W} ${C}`,
+    `L ${W} ${H - C}`,
+    `Q ${W} ${H} ${W - C} ${H}`,
+    `L ${C} ${H}`,
+    `Q 0 ${H} 0 ${H - C}`,
+    `L 0 ${C}`,
+    `Q 0 0 ${C} 0`,
+    `Z`,
+  ].join(" ");
+
+  // Plain rounded-rect pill — same corner radius, no U-notch — used on the Profile page once
+  // the FAB is hidden, so the bar just reads as a normal, unbroken nav bar.
+  const flatShape = [
+    `M ${C} 0`,
     `L ${W - C} 0`,
     `Q ${W} 0 ${W} ${C}`,
     `L ${W} ${H - C}`,
@@ -390,9 +445,10 @@ function BottomNav({
             </radialGradient>
           </defs>
           {/* White pill body */}
-          <path d={shape} fill="rgba(255,255,255,0.97)" />
-          {/* Subtle purple tint inside the U-cup — gives depth under the FAB */}
-          <ellipse cx={cx} cy={nd * 0.7} rx={nh * 0.8} ry={nd * 0.6} fill="url(#notchDepth)" />
+          <path d={showFab ? shape : flatShape} fill="rgba(255,255,255,0.97)" />
+          {/* Subtle purple tint inside the U-cup — gives depth under the FAB (nothing to shade
+              once the notch itself is gone on the Profile page) */}
+          {showFab && <ellipse cx={cx} cy={nd * 0.7} rx={nh * 0.8} ry={nd * 0.6} fill="url(#notchDepth)" />}
         </svg>
 
         {/* ── Tab buttons ── */}
@@ -420,8 +476,9 @@ function BottomNav({
             );
           })}
 
-          {/* Center gap — clears the FAB (64 px + margins) */}
-          <div style={{ width: FAB_D + 20, flexShrink: 0 }} />
+          {/* Center gap — clears the FAB (64 px + margins); omitted on the Profile page so the
+              remaining tabs spread evenly across the full, now-unbroken bar. */}
+          {showFab && <div style={{ width: FAB_D + 20, flexShrink: 0 }} />}
 
           {RIGHT.map(({ id, Icon, label }) => {
             const on = active === id;
@@ -449,7 +506,7 @@ function BottomNav({
       </div>
 
       {/* ── Center FAB — overlaps into the U-cut, purple gradient, no label ── */}
-      <button
+      {showFab && <button
         onClick={() => go("map")}
         style={{
           position: "absolute",
@@ -480,7 +537,7 @@ function BottomNav({
         }}
       >
         <MapPin size={26} color="white" fill="rgba(255,255,255,.2)" strokeWidth={2} />
-      </button>
+      </button>}
     </div>
   );
 }
@@ -520,14 +577,74 @@ function SplashScreen({ done }: { done: () => void }) {
 // straight into a page that both introduces DormiTrack and lets you sign in,
 // so returning users never have to tap through an intermediate splash choice.
 // "Create Account" is the only path onward to role selection / registration.
-function WelcomeLoginScreen({ go, onAdminLogin }: { go: (s: Screen) => void; onAdminLogin?: () => void }) {
-  const [email, setEmail] = useState(""); const [pass, setPass] = useState(""); const [show, setShow] = useState(false); const [err, setErr] = useState("");
+function WelcomeLoginScreen({ go, onPendingRegistration, onPendingParentLink, onParentJustLinked, email, setEmail, pass, setPass }: {
+  go: (s: Screen) => void; onPendingRegistration: (info: PendingRegInfo, registrationId: string) => void;
+  onPendingParentLink: (resume: { kind: "pending" | "rejected" | "none"; linkId: string | null; studentIdNo: string }) => void;
+  onParentJustLinked: () => void;
+  // Controlled from App() so navigating to "Forgot Password?" and back doesn't lose what was typed.
+  email: string; setEmail: (v: string) => void; pass: string; setPass: (v: string) => void;
+}) {
+  const [show, setShow] = useState(false); const [err, setErr] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [busy, setBusy] = useState(false);
   useEffect(() => { const t = setTimeout(() => setMounted(true), 30); return () => clearTimeout(t); }, []);
 
-  const handleLogin = () => {
-    if (email.trim() === "admin" && pass === "123456") { onAdminLogin?.(); go("dashboard"); }
-    else { setErr(""); go("dashboard"); }
+  const handleLogin = async () => {
+    const identifier = email.trim();
+    if (!identifier || !pass) { setErr("Please enter your username/email and password."); return; }
+    setBusy(true); setErr("");
+    // The admin account's real Supabase Auth login is backed by a fixed email —
+    // "admin" is just the identifier shown/typed here.
+    let loginEmail = identifier === "admin" ? "knaquila2004@gmail.com" : identifier;
+    // Anything else without an "@" isn't a real email — Supabase Auth only ever authenticates by
+    // email, so a typed username (currently only students have one) needs resolving to its real
+    // email first via a narrow, pre-auth-safe lookup RPC (mirrors find_student_user_id's shape).
+    if (loginEmail !== "knaquila2004@gmail.com" && !loginEmail.includes("@")) {
+      const { data: resolvedEmail } = await supabase.rpc("find_email_by_username", { p_username: loginEmail });
+      if (!resolvedEmail) { setBusy(false); setErr("Invalid username/email or password."); return; }
+      loginEmail = resolvedEmail;
+    }
+    const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: pass });
+    if (error || !data.user) { setBusy(false); setErr("Invalid username/email or password."); return; }
+    // Login succeeded — clear the typed credentials now that they've done their job, so they don't
+    // sit around (lifted up to App() so a stray "Forgot Password?" tap no longer wipes them) and
+    // silently reappear pre-filled the next time someone lands on this screen after logging out.
+    setEmail(""); setPass("");
+
+    // A student who hasn't completed (or is still awaiting approval on)
+    // their boarding house registration must not land on the real home
+    // dashboard — it would just show empty placeholders. Route them back
+    // into the choose/await flow instead, based on the real DB state (not
+    // any leftover same-session client state, since this covers a fresh
+    // login after a reload just as much as the interactive case).
+    const { data: userRow } = await supabase.from("users").select("role").eq("id", data.user.id).maybeSingle();
+    if (userRow?.role === "student") {
+      const status = await getMyStudentGateStatus();
+      setBusy(false);
+      if (status.kind === "pending") { onPendingRegistration(status.info, status.registrationId); go("pendingVerify"); return; }
+      if (status.kind === "none") { go("boardingReg"); return; }
+      go("dashboard");
+      return;
+    }
+    // Same idea for parents: the real dashboard shows another family's student data, so a parent
+    // whose link isn't confirmed yet must not reach it just by logging back in (previously the
+    // only gate was a "Continue to Dashboard" button on the post-signup screen, which a parent
+    // could just skip past — and logging out/in bypassed even that).
+    if (userRow?.role === "parent") {
+      const status = await getMyParentGateStatus();
+      setBusy(false);
+      if (status.kind === "pending") { onPendingParentLink({ kind: "pending", linkId: status.linkId, studentIdNo: status.studentIdNo }); go("parentLinking"); return; }
+      if (status.kind === "rejected") { onPendingParentLink({ kind: "rejected", linkId: status.linkId, studentIdNo: status.studentIdNo }); go("parentLinking"); return; }
+      if (status.kind === "none") { onPendingParentLink({ kind: "none", linkId: null, studentIdNo: "" }); go("parentLinking"); return; }
+      // Confirmed link the parent hasn't seen a confirmation for yet (e.g. they closed the app
+      // while pending and the student approved it later) — show it once, here, since they won't
+      // have been sitting on ParentLinkingScreen's own live "success" card to see it happen.
+      if (status.kind === "linked" && status.justLinked) onParentJustLinked();
+      go("dashboard");
+      return;
+    }
+    setBusy(false);
+    go("dashboard");
   };
 
   return (
@@ -569,17 +686,17 @@ function WelcomeLoginScreen({ go, onAdminLogin }: { go: (s: Screen) => void; onA
           transition: "opacity .6s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1)",
         }}>
           <div className="dt-glow-field">
-            <Input label="Username or Email" placeholder="Enter your username or email" type="text" value={email} onChange={setEmail} right={<Mail size={17} />} />
+            <Input label="Username or Email" type="text" value={email} onChange={setEmail} right={<Mail size={17} />} autoComplete="off" />
           </div>
           <div className="dt-glow-field">
-            <Input label="Password" placeholder="Enter your password" type={show ? "text" : "password"} value={pass} onChange={setPass}
+            <Input label="Password" type={show ? "text" : "password"} value={pass} onChange={setPass} autoComplete="new-password"
               right={<button onClick={() => setShow(s => !s)} className="transition-transform active:scale-90" style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "#9CA3AF" }}>{show ? <Eye size={17} /> : <EyeOff size={17} />}</button>} />
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -8, marginBottom: 20 }}>
             <button onClick={() => go("forgotPassword")} className="transition-opacity hover:opacity-80" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#9772F6", fontFamily: "'Quicksand',sans-serif" }}>Forgot Password?</button>
           </div>
           {err && <p style={{ textAlign: "center", fontSize: 12, color: "#DC2626", marginBottom: 12 }}>{err}</p>}
-          <GradBtn onClick={handleLogin}>Log In</GradBtn>
+          <GradBtn onClick={handleLogin} disabled={busy}>{busy ? "Logging In…" : "Log In"}</GradBtn>
           <p style={{ textAlign: "center", fontSize: 13, color: "#6B7280", marginTop: 18, marginBottom: 0 }}>
             {"Don't have an account? "}
             <button onClick={() => go("roleSelect")} className="transition-opacity hover:opacity-80" style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 800, color: "#7549F6", fontSize: 13, fontFamily: "'Quicksand',sans-serif" }}>Create Account</button>
@@ -719,16 +836,72 @@ function SignUpScreen({ go }: { go: (s: Screen) => void }) {
 function ForgotPasswordScreen({ go }: { go: (s: Screen) => void }) {
   type Ph = "email" | "code" | "newpass";
   const [phase, setPhase] = useState<Ph>("email");
-  const [email, setEmail] = useState(""); const [code, setCode] = useState(["", "", "", "", "", ""]); const [np, setNp] = useState("");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState(["", "", "", "", "", ""]);
+  const [np, setNp] = useState("");
+  const [confirmNp, setConfirmNp] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [resendCooldown, setResendCooldown] = useState(0);
   const meta: Record<Ph, { title: string; desc: string }> = {
     email: { title: "Forgot Password", desc: "Enter your email to receive a verification code" },
     code: { title: "Verify Code", desc: `Code sent to ${email || "your email"}` },
     newpass: { title: "New Password", desc: "Create a strong new password for your account" },
   };
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
+
+  // Real email OTP via Supabase Auth — the same code the "code" phase actually verifies below,
+  // not a UI-only simulation. shouldCreateUser:false so this can't be used to silently create an
+  // account for an email that was never signed up.
+  const sendCode = async () => {
+    if (!email.trim()) { setErr("Please enter your email address."); return; }
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: false } });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setCode(["", "", "", "", "", ""]);
+    setPhase("code");
+    setResendCooldown(30);
+  };
+
+  const verifyCode = async () => {
+    const token = code.join("");
+    if (token.length !== 6) { setErr("Enter the full 6-digit code."); return; }
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token, type: "email" });
+    setBusy(false);
+    if (error) { setErr("Invalid or expired code. Please try again."); return; }
+    setPhase("newpass");
+  };
+
+  // Runs under the real session verifyOtp just established for this account — an actual
+  // password change, not a screen transition that pretends one happened.
+  const resetPassword = async () => {
+    if (np.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (np !== confirmNp) { setErr("Passwords do not match."); return; }
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.updateUser({ password: np });
+    if (error) { setBusy(false); setErr(error.message); return; }
+    await supabase.auth.signOut(); // don't leave them silently signed in via the recovery session
+    setBusy(false);
+    go("login");
+  };
+
+  const back = () => {
+    setErr("");
+    if (phase === "email") go("login");
+    else setPhase(phase === "newpass" ? "code" : "email");
+  };
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
       <div style={{ flexShrink: 0, padding: "56px 24px 40px", backgroundImage: GRAD_H }}>
-        <button onClick={() => phase === "email" ? go("login") : setPhase(phase === "newpass" ? "code" : "email")} style={{ background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", marginBottom: 16, padding: 0 }}><ChevronLeft size={24} /></button>
+        <button onClick={back} style={{ background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", marginBottom: 16, padding: 0 }}><ChevronLeft size={24} /></button>
         <div style={{ width: 56, height: 56, borderRadius: 18, background: "rgba(255,255,255,.14)", backdropFilter: "blur(10px)", border: "1px solid rgba(255,255,255,.2)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
           <Lock size={28} color="white" />
         </div>
@@ -736,22 +909,31 @@ function ForgotPasswordScreen({ go }: { go: (s: Screen) => void }) {
         <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>{meta[phase].desc}</p>
       </div>
       <div style={{ flex: 1, background: "white", borderRadius: "32px 32px 0 0", marginTop: -20, padding: "28px 24px 32px" }}>
-        {phase === "email" && <><Input label="Email Address" placeholder="your@email.com" type="email" value={email} onChange={setEmail} right={<Mail size={17} />} /><GradBtn onClick={() => setPhase("code")}>Send Verification Code</GradBtn></>}
+        {err && <p style={{ textAlign: "center", fontSize: 12, color: "#DC2626", marginBottom: 16 }}>{err}</p>}
+        {phase === "email" && <>
+          <Input label="Email Address" placeholder="your@email.com" type="email" value={email} onChange={setEmail} right={<Mail size={17} />} />
+          <GradBtn onClick={sendCode} disabled={busy}>{busy ? "Sending…" : "Send Verification Code"}</GradBtn>
+        </>}
         {phase === "code" && <>
           <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 20 }}>Enter the 6-digit code sent to your email.</p>
           <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
             {code.map((v, i) => (
-              <input key={i} maxLength={1} value={v} onChange={e => { const c = [...code]; c[i] = e.target.value; setCode(c); }}
+              <input key={i} maxLength={1} value={v} onChange={e => { const c = [...code]; c[i] = e.target.value.replace(/\D/g, ""); setCode(c); }}
                 style={{ flex: 1, height: 56, textAlign: "center", fontSize: 20, fontWeight: 800, borderRadius: 16, border: `2px solid ${v ? "#9772F6" : "#E5E7EB"}`, background: "#F7F8FC", color: "#1F2937", outline: "none", fontFamily: "'Quicksand',sans-serif" }} />
             ))}
           </div>
-          <GradBtn onClick={() => setPhase("newpass")}>Verify Code</GradBtn>
-          <p style={{ textAlign: "center", fontSize: 13, color: "#6B7280", marginTop: 16 }}>{"Didn't receive it? "}<span onClick={() => {}} style={{ fontWeight: 700, color: "#9772F6", cursor: "pointer", fontFamily: "'Quicksand',sans-serif" }}>Resend</span></p>
+          <GradBtn onClick={verifyCode} disabled={busy}>{busy ? "Verifying…" : "Verify Code"}</GradBtn>
+          <p style={{ textAlign: "center", fontSize: 13, color: "#6B7280", marginTop: 16 }}>
+            {"Didn't receive it? "}
+            {resendCooldown > 0
+              ? <span style={{ fontWeight: 700, color: "#9CA3AF", fontFamily: "'Quicksand',sans-serif" }}>Resend ({resendCooldown}s)</span>
+              : <span onClick={sendCode} style={{ fontWeight: 700, color: "#9772F6", cursor: "pointer", fontFamily: "'Quicksand',sans-serif" }}>Resend</span>}
+          </p>
         </>}
         {phase === "newpass" && <>
-          <Input label="New Password" placeholder="Min. 8 characters" type="password" value={np} onChange={setNp} right={<Lock size={17} />} />
-          <Input label="Confirm Password" placeholder="Re-enter new password" type="password" value="" onChange={() => {}} right={<Lock size={17} />} />
-          <GradBtn onClick={() => go("login")}>Reset Password</GradBtn>
+          <Input label="New Password" placeholder="Min. 6 characters" type="password" value={np} onChange={setNp} right={<Lock size={17} />} />
+          <Input label="Confirm Password" placeholder="Re-enter new password" type="password" value={confirmNp} onChange={setConfirmNp} right={<Lock size={17} />} />
+          <GradBtn onClick={resetPassword} disabled={busy}>{busy ? "Saving…" : "Reset Password"}</GradBtn>
         </>}
       </div>
     </div>
@@ -761,17 +943,18 @@ function ForgotPasswordScreen({ go }: { go: (s: Screen) => void }) {
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 
 type VisitorRecord = {
-  id: string;
+  id: string; studentId: string;                // studentId: real user id, needed to notify on "left"
   studentName: string; room: string;           // always shown (auto-linked)
   visitorName?: string; contact?: string;
-  relationship?: string; purpose?: string; visitDate?: string;
+  relationship?: string; purpose?: string;
   date: string;                                 // always stored for filtering
+  ts: number;                                    // raw time_in — real chronological sort + loggedLabel() display
   timeIn?: string; timeOut?: string;
   status: "inside" | "left";
 };
-type VisitorFields = { name: boolean; contact: boolean; relationship: boolean; purpose: boolean; visitDate: boolean };
+type VisitorFields = { name: boolean; contact: boolean; relationship: boolean; purpose: boolean };
 
-function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visitorFields = { name:true, contact:true, relationship:true, purpose:true, visitDate:true }, highlightsEnabled = true, pendingDeepLink, onDeepLinkConsumed }: { go: (s: Screen) => void; role?: Role; visitorEnabled?: boolean; visitorFields?: VisitorFields; highlightsEnabled?: boolean; pendingDeepLink?: { type: NotificationType; relatedId?: string } | null; onDeepLinkConsumed?: () => void }) {
+function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visitorFields = { name:true, contact:true, relationship:true, purpose:true }, highlightsEnabled = true, pendingDeepLink, onDeepLinkConsumed }: { go: (s: Screen) => void; role?: Role; visitorEnabled?: boolean; visitorFields?: VisitorFields; highlightsEnabled?: boolean; pendingDeepLink?: { type: NotificationType; relatedId?: string } | null; onDeepLinkConsumed?: () => void }) {
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
   const notifCount = useUnreadCount(role);
@@ -780,79 +963,227 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
   const [activityFilter, setActivityFilter] = useState<"all"|"landlord"|"student"|"parent"|"admin"|"visitor">("all");
 
   // ── Visitor Records state ────────────────────────────────────────────────────
-  const [visitors, setVisitors] = useState<VisitorRecord[]>([
-    { id: "v1", studentName: "Lara Mendoza",  room: "Room B", visitorName: "Rose Mendoza",  contact: "09171110001", relationship: "Mother",  purpose: "Bring food & supplies", visitDate: "Dec 18, 2024", date: "Dec 18", timeIn: "10:08 AM", status: "inside" },
-    { id: "v2", studentName: "Maria Santos",  room: "Room A", visitorName: "Carl Reyes",    contact: "09221110002", relationship: "Friend",  purpose: "Help with thesis",      visitDate: "Dec 18, 2024", date: "Dec 18", timeIn: "2:03 PM",  status: "inside" },
-    { id: "v3", studentName: "Kevin Cruz",    room: "Room C", visitorName: "Ben Torres",    contact: "09331110003", relationship: "Father",  purpose: "Personal visit",        visitDate: "Dec 17, 2024", date: "Dec 17", timeIn: "9:05 AM",  timeOut: "10:58 AM", status: "left" },
-    { id: "v4", studentName: "John Doe",      room: "Room A", visitorName: "Mark dela Cruz",contact: "09551110005", relationship: "Brother", purpose: "Bring appliances",      visitDate: "Dec 16, 2024", date: "Dec 16", timeIn: "1:03 PM",  timeOut: "2:50 PM",  status: "left" },
-    { id: "v5", studentName: "Sofia Castillo",room: "Room D", visitorName: "Ana Gomez",     contact: "09441110004", relationship: "Cousin",  purpose: "Birthday cake",         visitDate: "Dec 15, 2024", date: "Dec 15", timeIn: "4:10 PM",  timeOut: "5:45 PM",  status: "left" },
-  ]);
+  // Real records from the visitor_records table (0044_visitor_records.sql),
+  // student-submitted via the new "Log a Visitor" form on StudentHome.tsx —
+  // loaded below in refreshLandlordData alongside the other landlord data.
+  const [visitors, setVisitors] = useState<VisitorRecord[]>([]);
   const [visitorFilter, setVisitorFilter] = useState<"all"|"today"|"week"|"month"|"inside"|"left">("all");
   const [visitorSearch, setVisitorSearch] = useState("");
   const [visitorSort, setVisitorSort] = useState<"newest"|"oldest">("newest");
   const [showVisitorModal, setShowVisitorModal] = useState(false);
   const [showAllActivity, setShowAllActivity] = useState(false);
-  const [studentReports, setStudentReports] = useState<StudentReport[]>(()=>getReports().filter(r=>r.boardingHouse==="Naquila BH"||r.boardingHouse==="Naquila Boarding House"));
+  const [studentReports, setStudentReports] = useState<StudentReport[]>([]);
   const [selectedStudentReport, setSelectedStudentReport] = useState<StudentReport|null>(null);
   const [reportResponseText, setReportResponseText] = useState("");
+  // Status pill tapped in the open concern modal but not yet sent — null means "no change
+  // staged," so Confirm Update falls back to the report's own current status.
+  const [pendingStatusChoice, setPendingStatusChoice] = useState<ReportStatus | null>(null);
 
   // Opened from a "Report" notification — jump straight to that student's report.
+  // Opened from a "New Registration Request" notification — scroll straight to Reservation
+  // Requests below and briefly highlight that specific request. Gated on relatedId
+  // specifically: a "verification" notification with no relatedId is a different case
+  // entirely (e.g. an admin's "your boarding house listing needs revision") that this
+  // scroll/highlight doesn't apply to. Deliberately does NOT call onDeepLinkConsumed itself —
+  // pendingRegs (needed to actually open the review modal below) loads asynchronously and can
+  // easily still be empty at this point; clearing pendingDeepLink here would make it
+  // unavailable by the time that data arrives. The modal-opening effect further down consumes
+  // it once it's actually found the matching request.
+  const reservationRequestsRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null);
   useEffect(() => {
     if (pendingDeepLink?.type === "report" && pendingDeepLink.relatedId) {
       const match = studentReports.find(r => r.id === pendingDeepLink.relatedId);
-      if (match) setSelectedStudentReport(match);
-      onDeepLinkConsumed?.();
+      // Also reset the compose box here, same as the list item's onClick does — any
+      // existing response now renders in its own read-only "Your Response" card (see
+      // below), so this box is always a blank slate for writing a new one, exactly like
+      // StudentHome.tsx's "Add Comment" box never prefills from the student's last note.
+      if (match) { setSelectedStudentReport(match); setReportResponseText(""); setPendingStatusChoice(null); onDeepLinkConsumed?.(); }
+    }
+    if (pendingDeepLink?.type === "verification" && pendingDeepLink.relatedId) {
+      setHighlightedRequestId(pendingDeepLink.relatedId);
+      requestAnimationFrame(() => reservationRequestsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     }
   }, [pendingDeepLink, studentReports, onDeepLinkConsumed]);
+  // Fade the highlight back out a few seconds after it's shown, so it reads as a
+  // momentary "here it is" pointer rather than a permanent marker on the request.
+  useEffect(() => {
+    if (!highlightedRequestId) return;
+    const t = setTimeout(() => setHighlightedRequestId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightedRequestId]);
+  // Opened from a "New Visitor Logged" notification — open the Visitor Records modal
+  // and briefly highlight that specific record. `visitors` loads asynchronously
+  // (refreshLandlordData below), so this re-checks whenever it changes rather than
+  // relying on it already being populated the instant the deep link arrives.
+  const [highlightedVisitorId, setHighlightedVisitorId] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "visitor" || !pendingDeepLink.relatedId) return;
+    const match = visitors.find(v => v.id === pendingDeepLink.relatedId);
+    if (match) { setShowVisitorModal(true); setHighlightedVisitorId(match.id); onDeepLinkConsumed?.(); }
+  }, [pendingDeepLink, visitors, onDeepLinkConsumed]);
+  useEffect(() => {
+    if (!highlightedVisitorId) return;
+    const t = setTimeout(() => setHighlightedVisitorId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightedVisitorId]);
   const [reportStatusFilter, setReportStatusFilter] = useState<"all"|ReportStatus>("all");
+  const [showResolvedConcerns, setShowResolvedConcerns] = useState(false);
+  const [showAllActiveConcerns, setShowAllActiveConcerns] = useState(false);
   const [activityDateFilter, setActivityDateFilter] = useState<"all"|"today"|"week"|"month">("all");
-  const [reqStates, setReqStates] = useState<Record<string,"pending"|"accepted"|"rejected">>({
-    "2024-0041": "pending", "2024-0042": "pending", "2024-0043": "pending",
-  });
+  // ── Real pending registrations + occupancy stats (landlord only) ────────────
+  const [landlordId, setLandlordId] = useState<string | null>(null);
+  const [pendingRegs, setPendingRegs] = useState<PendingRegistration[]>([]);
+  const [reqStates, setReqStates] = useState<Record<string,"pending"|"accepted"|"rejected">>({});
+  const [reqBusy, setReqBusy] = useState<string | null>(null);
+  const [reqError, setReqError] = useState("");
+  const [stats, setStats] = useState<OccupancyStats | null>(null);
+  const [landlordName, setLandlordName] = useState("");
+
+  // These three are independent of each other, so each one sets its own state as soon as
+  // it resolves rather than being batched behind Promise.all — a notification deep-link
+  // (report → studentReports, verification → pendingRegs) only needs ONE of them, and
+  // waiting on all three together meant it sat blocked on whichever query happened to be
+  // slowest (e.g. the occupancy-stats aggregate) even when its own data was already back.
+  const refreshLandlordData = (uid: string) => {
+    getPendingRegistrationsForLandlord(uid).then(setPendingRegs);
+    getOccupancyStatsForLandlord(uid).then(setStats);
+    getReportsForLandlord(uid).then(setStudentReports);
+    getVisitorRecordsForLandlord(uid).then(setVisitors);
+  };
+
+  useEffect(() => {
+    if (role !== "landlord") return;
+    let active = true;
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      const uid = s?.user?.id;
+      if (!uid || !active) return;
+      setLandlordId(uid);
+      refreshLandlordData(uid);
+      getMyLandlordAccount().then(acc => { if (active && acc?.firstName) setLandlordName(acc.firstName); });
+    });
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role]);
+
+  const handleAccept = async (regId: string) => {
+    setReqBusy(regId); setReqError("");
+    const res = await approveRegistration(regId);
+    setReqBusy(null);
+    if (res.ok === false) { setReqError(res.error); return; }
+    setReqStates(s => ({ ...s, [regId]: "accepted" }));
+    if (landlordId) refreshLandlordData(landlordId);
+  };
+  const handleReject = async (regId: string) => {
+    setReqBusy(regId); setReqError("");
+    const res = await rejectRegistration(regId);
+    setReqBusy(null);
+    if (res.ok === false) { setReqError(res.error); return; }
+    setReqStates(s => ({ ...s, [regId]: "rejected" }));
+    if (landlordId) refreshLandlordData(landlordId);
+  };
 
   const now = new Date();
   const hour = now.getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const dateStr = now.toLocaleDateString("en-PH", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
-  // 8 summary cards
+  // 8 summary cards — real occupancy data once `stats` resolves (see effect above)
   const summaryCards = [
-    { label: "Total Rooms",       value: "8",   Icon: Layers,      color: "#9772F6", bg: "#F5F0FF" },
-    { label: "Current Occupants", value: "31",  Icon: Users,       color: "#3B82F6", bg: "#EFF6FF" },
-    { label: "Available Beds",    value: "9",   Icon: CheckCircle, color: "#16A34A", bg: "#DCFCE7" },
-    { label: "Total Capacity",    value: "40",  Icon: Building2,   color: "#6366F1", bg: "#EEF2FF" },
-    { label: "Fully Occupied",    value: "3",   Icon: AlertCircle, color: "#EF4444", bg: "#FEE2E2" },
-    { label: "Available Rooms",   value: "5",   Icon: DoorOpen,    color: "#10B981", bg: "#D1FAE5" },
-    { label: "Pending Requests",  value: "3",   Icon: Hourglass,   color: "#F59E0B", bg: "#FEF3C7" },
-    { label: "Occupancy Rate",    value: "78%", Icon: BarChart2,   color: "#8B5CF6", bg: "#EDE9FE" },
+    { label: "Total Rooms",       value: String(stats?.totalRooms ?? 0),                    Icon: Layers,      color: "#9772F6", bg: "#F5F0FF" },
+    { label: "Current Occupants", value: String(stats?.currentOccupants ?? 0),               Icon: Users,       color: "#3B82F6", bg: "#EFF6FF" },
+    { label: "Available Beds",    value: String(stats?.availableBeds ?? 0),                  Icon: CheckCircle, color: "#16A34A", bg: "#DCFCE7" },
+    { label: "Total Capacity",    value: String(stats?.totalCapacity ?? 0),                  Icon: Building2,   color: "#6366F1", bg: "#EEF2FF" },
+    { label: "Fully Occupied",    value: String(stats?.fullyOccupiedRooms ?? 0),              Icon: AlertCircle, color: "#EF4444", bg: "#FEE2E2" },
+    { label: "Available Rooms",   value: String(stats?.availableRooms ?? 0),                  Icon: DoorOpen,    color: "#10B981", bg: "#D1FAE5" },
+    { label: "Pending Requests",  value: String(stats?.pendingRequests ?? 0),                 Icon: Hourglass,   color: "#F59E0B", bg: "#FEF3C7" },
+    { label: "Occupancy Rate",    value: `${stats?.occupancyRate ?? 0}%`,                     Icon: BarChart2,   color: "#8B5CF6", bg: "#EDE9FE" },
   ];
 
-  const requests = [
-    { name: "Lara Mendoza",     id: "2024-0041", room: "Room B", course: "BS Nursing",   year: "2nd Year" },
-    { name: "Mark Villanueva",  id: "2024-0042", room: "Room D", course: "BS CompSci",   year: "3rd Year" },
-    { name: "Sofia Castillo",   id: "2024-0043", room: "Room D", course: "BS Education", year: "1st Year" },
-  ];
+  const yearLabel = (y: number | null) => y ? `${y}${y === 1 ? "st" : y === 2 ? "nd" : y === 3 ? "rd" : "th"} Year` : "—";
+  const [reviewingRequest, setReviewingRequest] = useState<PendingRegistration | null>(null);
+  // Opened from a "New Registration Request" notification tap — the actual functional fix:
+  // this opens the full review modal (not just a scroll+highlight) the moment the matching
+  // request shows up in pendingRegs. That data loads asynchronously (a separate effect, after
+  // the session resolves), so this re-checks every time pendingRegs changes rather than once.
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "verification" || !pendingDeepLink.relatedId) return;
+    const match = pendingRegs.find(r => r.id === pendingDeepLink.relatedId);
+    if (match) { setReviewingRequest(match); onDeepLinkConsumed?.(); }
+  }, [pendingDeepLink, pendingRegs, onDeepLinkConsumed]);
 
-  const [allActivities, setAllActivities] = useState([
-    { role: "visitor",   msg: "Visitor Rose Mendoza arrived to visit Lara Mendoza.",        time: "10:08 AM",  date: "Dec 18", Icon: UserCheck,    color: "#EC4899", bar: "#EC4899" },
-    { role: "visitor",   msg: "Visitor Carl Reyes arrived to visit Maria Santos.",          time: "2:03 PM",   date: "Dec 18", Icon: UserCheck,    color: "#EC4899", bar: "#EC4899" },
-    { role: "student",   msg: "Maria Santos paid her December rent.",                       time: "Just now",  date: "Dec 18", Icon: CreditCard,   color: "#16A34A", bar: "#16A34A" },
-    { role: "landlord",  msg: "You updated Room B capacity to 6 beds.",                    time: "2h ago",    date: "Dec 18", Icon: Layers,       color: "#9772F6", bar: "#9772F6" },
-    { role: "student",   msg: "Kevin Cruz submitted a registration request.",               time: "3h ago",    date: "Dec 18", Icon: Users,        color: "#3B82F6", bar: "#16A34A" },
-    { role: "parent",    msg: "Rosa Cruz checked on Kevin's stay status.",                  time: "5h ago",    date: "Dec 18", Icon: Phone,        color: "#F59E0B", bar: "#F59E0B" },
-    { role: "visitor",   msg: "Visitor Ben Torres left the boarding house.",                time: "10:58 AM",  date: "Dec 17", Icon: Navigation,   color: "#EC4899", bar: "#EC4899" },
-    { role: "landlord",  msg: "You published a water interruption notice.",                 time: "Yesterday", date: "Dec 17", Icon: Megaphone,    color: "#9772F6", bar: "#9772F6" },
-    { role: "visitor",   msg: "Visitor Mark dela Cruz left the boarding house.",            time: "2:50 PM",   date: "Dec 16", Icon: Navigation,   color: "#EC4899", bar: "#EC4899" },
-    { role: "admin",     msg: "Admin verified Naquila Boarding House.",                     time: "Dec 16",    date: "Dec 16", Icon: Shield,       color: "#3B82F6", bar: "#3B82F6" },
-    { role: "student",   msg: "John Doe checked into Room A.",                              time: "Dec 15",    date: "Dec 15", Icon: CheckCircle,  color: "#16A34A", bar: "#16A34A" },
-    { role: "parent",    msg: "Ana Reyes messaged you about her daughter.",                 time: "Dec 14",    date: "Dec 14", Icon: MessageCircle,color: "#F59E0B", bar: "#F59E0B" },
-  ]);
-  const addActivity = (msg: string, Icon: React.ElementType) => {
-    const t = new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
-    setAllActivities(prev => [{ role:"landlord", msg, time:t, date:"Today", Icon: Icon as typeof Layers, color:"#9772F6", bar:"#9772F6" }, ...prev]);
+  // Friendly day label for an activity's timestamp — "Today"/"Yesterday" for the near
+  // term, an actual date beyond that, so the modal's date-grouping headers stay real
+  // once history spans more than one day (see remoteActivities below).
+  const dayLabel = (ts: number) => {
+    const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diffDays = Math.round((startOfDay(new Date()) - startOfDay(new Date(ts))) / 86400000);
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    return new Date(ts).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
   };
-  const [hlItems, setHlItems] = useState<Highlight[]>(INITIAL_HIGHLIGHTS);
-  const filtered = activityFilter === "all" ? allActivities : allActivities.filter(a => a.role === activityFilter);
+
+  // In-memory only (not persisted), gains a row when addActivity fires from a genuine
+  // landlord-side action (currently: Highlights create/edit/delete) — so it resets on
+  // reload, but is merged below with remoteActivities (real, persisted student/parent
+  // events — payments, check-ins/outs) into one combined feed.
+  type ActivityItem = { role: string; msg: string; time: string; date: string; ts: number; Icon: React.ElementType; color: string; bar: string };
+  const [allActivities, setAllActivities] = useState<ActivityItem[]>([]);
+  const addActivity = (msg: string, Icon: React.ElementType) => {
+    const now = Date.now();
+    const t = new Date(now).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+    setAllActivities(prev => [{ role:"landlord", msg, time:t, date:"Today", ts:now, Icon: Icon as typeof Layers, color:"#9772F6", bar:"#9772F6" }, ...prev]);
+  };
+
+  // Real check-ins/check-outs and payment submissions from every student (or their
+  // linked parent) across this landlord's boarding houses — replaces what used to be a
+  // feed that could only ever show the landlord's own Highlights edits, never anything
+  // a student/parent actually did.
+  const [remoteActivities, setRemoteActivities] = useState<ActivityItem[]>([]);
+  useEffect(() => {
+    if (role !== "landlord" || !landlordId) return;
+    let active = true;
+    Promise.all([
+      getCheckInOutActivityForLandlord(landlordId),
+      getPaymentActivityForLandlord(landlordId),
+    ]).then(([checkins, payments]) => {
+      if (!active) return;
+      const ciItems: ActivityItem[] = checkins.map(c => {
+        const ts = new Date(c.occurredAt).getTime();
+        return {
+          role: "student",
+          msg: `${c.studentName} checked ${c.type === "checkin" ? "in" : "out"}.`,
+          time: new Date(ts).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
+          date: dayLabel(ts), ts,
+          Icon: c.type === "checkin" ? LogIn : LogOut,
+          color: c.type === "checkin" ? "#16A34A" : "#D97706",
+          bar: c.type === "checkin" ? "#16A34A" : "#D97706",
+        };
+      });
+      const payItems: ActivityItem[] = payments.map(p => {
+        const ts = new Date(p.submittedAt).getTime();
+        const who = p.submittedByRole === "parent" ? `${p.studentName}'s parent` : p.studentName;
+        return {
+          role: p.submittedByRole,
+          msg: `${who} submitted a payment for ${p.billLabel} (₱${p.amount.toLocaleString()}).`,
+          time: new Date(ts).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
+          date: dayLabel(ts), ts,
+          Icon: CreditCard, color: "#3B82F6", bar: "#3B82F6",
+        };
+      });
+      setRemoteActivities([...ciItems, ...payItems].sort((a, b) => b.ts - a.ts));
+    });
+    return () => { active = false; };
+  }, [role, landlordId]);
+  const combinedActivities = [...allActivities, ...remoteActivities].sort((a, b) => b.ts - a.ts);
+  const [hlItems, setHlItems] = useState<Highlight[]>([]);
+  const refreshHighlights = () => { getMyHighlights().then(setHlItems); };
+  useEffect(() => {
+    if (role !== "landlord" || !landlordId) return;
+    refreshHighlights();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, landlordId]);
+  const filtered = activityFilter === "all" ? combinedActivities : combinedActivities.filter(a => a.role === activityFilter);
 
   const quickActions = [
     { Icon: Users,       label: "View Occupants", color: "#9772F6", bg: "#F5F0FF",  action: () => go("occupants")  },
@@ -869,26 +1200,51 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
     : { label: "Left",   color: "#6B7280", bg: "#F3F4F6" };
 
   const confirmLeft = (id: string) => {
+    const record = visitors.find(v => v.id === id);
     const t = new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+    // Optimistic first — the request goes out in the background; if it fails,
+    // refreshLandlordData below re-syncs from the real rows.
     setVisitors(vs => vs.map(v => v.id === id ? { ...v, status: "left", timeOut: t } : v));
+    markVisitorLeftApi(id).then(res => {
+      if (res.ok === false) { if (landlordId) refreshLandlordData(landlordId); return; }
+      // A separate notification from "New Visitor Logged" — this one goes the other
+      // direction (landlord → student + their linked parents), fired only once the
+      // landlord's own mark-as-left action actually succeeds.
+      if (record?.studentId) {
+        const desc = `${record.visitorName || "Your visitor"} has left${record.room ? ` (${record.room})` : ""}.`;
+        addNotification({ userId: record.studentId, type: "visitor", title: "Visitor Has Left", description: desc, destination: "dashboard", relatedId: id });
+        notifyLinkedParents(record.studentId, { type: "visitor", title: "Visitor Has Left", description: desc, destination: "dashboard", relatedId: id });
+      }
+    });
   };
+
+  // v.date is a local "YYYY-MM-DD" (see visitorStore.toLocalISODate) — days-between
+  // compares two such calendar-date strings via Date.UTC on their own Y/M/D parts, which
+  // sidesteps the DST/timezone-shift issues a raw millisecond subtraction would risk while
+  // still avoiding the `.toISOString()`-is-UTC trap this session found and fixed elsewhere.
+  const daysBetween = (a: string, b: string) => {
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+  };
+  const vToday = toLocalISODate(new Date());
 
   const filteredVisitors = visitors.filter(v => {
     const q = visitorSearch.toLowerCase();
     const matchQ = !q || (v.visitorName ?? "").toLowerCase().includes(q) || v.studentName.toLowerCase().includes(q);
     const matchF =
       visitorFilter === "all"    ? true :
-      visitorFilter === "today"  ? v.date === "Dec 18" :
-      visitorFilter === "week"   ? ["Dec 18","Dec 17","Dec 16","Dec 15","Dec 14"].includes(v.date) :
-      visitorFilter === "month"  ? true :
+      visitorFilter === "today"  ? v.date === vToday :
+      visitorFilter === "week"   ? daysBetween(v.date, vToday) < 7 :
+      visitorFilter === "month"  ? v.date.slice(0, 7) === vToday.slice(0, 7) :
       visitorFilter === "inside" ? v.status === "inside" :
       visitorFilter === "left"   ? v.status === "left" : true;
     return matchQ && matchF;
-  }).sort((a, b) => visitorSort === "oldest" ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id));
+  }).sort((a, b) => visitorSort === "oldest" ? a.ts - b.ts : b.ts - a.ts);
 
   const vSummary = {
-    today: visitors.filter(v => v.date === "Dec 18").length,
-    week:  visitors.filter(v => ["Dec 18","Dec 17","Dec 16","Dec 15","Dec 14"].includes(v.date)).length,
+    today: visitors.filter(v => v.date === vToday).length,
+    week:  visitors.filter(v => daysBetween(v.date, vToday) < 7).length,
     inside: visitors.filter(v => v.status === "inside").length,
   };
 
@@ -986,7 +1342,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
         {/* Welcome banner */}
         <div style={{ padding: "6px 16px 20px" }}>
           <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>{dateStr}</p>
-          <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}, Kyla!</p>
+          <p style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 1px", fontFamily: QS }}>{greeting}{landlordName ? `, ${landlordName}` : ""}!</p>
           <p style={{ color: "rgba(255,255,255,.7)", fontSize: 12, margin: 0, fontFamily: IN }}>Naquila Boarding House · Calape, Bohol</p>
         </div>
       </div>
@@ -1000,7 +1356,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
             {summaryCards.map(({ label, value, Icon, color, bg }) => {
               const isOcc = label === "Occupancy Rate";
-              const pct = 78;
+              const pct = stats?.occupancyRate ?? 0;
               const r = 16, circ = 2 * Math.PI * r;
               return (
                 <div key={label} style={{ background: "white", borderRadius: 18, padding: "14px 14px", boxShadow: "0 2px 10px rgba(0,0,0,.05)", display: "flex", alignItems: "center", gap: 12 }}>
@@ -1034,40 +1390,61 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
           <HighlightsDashboardSection
             highlights={hlItems}
             today={HL_TODAY}
-            onAdd={h => setHlItems(prev => [...prev, { ...h, id: `hl${Date.now()}` }])}
-            onEdit={h => setHlItems(prev => prev.map(x => x.id === h.id ? h : x))}
-            onDelete={id => setHlItems(prev => prev.filter(x => x.id !== id))}
+            onAdd={async h => { const res = await createHighlight(h); if (res.ok === false) { console.error("createHighlight:", res.error); return; } refreshHighlights(); }}
+            onEdit={async h => { const res = await updateHighlight(h); if (res.ok === false) { console.error("updateHighlight:", res.error); return; } refreshHighlights(); }}
+            onDelete={async id => { const res = await deleteHighlight(id); if (res.ok === false) { console.error("deleteHighlight:", res.error); return; } refreshHighlights(); }}
             onActivity={addActivity}
           />
         )}
 
         {/* ── RESERVATION REQUESTS ─────────────────────────────────────────── */}
-        <div style={{ padding: "0 16px 0" }}>
-          <SH title="Reservation Requests" action={`View All (${requests.length})`} onAction={() => go("occupants")} />
+        <div ref={reservationRequestsRef} style={{ padding: "0 16px 0" }}>
+          <SH title="Reservation Requests" action={`View All (${pendingRegs.length})`} onAction={() => go("occupants")} />
+          {reqError && (
+            <div style={{ background: "#FEF2F2", borderRadius: 14, padding: "10px 14px", marginBottom: 10, border: "1px solid #FECACA" }}>
+              <span style={{ fontSize: 11, color: "#DC2626", fontFamily: IN }}>{reqError}</span>
+            </div>
+          )}
           <div style={{ background: "white", borderRadius: 20, overflow: "hidden", boxShadow: "0 2px 10px rgba(0,0,0,.05)", marginBottom: 20 }}>
-            {requests.map((r, i) => {
-              const st = reqStates[r.id];
+            {pendingRegs.length === 0 && (
+              <div style={{ padding: "22px 16px", textAlign: "center" as const }}>
+                <span style={{ fontSize: 12, color: "#9CA3AF", fontFamily: IN }}>No pending reservation requests.</span>
+              </div>
+            )}
+            {pendingRegs.map((r, i) => {
+              const st = reqStates[r.id] ?? "pending";
+              const busy = reqBusy === r.id;
+              const isHighlighted = r.id === highlightedRequestId;
               return (
-                <div key={r.id} style={{ padding: "14px 16px", borderBottom: i < requests.length - 1 ? "1px solid #F3F4F6" : "none" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <div key={r.id} style={{
+                  padding: "14px 16px", borderBottom: i < pendingRegs.length - 1 ? "1px solid #F3F4F6" : "none",
+                  background: isHighlighted ? "#F5F0FF" : "transparent",
+                  boxShadow: isHighlighted ? "inset 3px 0 0 #9772F6" : "none",
+                  transition: "background .5s ease",
+                }}>
+                  {/* Tapping the request itself opens the full review — everything the student
+                      actually submitted (dates, personality, hobbies, lifestyle, notes), not just
+                      this name/room summary — so accepting/rejecting is an informed decision. */}
+                  <button onClick={() => setReviewingRequest(r)} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" as const }}>
                     <div style={{ width: 38, height: 38, borderRadius: 13, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <User size={17} color="white" />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>{r.name}</p>
+                        <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>{r.studentName}</p>
                         {st !== "pending" && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 20, background: st === "accepted" ? "#DCFCE7" : "#FEE2E2", color: st === "accepted" ? "#16A34A" : "#EF4444", fontFamily: QS }}>{st === "accepted" ? "Accepted" : "Rejected"}</span>}
                       </div>
-                      <p style={{ fontSize: 10, color: "#9CA3AF", margin: 0, fontFamily: IN }}>{r.id} · {r.course} · {r.year}</p>
+                      <p style={{ fontSize: 10, color: "#9CA3AF", margin: 0, fontFamily: IN }}>{r.studentIdNo} · {r.program ?? "—"} · {yearLabel(r.yearLevel)}</p>
                     </div>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 10, background: "#F5F0FF", color: "#9772F6", fontFamily: QS }}>{r.room}</span>
-                  </div>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 10, background: "#F5F0FF", color: "#9772F6", fontFamily: QS, flexShrink: 0 }}>{r.roomName}</span>
+                    <ChevronRight size={16} color="#D1D5DB" style={{ flexShrink: 0 }} />
+                  </button>
                   {st === "pending" && (
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "accepted" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Check size={13}/> Accept</button>
-                      <button onClick={() => setReqStates(s => ({ ...s, [r.id]: "rejected" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><X size={13}/> Reject</button>
-                      <button style={{ width: 38, padding: "9px 0", borderRadius: 12, background: "#EFF6FF", color: "#3B82F6", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <MessageCircle size={14} color="#3B82F6" />
+                      <button onClick={() => handleAccept(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Check size={13}/> {busy ? "Working…" : "Accept"}</button>
+                      <button onClick={() => handleReject(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><X size={13}/> Reject</button>
+                      <button onClick={() => setReviewingRequest(r)} style={{ width: 38, padding: "9px 0", borderRadius: 12, background: "#EFF6FF", color: "#3B82F6", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Review full request">
+                        <Eye size={14} color="#3B82F6" />
                       </button>
                     </div>
                   )}
@@ -1077,21 +1454,104 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
           </div>
         </div>
 
+        {/* ── REVIEW REQUEST MODAL ─────────────────────────────────────────── */}
+        {reviewingRequest && (() => {
+          const r = reviewingRequest;
+          const st = reqStates[r.id] ?? "pending";
+          const busy = reqBusy === r.id;
+          const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+          const tagGroups: [string, string[]][] = [["Personality Traits", r.traits], ["Hobbies & Interests", r.hobbies], ["Lifestyle", r.lifestyle]];
+          return (
+            <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 500, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={() => setReviewingRequest(null)}>
+              <div style={{ background: "#F7F8FC", borderRadius: "28px 28px 0 0", maxHeight: "88%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 2px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "#E5E7EB" }} /></div>
+                <div style={{ background: "white", borderRadius: "28px 28px 0 0", padding: "12px 18px 14px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 15, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <User size={20} color="white" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{r.studentName}</p>
+                      <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 20, background: st === "pending" ? "#FEF3C7" : st === "accepted" ? "#DCFCE7" : "#FEE2E2", color: st === "pending" ? "#D97706" : st === "accepted" ? "#16A34A" : "#EF4444", fontFamily: QS }}>{st === "pending" ? "Pending" : st === "accepted" ? "Accepted" : "Rejected"}</span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: 11, color: "#9CA3AF", fontFamily: IN }}>{r.studentIdNo} · {r.program ?? "—"} · {yearLabel(r.yearLevel)}</p>
+                  </div>
+                  <button onClick={() => setReviewingRequest(null)} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <X size={15} color="#6B7280" />
+                  </button>
+                </div>
+
+                <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "14px 18px 36px" }}>
+                  {/* Contact */}
+                  {(r.contact || r.address) && (
+                    <div style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.05)" }}>
+                      <p style={{ margin: "0 0 8px", fontSize: 10, fontWeight: 800, color: "#9CA3AF", fontFamily: QS, textTransform: "uppercase" as const }}>Contact</p>
+                      {r.contact && <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: r.address ? 6 : 0 }}><Phone size={12} color="#9772F6" /><span style={{ fontSize: 12, color: "#374151", fontFamily: IN }}>{r.contact}</span></div>}
+                      {r.address && <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}><MapPin size={12} color="#9772F6" style={{ marginTop: 1, flexShrink: 0 }} /><span style={{ fontSize: 12, color: "#374151", fontFamily: IN, lineHeight: 1.5 }}>{r.address}</span></div>}
+                    </div>
+                  )}
+
+                  {/* Requested room / stay */}
+                  <div style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.05)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {([
+                      ["Boarding House", r.boardingHouseName],
+                      ["Room / Bed", `${r.roomName} · ${r.bedLabel}`],
+                      ["Move-in Date", fmtDate(r.moveIn)],
+                      ["Move-out Date", fmtDate(r.moveOut)],
+                      ["Length of Stay", `${r.stayCount} ${r.stayUnit}`],
+                      ["Submitted", fmtDate(r.submittedAt)],
+                    ] as [string, string][]).map(([l, v]) => (
+                      <div key={l}>
+                        <p style={{ margin: "0 0 1px", fontSize: 9, color: "#9CA3AF", fontFamily: QS, fontWeight: 700, textTransform: "uppercase" as const }}>{l}</p>
+                        <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#1F2937", fontFamily: QS }}>{v}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Personality / hobbies / lifestyle — only sections the student actually filled in */}
+                  {tagGroups.filter(([, tags]) => tags.length > 0).map(([label, tags]) => (
+                    <div key={label} style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.05)" }}>
+                      <p style={{ margin: "0 0 8px", fontSize: 10, fontWeight: 800, color: "#9CA3AF", fontFamily: QS, textTransform: "uppercase" as const }}>{label}</p>
+                      <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6 }}>
+                        {tags.map(t => (
+                          <span key={t} style={{ fontSize: 11, fontWeight: 700, color: "#7549F6", background: "#F5F0FF", borderRadius: 10, padding: "5px 10px", fontFamily: QS }}>{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Notes */}
+                  {r.notes && (
+                    <div style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.05)" }}>
+                      <p style={{ margin: "0 0 6px", fontSize: 10, fontWeight: 800, color: "#9CA3AF", fontFamily: QS, textTransform: "uppercase" as const }}>Additional Notes</p>
+                      <p style={{ margin: 0, fontSize: 12, color: "#374151", fontFamily: IN, lineHeight: 1.7 }}>{r.notes}</p>
+                    </div>
+                  )}
+
+                  {reqError && (
+                    <div style={{ background: "#FEF2F2", borderRadius: 14, padding: "10px 14px", marginBottom: 12, border: "1px solid #FECACA" }}>
+                      <span style={{ fontSize: 11, color: "#DC2626", fontFamily: IN }}>{reqError}</span>
+                    </div>
+                  )}
+
+                  {st === "pending" && (
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button onClick={async () => { await handleAccept(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#DCFCE7", color: "#16A34A", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Check size={15} /> {busy ? "Working…" : "Accept"}</button>
+                      <button onClick={async () => { await handleReject(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#FEE2E2", color: "#EF4444", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><X size={15} /> Reject</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── VISITOR RECORDS (compact logbook card) ───────────────────────── */}
         {visitorEnabled && (
           <div style={{ padding: "0 16px 0" }}>
-            <SH title="Visitor Records" />
+            <p style={{ color: "#1F2937", fontSize: 14, fontWeight: 800, margin: 0, fontFamily: QS }}>Visitor Records</p>
+            <p style={{ fontSize: 11, color: "#9CA3AF", margin: "2px 0 12px", fontFamily: IN }}>Student-submitted visitor records</p>
             <div style={{ background: "white", borderRadius: 20, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,.05)", marginBottom: 20 }}>
-              {/* Logbook icon + title */}
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-                <div style={{ width: 44, height: 44, borderRadius: 15, background: "#FCE7F3", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <BookOpen size={20} color="#EC4899" />
-                </div>
-                <div>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Visitor Log</p>
-                  <p style={{ margin: 0, fontSize: 11, color: "#9CA3AF", fontFamily: IN }}>Student-submitted visitor records</p>
-                </div>
-              </div>
               {/* Stats row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
                 {[
@@ -1106,7 +1566,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                 ))}
               </div>
               {/* View button */}
-              <button onClick={() => setShowVisitorModal(true)} style={{ width: "100%", padding: "12px 0", borderRadius: 14, backgroundImage: "linear-gradient(135deg,#EC4899,#9772F6)", color: "white", fontSize: 13, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 14px rgba(236,72,153,.3)" }}>
+              <button onClick={() => setShowVisitorModal(true)} style={{ width: "100%", padding: "12px 0", borderRadius: 14, backgroundImage: GRAD, color: "white", fontSize: 13, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 14px rgba(151,114,246,.3)" }}>
                 <BookOpen size={15} color="white" />
                 View Visitor Records
               </button>
@@ -1119,32 +1579,73 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
           const QS2 = "'Quicksand',sans-serif";
           const IN2 = "'Inter',sans-serif";
           const GRAD2 = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
-          const filtered2 = reportStatusFilter === "all" ? studentReports : studentReports.filter(r=>r.status===reportStatusFilter);
+          // Resolved (and closed, which only admin ever sets) concerns don't sit in this
+          // list at all anymore — they're "done", so they move into their own "Previous
+          // Concerns" modal instead of crowding out what still needs attention here.
+          const activeReports = studentReports.filter(r=>r.status!=="resolved" && r.status!=="closed");
+          const resolvedReports = studentReports.filter(r=>r.status==="resolved" || r.status==="closed");
+          const filtered2 = reportStatusFilter === "all" ? activeReports : activeReports.filter(r=>r.status===reportStatusFilter);
           const pendingCount = studentReports.filter(r=>r.status==="pending").length;
 
-          const handleUpdateStatus = (id: string, status: ReportStatus, response?: string) => {
-            const now = new Date();
-            const dateStr = now.toLocaleString("en-PH",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
-            const updates: Partial<StudentReport> = { status };
-            if (response) { updates.landlordResponse = response; updates.landlordResponseDate = now.toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}); }
+          const renderConcernCard = (r: StudentReport, onClick: () => void) => {
+            const cm = CATEGORY_META[r.category];
+            const sm = STATUS_META[r.status];
+            return (
+              <div key={r.id} onClick={onClick} style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.06)", cursor:"pointer", borderLeft:`4px solid ${cm.color}` }}>
+                <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:"flex", gap:5, marginBottom:5, flexWrap:"wrap" as const }}>
+                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
+                        <div style={{ width:4, height:4, borderRadius:"50%", background:sm.dot }}/>{sm.label}
+                      </span>
+                      <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
+                    </div>
+                    <p style={{ margin:"0 0 2px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3 }}>{r.title}</p>
+                    <p style={{ margin:"0 0 1px", fontSize:11, color:"#9CA3AF", fontFamily:IN2 }}>{r.studentName} · {r.roomNumber}</p>
+                    <p style={{ margin:0, fontSize:10, color:"#C4C9D4", fontFamily:IN2 }}>{r.dateSubmitted}</p>
+                    {/* No response/comment preview on the card itself anymore — that only
+                        shows once the concern is actually opened (see the detail panel's
+                        "Your Response" / "Student's Comment" cards below). */}
+                  </div>
+                  <div style={{ fontSize:14, color:"#D1D5DB" }}>›</div>
+                </div>
+              </div>
+            );
+          };
+
+          // Nothing reaches the student until "Confirm Update" is pressed. Tapping a status
+          // pill only stages a local choice (pendingStatusChoice) and highlights it — it does
+          // NOT call the server, so an accidental tap can't silently notify the student with
+          // no message attached. Confirm Update is the single action that actually sends: the
+          // staged status change (or the report's current status, if the landlord only typed a
+          // message without touching the pills) plus whatever response text is in the box —
+          // works with either one present, or both.
+          const handleConfirmUpdate = async (id: string) => {
             const report = studentReports.find(r=>r.id===id);
-            if (report) {
-              updates.statusHistory = [...report.statusHistory, { status, date: dateStr, note: response ? "Landlord responded" : undefined }];
+            if (!report) return;
+            const status = pendingStatusChoice ?? (report.status === "pending" ? "in-progress" : report.status);
+            const response = reportResponseText.trim() || undefined;
+            // Optimistic update so the list reflects the change the instant it's confirmed,
+            // rather than waiting on the round-trip. Rolled back below on failure.
+            setStudentReports(prev => prev.map(rr => rr.id === id ? { ...rr, status } : rr));
+            const res = await respondToReport(id, status, response);
+            if (res.ok === false) {
+              console.error("respondToReport failed:", res.error);
+              setStudentReports(prev => prev.map(rr => rr.id === id ? report : rr));
+              return;
             }
-            updateStudentReport(id, updates);
-            setStudentReports(getReports().filter(r=>r.boardingHouse==="Naquila BH"||r.boardingHouse==="Naquila Boarding House"));
-            if (report) {
-              const title = status === "resolved" ? "Report Resolved" : response ? "Landlord Responded" : "Report Status Updated";
-              const description = status === "resolved"
-                ? `Your concern "${report.title}" has been marked as resolved.`
-                : response
-                ? `Your landlord responded to "${report.title}".`
-                : `Your concern "${report.title}" is now ${STATUS_META[status].label}.`;
-              addNotification({ role: "student", type: "report", title, description, destination: "dashboard", relatedId: id });
-              addNotification({ role: "parent",  type: "report", title, description: `${report.studentName}'s concern "${report.title}" — ${STATUS_META[status].label.toLowerCase()}.`, destination: "dashboard", relatedId: id });
-            }
+            if (landlordId) refreshLandlordData(landlordId);
+            const title = status === "resolved" ? "Report Resolved" : response ? "Landlord Responded" : "Report Status Updated";
+            const description = status === "resolved"
+              ? `Your concern "${report.title}" has been marked as resolved.`
+              : response
+              ? `Your landlord responded to "${report.title}".`
+              : `Your concern "${report.title}" is now ${STATUS_META[status].label}.`;
+            addNotification({ userId: report.submitterId, type: "report", title, description, destination: "dashboard", relatedId: id });
+            notifyLinkedParents(report.submitterId, { type: "report", title, description: `${report.studentName}'s concern "${report.title}" — ${STATUS_META[status].label.toLowerCase()}.`, destination: "dashboard", relatedId: id });
             setSelectedStudentReport(null);
             setReportResponseText("");
+            setPendingStatusChoice(null);
           };
 
           return (
@@ -1155,73 +1656,97 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                   <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:0, fontFamily:QS2 }}>Student Concerns</p>
                   {pendingCount>0 && <span style={{ fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:20, background:"#FEE2E2", color:"#EF4444", fontFamily:QS2 }}>{pendingCount} pending</span>}
                 </div>
-                <span style={{ fontSize:10, fontWeight:800, padding:"3px 10px", borderRadius:20, background:"#F5F0FF", color:"#9772F6", fontFamily:QS2 }}>{studentReports.length} total</span>
+                <span style={{ fontSize:10, fontWeight:800, padding:"3px 10px", borderRadius:20, background:"#F5F0FF", color:"#9772F6", fontFamily:QS2 }}>{activeReports.length} total</span>
               </div>
-              {/* Status filters */}
-              <div style={{ display:"flex", gap:6, marginBottom:12, overflowX:"auto" as const, scrollbarWidth:"none" as const }}>
-                {(["all","pending","in-progress","resolved","closed"] as const).map(s=>(
-                  <button key={s} onClick={()=>setReportStatusFilter(s)} style={{ flexShrink:0, padding:"5px 13px", borderRadius:20, border:"none", cursor:"pointer", fontSize:10, fontWeight:800, fontFamily:QS2,
-                    background: reportStatusFilter===s ? GRAD2 : "white",
-                    color: reportStatusFilter===s ? "white" : "#6B7280",
-                    boxShadow: reportStatusFilter===s ? "0 2px 8px rgba(151,114,246,.25)" : "0 1px 4px rgba(0,0,0,.06)",
-                  }}>{s==="all"?"All":s==="in-progress"?"In Progress":s.charAt(0).toUpperCase()+s.slice(1)}</button>
-                ))}
+              {/* Status filters — "resolved" and "closed" are both deliberately left out:
+                  resolved concerns no longer sit in this list at all (see Previous Concerns
+                  below), and closed was never a status the landlord can set to begin with
+                  (see the Update Status buttons below) — so this row only offers the
+                  statuses their own clicks can actually produce. */}
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:12 }}>
+                <div style={{ display:"flex", gap:6, overflowX:"auto" as const, scrollbarWidth:"none" as const }}>
+                  {(["all","pending","in-progress"] as const).map(s=>(
+                    <button key={s} onClick={()=>setReportStatusFilter(s)} style={{ flexShrink:0, padding:"5px 13px", borderRadius:20, border:"none", cursor:"pointer", fontSize:10, fontWeight:800, fontFamily:QS2,
+                      background: reportStatusFilter===s ? GRAD2 : "white",
+                      color: reportStatusFilter===s ? "white" : "#6B7280",
+                      boxShadow: reportStatusFilter===s ? "0 2px 8px rgba(151,114,246,.25)" : "0 1px 4px rgba(0,0,0,.06)",
+                    }}>{s==="all"?"All":s==="in-progress"?"In Progress":s.charAt(0).toUpperCase()+s.slice(1)}</button>
+                  ))}
+                </div>
+                {resolvedReports.length>0 && (
+                  <button onClick={()=>setShowResolvedConcerns(true)} style={{ flexShrink:0, fontSize:11, fontWeight:700, color:"#9772F6", background:"none", border:"none", cursor:"pointer", fontFamily:QS2, padding:0 }}>Previous Concerns</button>
+                )}
               </div>
               {filtered2.length===0 ? (
                 <div style={{ background:"white", borderRadius:18, padding:"24px 16px", textAlign:"center" as const, boxShadow:"0 2px 10px rgba(0,0,0,.05)", marginBottom:16 }}>
                   <p style={{ margin:0, fontSize:13, color:"#9CA3AF", fontFamily:IN2 }}>No concerns in this category</p>
                 </div>
               ) : (
-                <div style={{ display:"flex", flexDirection:"column" as const, gap:10, marginBottom:16 }}>
-                  {filtered2.map(r=>{
-                    const cm = CATEGORY_META[r.category];
-                    const pm = PRIORITY_META[r.priority];
-                    const sm = STATUS_META[r.status];
-                    return (
-                      <div key={r.id} onClick={()=>{ setSelectedStudentReport(r); setReportResponseText(r.landlordResponse||""); }} style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.06)", cursor:"pointer", borderLeft:`4px solid ${cm.color}` }}>
-                        <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
-                          <div style={{ flex:1 }}>
-                            <div style={{ display:"flex", gap:5, marginBottom:5, flexWrap:"wrap" as const }}>
-                              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
-                                <div style={{ width:4, height:4, borderRadius:"50%", background:sm.dot }}/>{sm.label}
-                              </span>
-                              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
-                              <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
-                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
-              </span>
-                            </div>
-                            <p style={{ margin:"0 0 2px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3 }}>{r.title}</p>
-                            <p style={{ margin:"0 0 1px", fontSize:11, color:"#9CA3AF", fontFamily:IN2 }}>{r.studentName} · {r.roomNumber}</p>
-                            <p style={{ margin:0, fontSize:10, color:"#C4C9D4", fontFamily:IN2 }}>{r.dateSubmitted}</p>
-                          </div>
-                          <div style={{ fontSize:14, color:"#D1D5DB" }}>›</div>
-                        </div>
+                <>
+                  <div style={{ display:"flex", flexDirection:"column" as const, gap:10, marginBottom: filtered2.length>3 ? 4 : 16 }}>
+                    {filtered2.slice(0,3).map(r=>renderConcernCard(r, ()=>{ setSelectedStudentReport(r); setReportResponseText(""); setPendingStatusChoice(null); }))}
+                  </div>
+                  {/* Only the 3 most recent (filtered2 is already newest-first, from
+                      getReportsForLandlord's own ordering) show directly — "View All"
+                      opens the rest in a modal, same pattern as Previous Concerns below. */}
+                  {filtered2.length>3 && (
+                    <button onClick={()=>setShowAllActiveConcerns(true)} style={{ width:"100%", padding:"11px 0", borderRadius:14, background:"#F3F4F6", border:"none", cursor:"pointer", fontSize:12, fontWeight:800, color:"#9772F6", fontFamily:QS2, marginBottom:16 }}>
+                      View All ({filtered2.length})
+                    </button>
+                  )}
+                </>
+              )}
+              {showAllActiveConcerns && (
+                <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setShowAllActiveConcerns(false)}>
+                  <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"92%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+                    <div style={{ padding:"18px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                      <div>
+                        <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS2 }}>Student Concerns</p>
+                        <p style={{ margin:"2px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN2 }}>{filtered2.length} total</p>
                       </div>
-                    );
-                  })}
+                      <button onClick={()=>setShowAllActiveConcerns(false)} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        <X size={15} color="#6B7280"/>
+                      </button>
+                    </div>
+                    <div style={{ overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 20px 24px", display:"flex", flexDirection:"column" as const, gap:10 }}>
+                      {filtered2.map(r=>renderConcernCard(r, ()=>{ setShowAllActiveConcerns(false); setSelectedStudentReport(r); setReportResponseText(""); setPendingStatusChoice(null); }))}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {showResolvedConcerns && (
+                <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setShowResolvedConcerns(false)}>
+                  <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", height:"92%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+                    <div style={{ padding:"18px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                      <div>
+                        <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS2 }}>Previous Concerns</p>
+                        <p style={{ margin:"2px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN2 }}>{resolvedReports.length} total</p>
+                      </div>
+                      <button onClick={()=>setShowResolvedConcerns(false)} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        <X size={15} color="#6B7280"/>
+                      </button>
+                    </div>
+                    <div style={{ overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 20px 24px", display:"flex", flexDirection:"column" as const, gap:10 }}>
+                      {resolvedReports.map(r=>renderConcernCard(r, ()=>{ setShowResolvedConcerns(false); setSelectedStudentReport(r); setReportResponseText(""); setPendingStatusChoice(null); }))}
+                    </div>
+                  </div>
                 </div>
               )}
               {/* Report Detail Panel */}
               {selectedStudentReport && (()=>{
                 const r = selectedStudentReport;
                 const cm = CATEGORY_META[r.category];
-                const pm = PRIORITY_META[r.priority];
                 const sm = STATUS_META[r.status];
                 return (
                   <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:500, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setSelectedStudentReport(null)}>
                     <div style={{ background:"#F7F8FC", borderRadius:"28px 28px 0 0", maxHeight:"90%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
                       <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
-                      <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:10 }}>
-                        <div onClick={()=>setSelectedStudentReport(null)} style={{ width:34, height:34, borderRadius:11, background:"#F3F4F6", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ display:"flex", gap:5, flexWrap:"wrap" as const, marginBottom:3 }}>
-                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS2 }}>{sm.label}</span>
-                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS2, display:"flex", alignItems:"center", gap:3 }}>
-                <div style={{ width:4, height:4, borderRadius:"50%", background:pm.dot }}/>{pm.label}
-              </span>
-                            <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
-                          </div>
-                          <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3 }}>{r.title}</p>
+                      <div style={{ padding:"12px 56px 14px", position:"relative" as const, display:"flex", flexDirection:"column" as const, alignItems:"center" }}>
+                        <div onClick={()=>setSelectedStudentReport(null)} style={{ position:"absolute" as const, left:18, top:12, width:34, height:34, borderRadius:11, background:"#F3F4F6", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</div>
+                        <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS2, lineHeight:1.3, textAlign:"center" as const }}>{r.title}</p>
+                        <div style={{ display:"flex", gap:5, flexWrap:"wrap" as const, justifyContent:"center", marginTop:6 }}>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS2 }}>{sm.label}</span>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:cm.bg, color:cm.color, fontFamily:QS2 }}>{cm.label}</span>
                         </div>
                       </div>
                       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 18px 36px" }}>
@@ -1239,26 +1764,73 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                           <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS2, textTransform:"uppercase" as const }}>Description</p>
                           <p style={{ margin:0, fontSize:12, color:"#374151", fontFamily:IN2, lineHeight:1.7 }}>{r.description}</p>
                         </div>
-                        {/* Update status */}
+                        {/* Photos */}
+                        {r.imageUrls.length>0 && (
+                          <div style={{ background:"white", borderRadius:16, padding:"12px 14px", marginBottom:12, boxShadow:"0 2px 8px rgba(0,0,0,.05)" }}>
+                            <p style={{ margin:"0 0 8px", fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS2, textTransform:"uppercase" as const }}>Photos ({r.imageUrls.length})</p>
+                            <div style={{ display:"flex", gap:8, flexWrap:"wrap" as const }}>
+                              {r.imageUrls.map((url,i)=>(
+                                <a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{ width:80, height:70, borderRadius:13, overflow:"hidden", display:"block" }}>
+                                  <img src={url} alt={`Attachment ${i+1}`} style={{ width:"100%", height:"100%", objectFit:"cover" as const, display:"block" }}/>
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {/* Your (the landlord's) latest response, if any — same green "here's
+                            what was said" treatment StudentHome.tsx gives this on the
+                            student's side, so it reads the same way for both parties. */}
+                        {r.landlordResponse && (
+                          <div style={{ background:"#F0FDF4", borderRadius:16, padding:"12px 14px", marginBottom:12, border:"1px solid #BBF7D0" }}>
+                            <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:800, color:"#16A34A", fontFamily:QS2, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Your Response</p>
+                            <p style={{ margin:"0 0 4px", fontSize:12, color:"#15803D", fontFamily:IN2, lineHeight:1.6 }}>{r.landlordResponse}</p>
+                            <p style={{ margin:0, fontSize:9, color:"#86EFAC", fontFamily:IN2 }}>{r.landlordResponseDate}</p>
+                          </div>
+                        )}
+                        {/* Student's follow-up comment, if any */}
+                        {r.studentComment && (
+                          <div style={{ background:"#F5F0FF", borderRadius:16, padding:"12px 14px", marginBottom:12, border:"1px solid #DDD6FE" }}>
+                            <p style={{ margin:"0 0 6px", fontSize:10, fontWeight:800, color:"#7C3AED", fontFamily:QS2, textTransform:"uppercase" as const }}>Student's Comment</p>
+                            <p style={{ margin:"0 0 4px", fontSize:12, color:"#5B21B6", fontFamily:IN2, lineHeight:1.6 }}>{r.studentComment}</p>
+                            <p style={{ margin:0, fontSize:9, color:"#C4B5FD", fontFamily:IN2 }}>{r.studentCommentDate}</p>
+                          </div>
+                        )}
+                        {/* Update status — "closed" is intentionally not an option here:
+                            it's an admin-only archive action (see AdminReports.tsx, where the
+                            same value is literally labeled "Archived"). For the landlord,
+                            "Resolved" is the one determining factor that a concern is done. */}
                         <div style={{ background:"white", borderRadius:16, padding:"12px 14px", marginBottom:12, boxShadow:"0 2px 8px rgba(0,0,0,.05)" }}>
                           <p style={{ margin:"0 0 10px", fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS2, textTransform:"uppercase" as const }}>Update Status</p>
                           <div style={{ display:"flex", gap:8, flexWrap:"wrap" as const, marginBottom:12 }}>
-                            {(["in-progress","resolved","closed"] as ReportStatus[]).map(s=>{
+                            {(["in-progress","resolved"] as ReportStatus[]).map(s=>{
                               const ssm = STATUS_META[s];
+                              // Reflects the staged pick if the landlord has tapped one this
+                              // session, otherwise falls back to the report's real current
+                              // status — tapping only stages the choice locally (highlighted
+                              // instantly) and does NOT notify the student by itself.
+                              const selected = (pendingStatusChoice ?? r.status) === s;
                               return (
-                                <button key={s} onClick={()=>handleUpdateStatus(r.id, s)} style={{ padding:"7px 14px", borderRadius:14, border:`2px solid ${r.status===s?ssm.color:"#E5E7EB"}`, background:r.status===s?ssm.bg:"white", color:r.status===s?ssm.color:"#6B7280", fontSize:11, fontWeight:800, fontFamily:QS2, cursor:"pointer" }}>
+                                <button key={s} onClick={()=>setPendingStatusChoice(s)} style={{ padding:"7px 14px", borderRadius:14, border:`2px solid ${selected?ssm.color:"#E5E7EB"}`, background:selected?ssm.bg:"white", color:selected?ssm.color:"#6B7280", fontSize:11, fontWeight:800, fontFamily:QS2, cursor:"pointer" }}>
                                   {s==="in-progress"?"In Progress":s.charAt(0).toUpperCase()+s.slice(1)}
                                 </button>
                               );
                             })}
                           </div>
-                          <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS2 }}>Your Response</p>
+                          <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS2 }}>{r.landlordResponse ? "Send a New Response" : "Your Response"}</p>
                           <div style={{ background:"#F9FAFB", borderRadius:11, padding:"9px 12px", border:"1.5px solid #E5E7EB", marginBottom:9 }}>
                             <textarea value={reportResponseText} onChange={e=>setReportResponseText(e.target.value)} placeholder="Write your response to the student..." rows={3} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:12, fontFamily:IN2, color:"#1F2937", resize:"none" as const, boxSizing:"border-box" as const }}/>
                           </div>
-                          <button onClick={()=>handleUpdateStatus(r.id, r.status==="pending"?"in-progress":r.status, reportResponseText)} style={{ width:"100%", height:44, borderRadius:16, backgroundImage:GRAD2, border:"none", cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS2, boxShadow:"0 4px 14px rgba(151,114,246,.3)" }}>
-                            Send Response
-                          </button>
+                          {/* Single action for both: sends the staged status pick above (or
+                              the report's unchanged status, if none was tapped) together with
+                              whatever's in the response box — a message, a status change, or
+                              both. Nothing above this button reaches the student on its own.
+                              Only appears once there's actually something to send, so it isn't
+                              sitting there inviting a no-op tap. */}
+                          {(reportResponseText.trim() !== "" || pendingStatusChoice !== null) && (
+                            <button onClick={()=>handleConfirmUpdate(r.id)} style={{ width:"100%", height:44, borderRadius:16, backgroundImage:GRAD2, border:"none", cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS2, boxShadow:"0 4px 14px rgba(151,114,246,.3)" }}>
+                              Confirm Update
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1283,10 +1855,13 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
             ))}
           </div>
           <div style={{ background: "white", borderRadius: 20, overflow: "hidden", boxShadow: "0 2px 10px rgba(0,0,0,.05)", marginBottom: 20 }}>
-            {filtered.slice(0, 6).map((a, i) => (
-              <div key={i} style={{ display: "flex", gap: 0, padding: "12px 0 12px 0", borderBottom: i < Math.min(filtered.length, 6) - 1 ? "1px solid #F3F4F6" : "none", alignItems: "flex-start" }}>
-                {/* Role color bar */}
-                <div style={{ width: 4, alignSelf: "stretch", background: a.bar, borderRadius: "0 2px 2px 0", flexShrink: 0, minHeight: 40 }} />
+            {filtered.length === 0 && (
+              <div style={{ padding: "22px 16px", textAlign: "center" as const }}>
+                <span style={{ fontSize: 12, color: "#9CA3AF", fontFamily: IN }}>No recent activity yet.</span>
+              </div>
+            )}
+            {filtered.slice(0, 5).map((a, i) => (
+              <div key={i} style={{ display: "flex", gap: 0, padding: "12px 0 12px 0", borderBottom: i < Math.min(filtered.length, 5) - 1 ? "1px solid #F3F4F6" : "none", alignItems: "flex-start" }}>
                 <div style={{ display: "flex", gap: 10, flex: 1, padding: "0 14px" }}>
                   <div style={{ width: 34, height: 34, borderRadius: 11, background: a.color + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
                     <a.Icon size={15} color={a.color} />
@@ -1294,7 +1869,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                       {rolePill(a.role)}
-                      <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{a.time}</span>
+                      <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{timeAgo(a.ts)}</span>
                     </div>
                     <p style={{ fontSize: 12, color: "#374151", fontWeight: 600, margin: 0, lineHeight: 1.4, fontFamily: IN }}>{a.msg}</p>
                   </div>
@@ -1310,27 +1885,30 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
       {/* ── ALL ACTIVITY MODAL ───────────────────────────────────────────────── */}
       {showAllActivity && (() => {
-        const DATE_LABELS: Record<string,string> = { "Dec 18": "Today", "Dec 17": "Yesterday", "Dec 16": "Dec 16", "Dec 15": "Dec 15", "Dec 14": "Dec 14" };
-        const dateOk = (date: string) => {
-          if (activityDateFilter === "all")   return true;
-          if (activityDateFilter === "today") return date === "Dec 18";
-          if (activityDateFilter === "week")  return ["Dec 18","Dec 17","Dec 16","Dec 15","Dec 14"].includes(date);
-          if (activityDateFilter === "month") return true;
-          return true;
+        // remoteActivities carries real, differently-dated history (payments/check-ins/
+        // outs from any day), so this filters on the actual timestamp rather than the
+        // old literal-"Today"-string check that only ever matched addActivity's own rows.
+        const dateOk = (ts: number) => {
+          if (activityDateFilter === "all") return true;
+          const diffDays = (Date.now() - ts) / 86400000;
+          if (activityDateFilter === "today") return dayLabel(ts) === "Today";
+          if (activityDateFilter === "week") return diffDays <= 7;
+          return diffDays <= 31; // month
         };
-        const modalFiltered = allActivities.filter(a =>
-          (activityFilter === "all" || a.role === activityFilter) && dateOk(a.date)
+        const modalFiltered = combinedActivities.filter(a =>
+          (activityFilter === "all" || a.role === activityFilter) && dateOk(a.ts)
         );
-        // group by date
-        const groups: Record<string, typeof allActivities> = {};
+        // group by date, most-recent group first (by each group's newest entry, not
+        // string order — "Today"/"Yesterday" labels don't sort alphabetically right)
+        const groups: Record<string, typeof combinedActivities> = {};
         modalFiltered.forEach(a => {
           if (!groups[a.date]) groups[a.date] = [];
           groups[a.date].push(a);
         });
-        const dates = Object.keys(groups).sort((x, y) => y.localeCompare(x));
+        const dates = Object.keys(groups).sort((x, y) => groups[y][0].ts - groups[x][0].ts);
 
         return (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 70, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 70, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
             <div style={{ background: "#F3F4F8", borderRadius: "24px 24px 0 0", height: "90%", display: "flex", flexDirection: "column" }}>
 
               {/* Header */}
@@ -1353,10 +1931,11 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                     { id: "week",  label: "This Week" },
                     { id: "month", label: "This Month"},
                   ] as const).map(d => (
-                    <button key={d.id} onClick={() => setActivityDateFilter(d.id)} style={{ flexShrink: 0, padding: "5px 13px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: QS,
-                      background: activityDateFilter === d.id ? "#9772F6" : "#F3F4F6",
+                    <button key={d.id} onClick={() => setActivityDateFilter(d.id)} style={{ flex: 1, height: 30, padding: "0 6px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: QS,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      background: activityDateFilter === d.id ? "#BF5DC7" : "#F3F4F6",
                       color: activityDateFilter === d.id ? "white" : "#6B7280",
-                      boxShadow: activityDateFilter === d.id ? "0 2px 8px rgba(151,114,246,.25)" : "none",
+                      boxShadow: activityDateFilter === d.id ? "0 2px 8px rgba(191,93,199,.25)" : "none",
                     }}>{d.label}</button>
                   ))}
                 </div>
@@ -1382,13 +1961,12 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                   <div key={date}>
                     {/* Date label */}
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                      <span style={{ fontSize: 11, fontWeight: 800, color: "#9CA3AF", fontFamily: QS, flexShrink: 0 }}>{DATE_LABELS[date] ?? date}</span>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#9CA3AF", fontFamily: QS, flexShrink: 0 }}>{date}</span>
                       <div style={{ flex: 1, height: 1, background: "#E5E7EB" }} />
                     </div>
                     <div style={{ background: "white", borderRadius: 18, overflow: "hidden", boxShadow: "0 2px 8px rgba(0,0,0,.04)", marginBottom: 14 }}>
                       {groups[date].map((a, i) => (
                         <div key={i} style={{ display: "flex", gap: 0, padding: "11px 0", borderBottom: i < groups[date].length - 1 ? "1px solid #F3F4F6" : "none", alignItems: "flex-start" }}>
-                          <div style={{ width: 4, alignSelf: "stretch", background: a.bar, borderRadius: "0 2px 2px 0", flexShrink: 0, minHeight: 36 }} />
                           <div style={{ display: "flex", gap: 10, flex: 1, padding: "0 14px" }}>
                             <div style={{ width: 32, height: 32, borderRadius: 10, background: a.color + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
                               <a.Icon size={14} color={a.color} />
@@ -1414,7 +1992,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
       {/* ── VIEW VISITORS MODAL ──────────────────────────────────────────────── */}
       {showVisitorModal && (
-        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 60, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 60, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
           <div style={{ background: "#F3F4F8", borderRadius: "24px 24px 0 0", height: "90%", display: "flex", flexDirection: "column" }}>
             {/* Header */}
             <div style={{ padding: "18px 20px 14px", background: "white", borderRadius: "24px 24px 0 0", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
@@ -1461,8 +2039,13 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                 </div>
               ) : filteredVisitors.map((v) => {
                 const sm = vStatusMeta(v.status);
+                const isHighlighted = v.id === highlightedVisitorId;
                 return (
-                  <div key={v.id} style={{ background: "white", borderRadius: 18, padding: "14px 16px", marginBottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,.04)" }}>
+                  <div key={v.id} ref={isHighlighted ? (el => el?.scrollIntoView({ behavior: "smooth", block: "center" })) : undefined} style={{
+                    background: "white", borderRadius: 18, padding: "14px 16px", marginBottom: 10,
+                    boxShadow: isHighlighted ? "0 2px 8px rgba(0,0,0,.04), inset 0 0 0 2px #9772F6" : "0 2px 8px rgba(0,0,0,.04)",
+                    transition: "box-shadow .5s ease",
+                  }}>
                     {/* Row 1: visitor name + status */}
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                       <div style={{ width: 36, height: 36, borderRadius: 12, background: "#FCE7F3", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -1498,20 +2081,14 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                           </div>
                         </div>
                       )}
-                      {visitorFields.visitDate && v.visitDate && (
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
-                          <Calendar size={10} color="#9CA3AF" style={{ marginTop: 2, flexShrink: 0 }} />
-                          <div>
-                            <p style={{ fontSize: 9, color: "#C4C9D4", margin: 0, fontFamily: IN }}>Visit Date</p>
-                            <p style={{ fontSize: 10, color: "#374151", fontWeight: 600, margin: 0, fontFamily: IN }}>{v.visitDate}</p>
-                          </div>
-                        </div>
-                      )}
+                      {/* No manually-entered "Visit Date" field anymore — the date shown is
+                          always the real moment this record was logged (loggedLabel(v.ts):
+                          "Today"/"Yesterday"/"N days ago", or the real date past a week). */}
                       <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
                         <Clock size={10} color="#9CA3AF" style={{ marginTop: 2, flexShrink: 0 }} />
                         <div>
-                          <p style={{ fontSize: 9, color: "#C4C9D4", margin: 0, fontFamily: IN }}>Time In</p>
-                          <p style={{ fontSize: 10, color: "#374151", fontWeight: 600, margin: 0, fontFamily: IN }}>{v.timeIn ?? "—"}</p>
+                          <p style={{ fontSize: 9, color: "#C4C9D4", margin: 0, fontFamily: IN }}>Logged</p>
+                          <p style={{ fontSize: 10, color: "#374151", fontWeight: 600, margin: 0, fontFamily: IN }}>{loggedLabel(v.ts)} · {v.timeIn ?? "—"}</p>
                         </div>
                       </div>
                       {v.timeOut && (
@@ -1546,35 +2123,51 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
 function RoomsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?: Role }) {
   const QS = "'Quicksand',sans-serif";
-  const rooms = [
-    { name: "Room A", cap: 6, occ: 6, students: ["Juan Dela Cruz","Maria Santos","Kevin Cruz","Lena Reyes","Ben Torres","Clara Lim"], desc: "Ground floor, near entrance" },
-    { name: "Room B", cap: 6, occ: 4, students: ["Dan Cruz","Eva Santos","Faye Gomez","Gil Navarro"], desc: "Ground floor, garden view" },
-    { name: "Room C", cap: 5, occ: 5, students: ["Harry Uy","Iris Bautista","Jake Flores","Kim Santos","Leo Tan"], desc: "Second floor, corner room" },
-    { name: "Room D", cap: 5, occ: 2, students: ["Mia Cruz","Ned Reyes"], desc: "Second floor, street view" },
-    { name: "Room E", cap: 4, occ: 3, students: ["Ona Torres","Paul Diaz","Ria Santos"], desc: "Third floor, spacious" },
-  ];
+  const [bhName, setBhName] = useState("");
+  const [rooms, setRooms] = useState<RoomData[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) { if (active) setLoaded(true); return; }
+      const bhs = await getBoardingHousesForLandlord(session.user.id);
+      if (!active) return;
+      setBhName(bhs[0]?.name ?? "");
+      setRooms(bhs[0]?.rooms ?? []);
+      setLoaded(true);
+    })();
+    return () => { active = false; };
+  }, []);
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
       <div style={{ flexShrink: 0, padding: "52px 20px 20px", backgroundImage: GRAD_H, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.07)" }} />
         <button onClick={() => go("dashboard")} style={{ background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", padding: 0, marginBottom: 12, display: "flex", alignItems: "center" }}><ChevronLeft size={24} /></button>
         <h1 style={{ color: "white", fontSize: 22, fontWeight: 800, margin: "0 0 4px", fontFamily: QS }}>Room Management</h1>
-        <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>Sunshine Dormitories · {rooms.length} rooms</p>
+        <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>{bhName || "—"} · {rooms.length} room{rooms.length === 1 ? "" : "s"}</p>
       </div>
       <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "16px 16px 0" }}>
         <button style={{ width: "100%", padding: "13px 0", borderRadius: 16, backgroundImage: GRAD, color: "white", fontSize: 14, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, marginBottom: 16, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>+ Add New Room</button>
+        {loaded && rooms.length === 0 && (
+          <div style={{ background: "white", borderRadius: 20, padding: "28px 20px", textAlign: "center" as const, boxShadow: "0 2px 12px rgba(0,0,0,.05)" }}>
+            <p style={{ fontSize: 13, fontWeight: 700, color: "#6B7280", margin: 0, fontFamily: QS }}>No rooms yet.</p>
+          </div>
+        )}
         {rooms.map((r) => {
           const pct = Math.round((r.occ / r.cap) * 100);
           const full = r.occ >= r.cap;
           return (
-            <div key={r.name} style={{ background: "white", borderRadius: 20, padding: 16, marginBottom: 12, boxShadow: "0 2px 12px rgba(0,0,0,.05)" }}>
+            <div key={r.id} style={{ background: "white", borderRadius: 20, padding: 16, marginBottom: 12, boxShadow: "0 2px 12px rgba(0,0,0,.05)" }}>
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
                     <span style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{r.name}</span>
                     <span style={{ padding: "2px 10px", borderRadius: 20, background: full ? "#FEE2E2" : "#DCFCE7", color: full ? "#EF4444" : "#16A34A", fontSize: 10, fontWeight: 800 }}>{full ? "Full" : `${r.cap - r.occ} slots`}</span>
                   </div>
-                  <p style={{ fontSize: 11, color: "#6B7280", margin: 0 }}>{r.desc}</p>
+                  <p style={{ fontSize: 11, color: "#6B7280", margin: 0 }}>{r.description}</p>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button style={{ width: 30, height: 30, borderRadius: 10, background: "#F5F0FF", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Settings size={14} color="#9772F6" /></button>
@@ -1588,14 +2181,8 @@ function RoomsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?
                 </div>
                 <span style={{ fontSize: 11, fontWeight: 700, color: full ? "#EF4444" : "#9772F6", fontFamily: QS, flexShrink: 0 }}>{r.occ}/{r.cap}</span>
               </div>
-              {/* Students */}
+              {/* Occupants — populated once real bed assignments exist */}
               <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6 }}>
-                {r.students.map(s => (
-                  <div key={s} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 12, background: "#F9FAFB" }}>
-                    <div style={{ width: 20, height: 20, borderRadius: "50%", backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center" }}><User size={10} color="white" /></div>
-                    <span style={{ fontSize: 11, color: "#374151", fontWeight: 500 }}>{s}</span>
-                  </div>
-                ))}
                 <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 12, background: "#F5F0FF", border: "none", cursor: "pointer" }}>
                   <span style={{ fontSize: 11, color: "#9772F6", fontWeight: 700 }}>+ Add</span>
                 </button>
@@ -1852,22 +2439,27 @@ function MapScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?: 
   const [zoom, setZoom] = useState(16);
   const mapRef = useRef<GoogleMapHandle>(null);
 
-  const bhPos = { lat: BH_DATA.lat, lng: BH_DATA.lng };
-  // Occupant positions simulated near the boarding house (no live GPS backend in this prototype).
-  const markers: MapMarker[] = [
+  // The landlord's own boarding house. Occupant location pins need real
+  // check-in/GPS data (a later phase) — showing none is honest, not a gap.
+  const [bh, setBh] = useState<BoardingHouse | null>(null);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const bhs = await getBoardingHousesForLandlord(uid);
+      if (active) setBh(bhs[0] ?? null);
+    })();
+    return () => { active = false; };
+  }, []);
+  const bhPos = { lat: bh?.lat ?? MAP_CENTER.lat, lng: bh?.lng ?? MAP_CENTER.lng };
+  const markers: MapMarker[] = bh ? [
     {
-      id: "bh", variant: "bh", position: bhPos, title: BH_DATA.name, zIndex: 10,
-      infoContent: <MapInfoCard title={BH_DATA.name} subtitle={BH_DATA.address} rows={[["Landlord", BH_DATA.landlord], ["Contact", BH_DATA.contact]]} />,
+      id: "bh", variant: "bh", position: bhPos, title: bh.name, zIndex: 10,
+      infoContent: <MapInfoCard title={bh.name} subtitle={bh.address} rows={[["Landlord", bh.landlord], ["Contact", bh.contact ?? "—"]]} />,
     },
-    {
-      id: "s1", variant: "inside", position: { lat: bhPos.lat + 0.0006, lng: bhPos.lng + 0.0005 }, title: "Maria Santos", zIndex: 5,
-      infoContent: <MapInfoCard title="Maria Santos" subtitle="Room A · Bed 2" rows={[["Status", "Inside"], ["Last Check-in", "Today 8:02 AM"]]} />,
-    },
-    {
-      id: "s2", variant: "outside", position: { lat: bhPos.lat - 0.0009, lng: bhPos.lng + 0.0011 }, title: "Kevin Cruz", zIndex: 5,
-      infoContent: <MapInfoCard title="Kevin Cruz" subtitle="Room A · Bed 4" rows={[["Status", "Outside"], ["Last Check-in", "Today 7:55 AM"]]} />,
-    },
-  ];
+  ] : [];
 
   return (
     <div style={{ height: "100%", position: "relative", overflow: "hidden" }}>
@@ -1912,9 +2504,9 @@ function MapScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?: 
           <div style={{ width: 36, height: 4, borderRadius: 2, background: "#E5E7EB", margin: "0 auto 12px" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
             <MapPin size={14} color="#EF4444" />
-            <span style={{ fontWeight: 800, color: "#1F2937", fontSize: 14, fontFamily: "'Quicksand',sans-serif" }}>{BH_DATA.name}</span>
+            <span style={{ fontWeight: 800, color: "#1F2937", fontSize: 14, fontFamily: "'Quicksand',sans-serif" }}>{bh?.name ?? "—"}</span>
           </div>
-          <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 12px 22px" }}>{BH_DATA.address}</p>
+          <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 12px 22px" }}>{bh?.address ?? "—"}</p>
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={() => mapRef.current?.recenter()} style={{ flex: 1, padding: "11px 0", borderRadius: 16, border: "2px solid #9772F6", color: "#9772F6", fontWeight: 800, fontSize: 12, background: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><Navigation size={13} />My Location</button>
             <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${bhPos.lat},${bhPos.lng}`, "_blank", "noopener,noreferrer")} style={{ flex: 1, padding: "11px 0", borderRadius: 16, backgroundImage: "linear-gradient(135deg,#EC4899,#9772F6)", color: "white", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontFamily: "'Quicksand',sans-serif" }}><MapPin size={13} />Directions</button>
@@ -1936,7 +2528,26 @@ function NotificationsScreen({ go, role, onOpenNotification }: {
   go: (s: Screen) => void; role: Role; onOpenNotification?: (n: AppNotification) => void;
 }) {
   const list = useNotifications(role);
-  const unread = useUnreadCount(role);
+
+  // Opening this screen at all — not just tapping a specific card — is what should clear the
+  // bell badge, same as most notification-center UIs. Fired once on mount regardless of the
+  // current unread count (a no-op server-side if there's nothing unread).
+  useEffect(() => { markAllRead(role); }, [role]);
+
+  // markAllRead above flips every row's `read` state (and thus the badge) immediately, but the
+  // "NEW" pill / highlighted background below should still reflect what was actually unread
+  // when the user walked in — otherwise every card would flash to "read" the instant this
+  // screen mounts, before they've seen any of them. Captured once, from the first non-empty
+  // snapshot of `list` (it can still be loading in from the store on first render).
+  const unreadAtOpenRef = useRef<Set<string> | null>(null);
+  if (unreadAtOpenRef.current === null && list.length > 0) {
+    unreadAtOpenRef.current = new Set(list.filter(n => !n.read).map(n => n.id));
+  }
+  // Whether a card was actually tapped (not just present on an opened page) is real,
+  // persisted state now — n.opened, a separate column from n.read (see notificationStore) —
+  // rather than component-local state, which used to get wiped every time this screen
+  // unmounted (leave the page, come back) and silently turn every merely-seen card grey.
+  const wasUnread = (id: string) => unreadAtOpenRef.current?.has(id) ?? false;
 
   const openNotification = (n: AppNotification) => {
     markNotificationRead(n.id);
@@ -1952,9 +2563,6 @@ function NotificationsScreen({ go, role, onOpenNotification }: {
             <button onClick={() => go("dashboard")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 4, flexShrink: 0 }}><ChevronLeft size={18} color="white" /></button>
             <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: 0, fontFamily: "'Quicksand',sans-serif" }}>Notifications</h1>
           </div>
-          {unread > 0 && (
-            <button onClick={() => markAllRead(role)} style={{ padding: "6px 12px", borderRadius: 12, background: "rgba(255,255,255,.13)", border: "1px solid rgba(255,255,255,.18)", color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Quicksand',sans-serif" }}>Mark All as Read</button>
-          )}
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "16px 20px" }}>
@@ -1966,21 +2574,47 @@ function NotificationsScreen({ go, role, onOpenNotification }: {
           </div>
         ) : (
           <div style={{ background: "white", borderRadius: 24, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
+            {/* Every notification is its own clickable card, in three real, persisted states:
+                 - "new"    (!read): purple tint + left bar + colored icon/pill + "NEW" pill —
+                   frozen to what was actually unread when this screen was opened (wasUnread
+                   above), so it doesn't flash to the next state mid-visit.
+                 - "seen"   (read && !opened): the page has been opened since, so the highlight
+                   is gone and it's back to a plain white card — but nothing has actually been
+                   tapped yet, so the icon/pill keep their real type color, same as "new".
+                 - "opened" (read && opened): this specific card was tapped into. Every colored
+                   element — icon, its background, the type pill, the title — goes flat grey,
+                   not just dimmed, same as StudentHome.tsx's read-announcement treatment.
+                   `opened` is real DB state (notificationStore), not component state, so it
+                   survives leaving this screen and coming back. */}
             {list.map((n, i) => {
               const meta = NOTIF_META[n.type];
+              const isNew = wasUnread(n.id);
+              const isOpened = !isNew && n.opened;
+              const tinted = isNew || !n.opened; // "new" and "seen" both keep the real type color
               return (
                 <div key={n.id} onClick={() => openNotification(n)}
-                  style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", position: "relative", cursor: "pointer", borderBottom: i < list.length - 1 ? "1px solid #F9FAFB" : "none", background: n.read ? "white" : "rgba(151,114,246,0.05)" }}>
-                  {!n.read && <div style={{ position: "absolute", top: 18, right: 16, width: 8, height: 8, borderRadius: "50%", background: "#9772F6" }} />}
-                  <div style={{ width: 40, height: 40, borderRadius: 14, background: meta.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><meta.Icon size={17} color={meta.color} /></div>
+                  style={{
+                    display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px 14px 13px", position: "relative", cursor: "pointer",
+                    borderBottom: i < list.length - 1 ? "1px solid #F9FAFB" : "none",
+                    background: isNew ? "#F5F0FF" : "white",
+                    borderLeft: isNew ? "3px solid #9772F6" : "3px solid transparent",
+                  }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 14, background: tinted ? meta.bg : "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><meta.Icon size={17} color={tinted ? meta.color : "#9CA3AF"} /></div>
                   <div style={{ flex: 1, paddingRight: 16, minWidth: 0 }}>
-                    <p style={{ fontSize: 13, fontWeight: n.read ? 700 : 800, color: "#1F2937", margin: "0 0 2px", fontFamily: "'Quicksand',sans-serif" }}>{n.title}</p>
-                    <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px", lineHeight: 1.5 }}>{n.description}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <p style={{ fontSize: 13, fontWeight: isNew ? 800 : 700, color: isOpened ? "#9CA3AF" : "#1F2937", margin: 0, fontFamily: "'Quicksand',sans-serif" }}>{n.title}</p>
+                      {isNew && <span style={{ fontSize: 8, fontWeight: 800, color: "white", background: "#9772F6", padding: "2px 7px", borderRadius: 20, fontFamily: "'Quicksand',sans-serif", letterSpacing: 0.3, flexShrink: 0 }}>NEW</span>}
+                    </div>
+                    {/* pre-line: some descriptions (e.g. a landlord's announcement with a
+                        date/time attached) carry a blank-line-separated "Scheduled for…"
+                        note — without this it collapses into one run-on sentence. */}
+                    <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px", lineHeight: 1.5, whiteSpace: "pre-line" }}>{n.description}</p>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 20, fontFamily: "'Quicksand',sans-serif" }}>{meta.label}</span>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: tinted ? meta.color : "#9CA3AF", background: tinted ? meta.bg : "#F3F4F6", padding: "2px 8px", borderRadius: 20, fontFamily: "'Quicksand',sans-serif" }}>{meta.label}</span>
                       <p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 600, margin: 0 }}>{timeAgo(n.timestamp)}</p>
                     </div>
                   </div>
+                  <ChevronRight size={16} color="#D1D5DB" style={{ flexShrink: 0, marginTop: 12 }} />
                 </div>
               );
             })}
@@ -1991,147 +2625,9 @@ function NotificationsScreen({ go, role, onOpenNotification }: {
   );
 }
 
-// ── PROFILE ───────────────────────────────────────────────────────────────────
-
-function ProfileScreen({ go, role = "landlord", studentProfile, regRequest }: { go: (s: Screen) => void; role?: Role; studentProfile?: StudentProfile | null; regRequest?: RegRequest | null }) {
-  const QS = "'Quicksand',sans-serif";
-
-  // Displayed values — prefer student data if available, fall back to landlord defaults
-  const isStudent = role === "student" && studentProfile;
-  const fullName = isStudent
-    ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ")
-    : "Juan Dela Cruz";
-  const subtitle = isStudent
-    ? `${studentProfile.studentId} · ${studentProfile.program}`
-    : "BISU-2024-0001 · BS Information Technology";
-  const emailVal = isStudent ? studentProfile.email : "juan.delacruz@email.com";
-  const phoneVal = isStudent ? (`+63 ${studentProfile.contact}`) : "+63 912 345 6789";
-  const dormVal = regRequest?.house?.name ?? "Sunshine Dormitories";
-  const roomVal = regRequest?.room?.name ?? "204";
-  const yearLevelVal = isStudent ? studentProfile.yearLevel : "2nd";
-
-  const sections = [
-    { title: "Account", items: [{ Icon: User, label: "Edit Profile", screen: null as Screen | null }, { Icon: Lock, label: "Change Password", screen: null as Screen | null }, { Icon: Bell, label: "Notifications", screen: "notifications" as Screen }] },
-    { title: "App", items: [{ Icon: Settings, label: "Settings", screen: "settings" as Screen }, { Icon: Shield, label: "Privacy", screen: null as Screen | null }, { Icon: HelpCircle, label: "Help & Support", screen: null as Screen | null }, { Icon: Info, label: "About DormiTrack", screen: null as Screen | null }] },
-  ];
-  return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const }}>
-        <div style={{ padding: "56px 20px 80px", backgroundImage: GRAD_H, textAlign: "center", position: "relative" }}>
-          <h1 style={{ position: "absolute", top: 56, left: 20, color: "white", fontSize: 20, fontWeight: 800, margin: 0, fontFamily: QS }}>Profile</h1>
-          <div style={{ position: "relative", display: "inline-block", marginTop: 24 }}>
-            <div style={{ width: 80, height: 80, borderRadius: 26, backgroundImage: "linear-gradient(135deg,#D8B4FE,#9772F6)", display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid rgba(255,255,255,.35)" }}><User size={36} color="white" /></div>
-            <button style={{ position: "absolute", bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}><Camera size={13} color="#9772F6" /></button>
-          </div>
-          <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "12px 0 4px", fontFamily: QS }}>{fullName}</h2>
-          <p style={{ color: "rgba(255,255,255,.65)", fontSize: 12, margin: 0, maxWidth: 320, textAlign: "center", lineHeight: 1.45 }}>{subtitle}</p>
-        </div>
-
-        {/* Stats */}
-        <div style={{ padding: "0 20px 16px", marginTop: -40 }}>
-          <div style={{ background: "white", borderRadius: 24, padding: 16, boxShadow: "0 8px 32px rgba(117,73,246,.14)", display: "grid", gridTemplateColumns: "repeat(3,1fr)" }}>
-            {[["Room", roomVal], ["Year", yearLevelVal], ["Status", "Active"]].map(([l, v]) => (
-              <div key={l} style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "4px 0" }}>
-                <span style={{ fontSize: v.length > 6 ? 12 : 20, fontWeight: 800, color: "#9772F6", fontFamily: QS, textAlign: "center", lineHeight: 1.2 }}>{v}</span>
-                <span style={{ fontSize: 10, color: "#6B7280", marginTop: 2 }}>{l}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Additional student details if available */}
-        {isStudent && (
-          <div style={{ padding: "0 20px 16px" }}>
-            <div style={{ background: "white", borderRadius: 20, padding: "4px 16px", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-              {[
-                { Icon: GraduationCap, label: "Block", val: studentProfile.block },
-                { Icon: Calendar, label: "Birthdate", val: studentProfile.birthdate },
-                { Icon: User, label: "Sex", val: studentProfile.sex },
-                { Icon: MapPin, label: "Address", val: studentProfile.address },
-              ].map(({ Icon, label, val }, i) => (
-                <div key={label} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderBottom: i < 3 ? "1px solid #F9FAFB" : "none" }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={14} color="#9772F6" /></div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 700, margin: "0 0 1px" }}>{label}</p>
-                    <p style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", margin: 0, wordBreak: "break-word" as const }}>{val || "—"}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Info */}
-        <div style={{ padding: "0 20px 16px" }}>
-          <div style={{ background: "white", borderRadius: 20, padding: "4px 16px", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-            {[{ Icon: Mail, label: "Email", val: emailVal }, { Icon: Phone, label: "Phone", val: phoneVal }, { Icon: Building2, label: "Dorm", val: dormVal }].map(({ Icon, label, val }, i) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: i < 2 ? "1px solid #F9FAFB" : "none" }}>
-                <div style={{ width: 32, height: 32, borderRadius: 10, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={14} color="#9772F6" /></div>
-                <div style={{ flex: 1, minWidth: 0 }}><p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 700, margin: "0 0 1px" }}>{label}</p><p style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{val}</p></div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Boarding house registration details if available */}
-        {regRequest && (
-          <div style={{ padding: "0 20px 16px" }}>
-            <p style={{ fontSize: 11, fontWeight: 800, color: "#9CA3AF", textTransform: "uppercase" as const, letterSpacing: 1, margin: "0 0 8px 4px" }}>Boarding Details</p>
-            <div style={{ background: "white", borderRadius: 20, padding: "4px 16px", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-              {[
-                { Icon: Building2, label: "Boarding House", val: regRequest.house.name },
-                { Icon: Layers, label: "Room", val: regRequest.room.name },
-                { Icon: Calendar, label: "Move-in Date", val: regRequest.moveIn },
-                { Icon: Calendar, label: "Move-out Date", val: regRequest.moveOut },
-                { Icon: Clock, label: "Length of Stay", val: `${regRequest.stayCount} ${regRequest.stayUnit}` },
-              ].map(({ Icon, label, val }, i) => (
-                <div key={label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: i < 4 ? "1px solid #F9FAFB" : "none" }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={14} color="#9772F6" /></div>
-                  <div><p style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 700, margin: "0 0 1px" }}>{label}</p><p style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", margin: 0 }}>{val}</p></div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Personality / Hobbies / Lifestyle chips from registration */}
-        {regRequest && (regRequest.traits.length > 0 || regRequest.hobbies.length > 0 || regRequest.lifestyle.length > 0) && (
-          <div style={{ padding: "0 20px 16px" }}>
-            <p style={{ fontSize: 11, fontWeight: 800, color: "#9CA3AF", textTransform: "uppercase" as const, letterSpacing: 1, margin: "0 0 8px 4px" }}>About Me</p>
-            <div style={{ background: "white", borderRadius: 20, padding: 16, boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-              {[
-                { label: "Personality", tags: regRequest.traits },
-                { label: "Hobbies", tags: regRequest.hobbies },
-                { label: "Lifestyle", tags: regRequest.lifestyle },
-              ].filter(g => g.tags.length > 0).map((g, i, arr) => (
-                <div key={g.label} style={{ marginBottom: i < arr.length - 1 ? 14 : 0 }}>
-                  <p style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", margin: "0 0 8px" }}>{g.label}</p>
-                  <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6 }}>
-                    {g.tags.map(t => (
-                      <span key={t} style={{ padding: "5px 12px", borderRadius: 99, background: "#F5F0FF", color: "#9772F6", fontSize: 11, fontWeight: 700, fontFamily: QS }}>{t}</span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {/* App Info */}
-        <div style={{ padding: "0 20px 16px" }}>
-          <AppInfoSection />
-        </div>
-        {/* Logout */}
-        <div style={{ padding: "0 20px 24px" }}>
-          <button onClick={() => go("landing")} style={{ width: "100%", background: "white", borderRadius: 20, padding: 16, display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
-            <div style={{ width: 36, height: 36, borderRadius: 12, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center" }}><LogOut size={16} color="#DC2626" /></div>
-            <span style={{ fontSize: 13, fontWeight: 800, color: "#DC2626", fontFamily: "'Quicksand',sans-serif" }}>Log Out</span>
-          </button>
-        </div>
-      </div>
-      <BottomNav active="profile" go={go} leftTabs={navTabsForRole(role).left} rightTabs={navTabsForRole(role).right} />
-    </div>
-  );
-}
+// The old generic mock ProfileScreen (fake "Juan Dela Cruz" fallback for the admin role) has been
+// removed — its one call site now renders the real AdminProfileScreenFull, matching how landlord/
+// student/parent already route to their own real profile screens above.
 
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 
@@ -2241,28 +2737,42 @@ type LRoom = {
 
 type LPaymentExtra = { name: string; amount: string; type: "fixed" | "metered"; enabled: boolean; confirmed: boolean };
 
-function PendingVerificationScreen({ req, onApproved }: { req: RegRequest; onApproved: () => void }) {
+function PendingVerificationScreen({ req, registrationId, onApproved }: { req: PendingRegInfo; registrationId: string | null; onApproved: () => void }) {
   const QS = "'Quicksand',sans-serif"; const IN = "'Inter',sans-serif";
   const [checking, setChecking] = useState(false);
   const [approved, setApproved] = useState(false);
 
-  // Auto-check for landlord approval (simulated)
+  // Poll the real registration row — approval happens for real once a
+  // landlord acts on it (a later phase's UI); this just reflects that state
+  // honestly instead of faking a timer-based approval.
+  const checkStatus = async () => {
+    if (!registrationId) return;
+    const { data } = await supabase.from("student_boarding_registrations").select("status").eq("id", registrationId).single();
+    if (data?.status === "approved") setApproved(true);
+  };
+
   useEffect(() => {
-    const t = setTimeout(() => setApproved(true), 8000);
-    return () => clearTimeout(t);
-  }, []);
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registrationId]);
 
   // Fire the moment approval happens — not tied to the user tapping "Enter DormiTrack".
   useEffect(() => {
     if (!approved) return;
-    const description = `Your boarding house registration for ${req.house.name} has been approved.`;
-    addNotification({ role: "student", type: "boarding-house", title: "Registration Approved", description, destination: "occupants" });
-    addNotification({ role: "parent",  type: "boarding-house", title: "Registration Approved", description: `${req.studentName}'s boarding house registration for ${req.house.name} has been approved.`, destination: "occupants" });
-  }, [approved, req.house.name, req.studentName]);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const description = `Your boarding house registration for ${req.houseName} has been approved.`;
+      addNotification({ userId: uid, type: "boarding-house", title: "Registration Approved", description, destination: "occupants" });
+      notifyLinkedParents(uid, { type: "boarding-house", title: "Registration Approved", description: `${req.studentName}'s boarding house registration for ${req.houseName} has been approved.`, destination: "occupants" });
+    });
+  }, [approved, req.houseName, req.studentName]);
 
   const refresh = () => {
     setChecking(true);
-    setTimeout(() => { setChecking(false); setApproved(true); }, 1400);
+    checkStatus().finally(() => setChecking(false));
   };
 
   if (approved) {
@@ -2275,7 +2785,7 @@ function PendingVerificationScreen({ req, onApproved }: { req: RegRequest; onApp
           </div>
           <h1 style={{ color: "white", fontSize: 24, fontWeight: 800, margin: "0 0 12px", fontFamily: QS }}>Registration Approved!</h1>
           <p style={{ color: "rgba(255,255,255,.82)", fontSize: 14, lineHeight: 1.6, margin: "0 0 32px", fontFamily: IN }}>
-            Welcome to {req.house.name}! You can now access all DormiTrack features.
+            Welcome to {req.houseName}! You can now access all DormiTrack features.
           </p>
           <button onClick={onApproved} style={{ width: "100%", padding: "16px 0", borderRadius: 24, background: "white", color: "#9772F6", fontSize: 15, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
             Enter DormiTrack
@@ -2286,9 +2796,9 @@ function PendingVerificationScreen({ req, onApproved }: { req: RegRequest; onApp
   }
 
   const rows: [string, string][] = [
-    ["Boarding House", req.house.name],
-    ["Selected Room", req.room.name],
-    ...(req.bed ? [["Selected Bed", req.bed] as [string, string]] : []),
+    ["Boarding House", req.houseName],
+    ["Selected Room", req.roomName],
+    ...(req.bedLabel ? [["Selected Bed", req.bedLabel] as [string, string]] : []),
     ["Request Status", "Pending Approval"],
     ["Submitted Date", req.submittedDate],
     ["Estimated Response", "Within 24 hours"],
@@ -2335,6 +2845,11 @@ function PendingVerificationScreen({ req, onApproved }: { req: RegRequest; onApp
   );
 }
 
+// Screens reachable without a signed-in Supabase session — everything else
+// gets bounced to "landing" if the session disappears (logout/expiry) or was
+// never established (direct nav / stale reload).
+const PUBLIC_SCREENS: Screen[] = ["splash", "landing", "login", "roleSelect", "signup", "studentSignup", "landlordSignup", "parentSignup", "forgotPassword"];
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -2342,15 +2857,103 @@ export default function App() {
   const [visible, setVisible] = useState(true);
   const [role, setRole] = useState<Role>("landlord");
   const [regRequest, setRegRequest] = useState<RegRequest | null>(null);
+  const [registrationId, setRegistrationId] = useState<string | null>(null);
+  // Real submit-time failure surfaced to the student (see submitRegistration below) instead of
+  // silently proceeding to the "Waiting for Landlord Verification" screen for a registration
+  // that never actually saved.
+  const [registrationSubmitError, setRegistrationSubmitError] = useState("");
+  const [registrationSessionStale, setRegistrationSessionStale] = useState(false);
+  // What PendingVerificationScreen actually renders — set either right after
+  // a fresh submission (submitRegistration, below) or rehydrated from the
+  // real DB on login/session-restore (see the role-resolution effect below).
+  const [pendingInfo, setPendingInfo] = useState<PendingRegInfo | null>(null);
+  // Lifted out of WelcomeLoginScreen so a stray tap on "Forgot Password?" (then Back) doesn't wipe
+  // out whatever the user already typed — that screen unmounts/remounts WelcomeLoginScreen, which
+  // would otherwise reset any local useState back to empty.
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPass, setLoginPass] = useState("");
   const [studentProfile, setStudentProfile] = useState<StudentProfile | null>(null);
   const [parentLinkingId, setParentLinkingId] = useState("");
-  const [visitorEnabled, setVisitorEnabled] = useState(false);
-  const [visitorFields, setVisitorFields] = useState<VisitorFields>({ name: true, contact: true, relationship: true, purpose: true, visitDate: true });
-  const [highlightsEnabled, setHighlightsEnabled] = useState(true);
+  // Set by handleLogin's parent access gate (getMyParentGateStatus) when a returning parent
+  // isn't linked yet — lets ParentLinkingScreen resume straight into that real state instead of
+  // re-running the fresh-signup "verifying" animation. Cleared on a brand-new signup completion
+  // so a stale resume from an earlier session can never bleed into that flow.
+  const [parentLinkResume, setParentLinkResume] = useState<{ kind: "pending" | "rejected" | "none"; linkId: string | null; studentIdNo: string } | null>(null);
+  // Set by handleLogin when a parent logs in and their link turned out to already be confirmed
+  // but never acknowledged (see acknowledgeParentLink) — shows ParentLinkedModal once, over
+  // whatever tab they land on, until they dismiss it.
+  const [parentJustLinked, setParentJustLinked] = useState(false);
+  // These mirror boarding_houses.visitor_log_enabled/visitor_fields/
+  // highlights_enabled — written once at LandlordSignUp time, then read back
+  // for real below (bhConfigId) once signed in, and persisted again whenever
+  // toggled in LandlordProfile.tsx (see setVisitorEnabled etc. wrappers).
+  const [visitorEnabled, setVisitorEnabledLocal] = useState(false);
+  const [visitorFields, setVisitorFieldsLocal] = useState<VisitorFields>({ name: true, contact: true, relationship: true, purpose: true });
+  const [highlightsEnabled, setHighlightsEnabledLocal] = useState(true);
+  const [bhConfigId, setBhConfigId] = useState<string | null>(null);
   // Set right before navigating away from a clicked notification, so the
   // destination screen can open the exact record (e.g. a specific report)
   // instead of just landing on the general page. Cleared once consumed.
   const [pendingDeepLink, setPendingDeepLink] = useState<{ type: NotificationType; relatedId?: string } | null>(null);
+
+  // ── Auth session ──────────────────────────────────────────────────────────
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Seed the session once, then keep it live (covers login/logout from any
+  // screen, and token refresh/expiry). Deliberately does NOT auto-navigate
+  // off the login screen just because a still-valid session was restored
+  // from a previous visit — every refresh is meant to require signing in
+  // again explicitly. handleLogin's own gate check (below) still runs on
+  // that explicit login, so a student who already has a pending/approved
+  // registration is correctly routed away from "choose a boarding house"
+  // once they do log back in — refreshing just never skips the login form
+  // itself to get there.
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+    });
+    return () => { active = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  // Once signed in, `role` becomes authoritative from the database — this
+  // overrides whatever RoleSelectScreen may have pre-set during the pre-auth
+  // signup flow, so a stale/self-selected role can never leak into a real session.
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid) return;
+    let active = true;
+    supabase.from("users").select("role").eq("id", uid).single().then(({ data, error }) => {
+      if (active && !error && data) setRole(data.role as Role);
+    });
+    return () => { active = false; };
+  }, [session?.user?.id]);
+
+  // Real dashboard feature-toggle config (Visitor Records / Highlights) —
+  // landlord-only, resolved once we know both the session and the real role.
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid || role !== "landlord") return;
+    let active = true;
+    getMyBHFeatureConfig(uid).then(cfg => {
+      if (!active || !cfg) return;
+      setBhConfigId(cfg.id);
+      setVisitorEnabledLocal(cfg.visitorEnabled);
+      setVisitorFieldsLocal(cfg.visitorFields);
+      setHighlightsEnabledLocal(cfg.highlightsEnabled);
+    });
+    return () => { active = false; };
+  }, [session?.user?.id, role]);
+
+  const setVisitorEnabled = (v: boolean) => { setVisitorEnabledLocal(v); if (bhConfigId) updateBHFeatureConfig(bhConfigId, { visitorEnabled: v }); };
+  const setVisitorFields = (v: VisitorFields) => { setVisitorFieldsLocal(v); if (bhConfigId) updateBHFeatureConfig(bhConfigId, { visitorFields: v }); };
+  const setHighlightsEnabled = (v: boolean) => { setHighlightsEnabledLocal(v); if (bhConfigId) updateBHFeatureConfig(bhConfigId, { highlightsEnabled: v }); };
 
   const go = (s: Screen) => {
     if (s === screen) return;
@@ -2358,20 +2961,90 @@ export default function App() {
     setTimeout(() => { setScreen(s); setVisible(true); }, 160);
   };
 
-  const submitRegistration = (r: RegRequest) => {
+  // Safety net: if the session disappears (logout elsewhere, expired token)
+  // while sitting on a screen that requires one, bounce back to landing.
+  useEffect(() => {
+    if (!authLoading && !session && !PUBLIC_SCREENS.includes(screen)) {
+      go("landing");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, authLoading, screen]);
+
+  // Don't let a dismissed-or-not "You're Linked!" modal survive into a different session
+  // (logout, or a different account signing in on the same device).
+  useEffect(() => { if (!session) setParentJustLinked(false); }, [session]);
+
+  const submitRegistration = async (r: RegRequest) => {
+    setRegistrationSubmitError("");
+    setRegistrationSessionStale(false);
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    if (!currentSession?.user || !r.bedId) {
+      setRegistrationSubmitError("Could not submit your registration — please try again.");
+      return;
+    }
+    // move_in is a required (not-null) column even when the landlord's Stay Info Settings never
+    // asked the student for one (BoardingReg.tsx correctly hides that field then, leaving r.moveIn
+    // empty) — default it to today rather than sending an empty string, which the database would
+    // reject outright as an invalid date. This was a real bug: that insert failure was previously
+    // only ever logged to the console, never shown to the student, who'd still be sent on to a
+    // "Waiting for Landlord Verification" screen for a registration that was never actually saved
+    // — and the landlord's notification for it had nothing real to link to either.
+    const moveIn = r.moveIn || new Date().toISOString().slice(0, 10);
+    // A real RPC (not a plain insert) — it reserves the bed (status -> 'reserved') in the same
+    // atomic step as creating the registration, and rejects outright if someone else's pending
+    // registration already holds it. Without this, a bed only ever stopped showing as
+    // "available" once the landlord fully approved someone else's request, so two students could
+    // both see — and both submit for — the exact same last bed (0047_reserve_bed_on_registration.sql).
+    const { data: regId, error } = await supabase.rpc("submit_boarding_registration", {
+      p_boarding_house_id: r.house.id,
+      p_room_id: r.room.id,
+      p_bed_id: r.bedId,
+      p_move_in: moveIn,
+      p_move_out: r.moveOut || null,
+      p_stay_unit: r.stayUnit,
+      p_stay_count: Math.max(1, Number(r.stayCount) || 1),
+      p_traits: r.traits, p_hobbies: r.hobbies, p_lifestyle: r.lifestyle,
+      p_notes: r.notes || null,
+    });
+    const reg = regId ? { id: regId as string } : null;
+    if (error || !reg) {
+      console.error("submit_boarding_registration failed:", error?.message);
+      // A foreign-key violation on student_id specifically means the session just used doesn't
+      // belong to a real student account — the classic cause is a *different* tab (another test
+      // account, one that may since have been deleted) silently overwriting this tab's session,
+      // since Supabase Auth shares its login storage across every tab of the same site. The fix
+      // is a clean re-login, not a retry — surfacing that directly instead of the raw Postgres
+      // message, which just looks like an unexplained crash to a student.
+      const isStaleSession = error?.code === "23503" && !!error.message.includes("student_id_fkey");
+      setRegistrationSubmitError(
+        isStaleSession
+          ? "Your session appears to be out of sync — this can happen if another DormiTrack tab is open. Please log out and log back in, then try again."
+          : (error?.message ?? "Could not submit your registration. Please try again."),
+      );
+      setRegistrationSessionStale(isStaleSession);
+      return;
+    }
     setRegRequest(r);
-    addNotification({
-      role: "landlord", type: "verification", title: "New Registration Request",
+    setPendingInfo({
+      studentName: r.studentName, houseName: r.house.name, roomName: r.room.name, bedLabel: r.bed,
+      submittedDate: r.submittedDate,
+    });
+    setRegistrationId(reg.id);
+    // relatedId lets the landlord's notification tap scroll straight to (and highlight) this
+    // specific request in Reservation Requests below, instead of just landing on a generic
+    // dashboard and leaving them to hunt for it themselves.
+    notifyLandlordOfBoardingHouse(r.house.id, {
+      type: "verification", title: "New Registration Request",
       description: `${r.studentName} submitted a boarding house registration request for ${r.house.name}.`,
-      destination: "dashboard",
+      destination: "dashboard", relatedId: reg.id,
     });
     go("pendingVerify");
   };
 
   const render = () => {
     // Access gate: a student with a submitted request cannot use the app until approved
-    if (screen === "pendingVerify" && regRequest) {
-      return <PendingVerificationScreen req={regRequest} onApproved={() => go("dashboard")} />;
+    if (screen === "pendingVerify" && pendingInfo) {
+      return <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} />;
     }
     switch (screen) {
       case "splash":         return <SplashScreen done={() => go("landing")} />;
@@ -2380,15 +3053,15 @@ export default function App() {
       // (sign-up "already have an account" links, forgot-password's back
       // button, logout from any role's profile) now lands here directly.
       case "landing":
-      case "login":          return <WelcomeLoginScreen go={go} onAdminLogin={() => setRole("admin")} />;
+      case "login":          return <WelcomeLoginScreen go={go} onPendingRegistration={(info, id) => { setPendingInfo(info); setRegistrationId(id); }} onPendingParentLink={resume => setParentLinkResume(resume)} onParentJustLinked={() => setParentJustLinked(true)} email={loginEmail} setEmail={setLoginEmail} pass={loginPass} setPass={setLoginPass} />;
       case "roleSelect":     return <RoleSelectScreen go={go} onRole={setRole} />;
       case "signup":         return <SignUpScreen go={go} />;
       case "studentSignup":  return <StudentSignUpScreen go={go} onSignup={p => setStudentProfile(p)} />;
       case "landlordSignup": return <LandlordSignUpScreen go={go} />;
-      case "parentSignup":   return <ParentSignUpScreen go={go} onComplete={id => { setParentLinkingId(id); go("parentLinking"); }} />;
-      case "parentLinking":  return <ParentLinkingScreen go={go} studentId={parentLinkingId} onEditStudentId={() => go("parentSignup")} />;
-      case "boardingReg":    return <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : "Kyla L. Naquila"} />;
-      case "pendingVerify":  return regRequest ? <PendingVerificationScreen req={regRequest} onApproved={() => go("dashboard")} /> : <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName="Kyla L. Naquila" />;
+      case "parentSignup":   return <ParentSignUpScreen go={go} onComplete={id => { setParentLinkResume(null); setParentLinkingId(id); go("parentLinking"); }} />;
+      case "parentLinking":  return <ParentLinkingScreen go={go} studentId={parentLinkingId} resume={parentLinkResume ?? undefined} />;
+      case "boardingReg":    return <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} />;
+      case "pendingVerify":  return pendingInfo ? <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} /> : <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} />;
       case "forgotPassword": return <ForgotPasswordScreen go={go} />;
       case "dashboard":      return role === "admin" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
@@ -2402,26 +3075,34 @@ export default function App() {
         </div>
       ) : role === "parent" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><ParentHomeScreen go={go} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
           <BottomNav active="dashboard" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
         </div>
       ) : <DashboardScreen go={go} role={role} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} />;
       case "dormInfo":       return <DormInfoScreen go={go} />;
-      case "payments":       return role === "landlord" ? <LandlordPaymentsScreen go={go} /> : role === "student" ? (
+      case "payments":       return role === "landlord" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><StudentPaymentsScreen go={go} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><LandlordPaymentsScreen go={go} relatedId={pendingDeepLink?.type === "payment" ? pendingDeepLink.relatedId : undefined} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
+          <BottomNav active="payments" go={go} leftTabs={LANDLORD_LEFT} rightTabs={LANDLORD_RIGHT} />
+        </div>
+      ) : role === "student" ? (
+        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
+          <div style={{ flex:1, overflow:"hidden" }}><StudentPaymentsScreen go={go} relatedId={pendingDeepLink?.type === "payment" ? pendingDeepLink.relatedId : undefined} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
           <BottomNav active="payments" go={go} leftTabs={STUDENT_LEFT} rightTabs={STUDENT_RIGHT} />
         </div>
       ) : role === "parent" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><ParentPaymentsScreen go={go} /></div>
+          <div style={{ flex:1, overflow:"hidden" }}><ParentPaymentsScreen go={go} relatedId={pendingDeepLink?.type === "payment" ? pendingDeepLink.relatedId : undefined} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
           <BottomNav active="payments" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
         </div>
       ) : <PaymentsScreen go={go} role={role} />;
       case "homeVisit":      return <HomeVisitScreen go={go} />;
-      case "occupants":      return role === "landlord"
-        ? <LandlordOccupantsScreen go={go} navLeft={navTabsForRole(role).left} navRight={navTabsForRole(role).right} onOpenChat={id => { setPendingDeepLink({ type: "message", relatedId: id }); go("messages"); }} />
-        : role === "student" ? (
+      case "occupants":      return role === "landlord" ? (
+        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
+          <div style={{ flex:1, overflow:"hidden" }}><LandlordOccupantsScreen go={go} onOpenChat={id => { setPendingDeepLink({ type: "message", relatedId: id }); go("messages"); }} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
+          <BottomNav active="occupants" go={go} leftTabs={LANDLORD_LEFT} rightTabs={LANDLORD_RIGHT} />
+        </div>
+      ) : role === "student" ? (
           <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
             <div style={{ flex:1, overflow:"hidden" }}><StudentRoomOccupantsScreen go={go} /></div>
             <BottomNav active="occupants" go={go} leftTabs={STUDENT_LEFT} rightTabs={STUDENT_RIGHT} />
@@ -2451,9 +3132,12 @@ export default function App() {
       ) : <MapScreen go={go} role={role} />;
       case "notifications":  return <NotificationsScreen go={go} role={role} onOpenNotification={n => setPendingDeepLink({ type: n.type, relatedId: n.relatedId })} />;
       case "messages":       return <MessagesScreen go={go} role={role} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} />;
-      case "profile":        return role === "landlord"
-        ? <LandlordProfileScreen go={go} visitorEnabled={visitorEnabled} setVisitorEnabled={setVisitorEnabled} visitorFields={visitorFields} setVisitorFields={setVisitorFields} highlightsEnabled={highlightsEnabled} setHighlightsEnabled={setHighlightsEnabled} />
-        : role === "student" ? (
+      case "profile":        return role === "landlord" ? (
+        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
+          <div style={{ flex:1, overflow:"hidden" }}><LandlordProfileScreen go={go} visitorEnabled={visitorEnabled} setVisitorEnabled={setVisitorEnabled} visitorFields={visitorFields} setVisitorFields={setVisitorFields} highlightsEnabled={highlightsEnabled} setHighlightsEnabled={setHighlightsEnabled} /></div>
+          <BottomNav active="profile" go={go} leftTabs={LANDLORD_LEFT} rightTabs={LANDLORD_RIGHT} />
+        </div>
+      ) : role === "student" ? (
           <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
             <div style={{ flex:1, overflow:"hidden" }}><StudentProfileScreen go={go} /></div>
             <BottomNav active="profile" go={go} leftTabs={STUDENT_LEFT} rightTabs={STUDENT_RIGHT} />
@@ -2463,7 +3147,7 @@ export default function App() {
             <div style={{ flex:1, overflow:"hidden" }}><ParentProfileScreen go={go} /></div>
             <BottomNav active="profile" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
           </div>
-        ) : <ProfileScreen go={go} role={role} studentProfile={studentProfile} regRequest={regRequest} />;
+        ) : <AdminProfileScreenFull go={go} />;
       case "settings":       return <SettingsScreen go={go} />;
       case "adminUsers":     return (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
@@ -2503,5 +3187,10 @@ export default function App() {
     }
   };
 
-  return <MobileShell visible={visible}>{render()}</MobileShell>;
+  return (
+    <MobileShell visible={visible}>
+      {render()}
+      {parentJustLinked && <ParentLinkedModal onDismiss={() => { acknowledgeParentLink(); setParentJustLinked(false); }} />}
+    </MobileShell>
+  );
 }

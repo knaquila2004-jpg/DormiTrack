@@ -47,11 +47,13 @@ function previewText(text: string, attachment?: AttachmentKind): string {
 }
 
 // ── Avatars ──────────────────────────────────────────────────────────────────
-function Avatar({ initials, color, online, size = 46 }: { initials: string; color: string; online?: boolean; size?: number }) {
+function Avatar({ initials, color, online, size = 46, photoUrl }: { initials: string; color: string; online?: boolean; size?: number; photoUrl?: string | null }) {
   return (
     <div style={{ position: "relative" as const, width: size, height: size, flexShrink: 0 }}>
-      <div style={{ width: size, height: size, borderRadius: size * 0.32, background: color, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "white", fontWeight: 800, fontFamily: QS, fontSize: size * 0.36 }}>{initials}</span>
+      <div style={{ width: size, height: size, borderRadius: "50%", background: color, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+        {photoUrl
+          ? <img src={photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : <span style={{ color: "white", fontWeight: 800, fontFamily: QS, fontSize: size * 0.36 }}>{initials}</span>}
       </div>
       {online && <div style={{ position: "absolute" as const, bottom: -1, right: -1, width: Math.round(size * 0.28), height: Math.round(size * 0.28), borderRadius: "50%", background: "#22C55E", border: "2px solid white" }} />}
     </div>
@@ -59,13 +61,13 @@ function Avatar({ initials, color, online, size = 46 }: { initials: string; colo
 }
 
 function ContactAvatar({ contact, size = 46 }: { contact: ChatContact; size?: number }) {
-  return <Avatar initials={contact.initials} color={contact.color} online={contact.online} size={size} />;
+  return <Avatar initials={contact.initials} color={contact.color} online={contact.online} size={size} photoUrl={contact.photoUrl} />;
 }
 
 function GroupAvatar({ group, size = 46 }: { group: GroupChat; size?: number }) {
   if (!group.hasCustomPhoto) {
     return (
-      <div style={{ width: size, height: size, borderRadius: size * 0.32, background: group.photoColor, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <div style={{ width: size, height: size, borderRadius: "50%", background: group.photoColor, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Users size={size * 0.46} color="white" />
       </div>
     );
@@ -85,7 +87,7 @@ function ConfirmDialog({ icon: Icon, iconBg, iconColor, title, message, cancelLa
   cancelLabel?: string; confirmLabel: string; confirmColor: string; onCancel: () => void; onConfirm: () => void;
 }) {
   return (
-    <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 24px" }} onClick={onCancel}>
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 24px" }} onClick={onCancel}>
       <div style={{ background: "white", borderRadius: 24, padding: 24, width: "100%" }} onClick={e => e.stopPropagation()}>
         <div style={{ width: 48, height: 48, borderRadius: 16, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
           <Icon size={20} color={iconColor} />
@@ -104,7 +106,7 @@ function ConfirmDialog({ icon: Icon, iconBg, iconColor, title, message, cancelLa
 // ── Plus button action sheet ─────────────────────────────────────────────────
 function PlusActionSheet({ onClose, onNewChat, onCreateGroup }: { onClose: () => void; onNewChat: () => void; onCreateGroup: () => void }) {
   return (
-    <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 200, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 200, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
       <div style={{ background: "white", borderRadius: "24px 24px 0 0", padding: "10px 14px 28px" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 10px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "#E5E7EB" }} /></div>
         {[
@@ -172,7 +174,7 @@ function ParticipantPicker({ contacts, selectedIds, onToggle }: { contacts: Chat
 function NewMessageModal({ role, onClose, onPick }: { role: Role; onClose: () => void; onPick: (c: ChatContact) => void }) {
   const contacts = getAuthorizedContacts(role);
   return (
-    <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 200, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 200, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
       <div style={{ background: "white", borderRadius: "24px 24px 0 0", maxHeight: "85%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: "16px 18px 12px", borderBottom: "1px solid #F3F4F6", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>New Chat</p>
@@ -201,10 +203,13 @@ function NewGroupChatScreen({ role, onBack, onCreated }: { role: Role; onBack: (
     return next;
   });
 
-  const create = () => {
-    if (!canCreate) return;
-    const group = createGroup(role, name, Array.from(selected));
-    if (hasPhoto) setGroupPhoto(group.id);
+  const [creating, setCreating] = useState(false);
+  const create = async () => {
+    if (!canCreate || creating) return;
+    setCreating(true);
+    const group = await createGroup(role, name, Array.from(selected));
+    if (hasPhoto) await setGroupPhoto(group.id);
+    setCreating(false);
     onCreated(group.id);
   };
 
@@ -217,7 +222,7 @@ function NewGroupChatScreen({ role, onBack, onCreated }: { role: Role; onBack: (
       <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "18px 20px 100px" }}>
         <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", marginBottom: 20 }}>
           <button onClick={() => setShowPhotoPicker(true)} style={{ position: "relative" as const, border: "none", background: "none", cursor: "pointer", padding: 0 }}>
-            <div style={{ width: 76, height: 76, borderRadius: 24, background: hasPhoto ? "#9772F6" : "#E5E7EB", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 76, height: 76, borderRadius: "50%", background: hasPhoto ? "#9772F6" : "#E5E7EB", display: "flex", alignItems: "center", justifyContent: "center" }}>
               {hasPhoto ? <span style={{ color: "white", fontWeight: 800, fontFamily: QS, fontSize: 26 }}>{(name.trim() ? name.trim() : "GC").split(" ").map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase()}</span> : <Users size={30} color="#9CA3AF" />}
             </div>
             <div style={{ position: "absolute" as const, bottom: -4, right: -4, width: 26, height: 26, borderRadius: "50%", backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid white" }}><Camera size={12} color="white" /></div>
@@ -236,7 +241,7 @@ function NewGroupChatScreen({ role, onBack, onCreated }: { role: Role; onBack: (
       </div>
 
       {showPhotoPicker && (
-        <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 220, display: "flex", alignItems: "flex-end" as const }} onClick={() => setShowPhotoPicker(false)}>
+        <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 220, display: "flex", alignItems: "flex-end" as const }} onClick={() => setShowPhotoPicker(false)}>
           <div style={{ background: "white", borderRadius: "24px 24px 0 0", padding: "10px 14px 28px", width: "100%" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 10px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "#E5E7EB" }} /></div>
             {[
@@ -253,8 +258,8 @@ function NewGroupChatScreen({ role, onBack, onCreated }: { role: Role; onBack: (
       )}
 
       <div style={{ position: "absolute" as const, left: 0, right: 0, bottom: 0, padding: "14px 20px 26px", background: "white", borderTop: "1px solid #F3F4F6" }}>
-        <button onClick={create} disabled={!canCreate} style={{ width: "100%", height: 50, borderRadius: 18, border: "none", cursor: canCreate ? "pointer" : "default", fontSize: 14, fontWeight: 800, fontFamily: QS, color: canCreate ? "white" : "#9CA3AF", background: canCreate ? GRAD : "#E5E7EB", boxShadow: canCreate ? "0 8px 24px rgba(151,114,246,.35)" : "none" }}>
-          Create Group
+        <button onClick={create} disabled={!canCreate || creating} style={{ width: "100%", height: 50, borderRadius: 18, border: "none", cursor: canCreate && !creating ? "pointer" : "default", fontSize: 14, fontWeight: 800, fontFamily: QS, color: canCreate ? "white" : "#9CA3AF", background: canCreate ? GRAD : "#E5E7EB", boxShadow: canCreate ? "0 8px 24px rgba(151,114,246,.35)" : "none" }}>
+          {creating ? "Creating…" : "Create Group"}
         </button>
       </div>
     </div>
@@ -276,7 +281,7 @@ function AddMembersModal({ role, group, onClose }: { role: Role; group: GroupCha
     onClose();
   };
   return (
-    <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 260, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 260, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
       <div style={{ background: "white", borderRadius: "24px 24px 0 0", maxHeight: "85%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: "16px 18px 12px", borderBottom: "1px solid #F3F4F6", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Add Members</p>
@@ -315,7 +320,7 @@ function GroupInfoModal({ role, group, onClose, onLeft }: { role: Role; group: G
   const saveName = () => { if (nameDraft.trim()) renameGroup(group.id, nameDraft); setEditingName(false); };
 
   return (
-    <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 210, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.5)", zIndex: 210, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
       <div style={{ background: "#F7F8FC", borderRadius: "24px 24px 0 0", maxHeight: "88%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: "16px 18px 14px", background: "white", borderBottom: "1px solid #F3F4F6", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Group Info</p>
@@ -636,14 +641,14 @@ export function MessagesScreen({ go, role, pendingDeepLink, onDeepLinkConsumed }
   const [showPlusSheet, setShowPlusSheet] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
 
-  // Opened from a "message" notification, or another screen's "Message"
-  // action — jump straight into that thread (direct or group).
+  // Opened from a "message" notification, or another screen's "Message" action — jump
+  // straight into that thread (direct or group). Re-checks as `conversations` loads in
+  // since that's async — only consumed once actually found, so a fast tap right after
+  // navigating here doesn't miss the match and silently strand on the inbox list.
   useEffect(() => {
-    if (pendingDeepLink?.type === "message" && pendingDeepLink.relatedId) {
-      const match = conversations.find(c => c.key === pendingDeepLink.relatedId || c.contact?.id === pendingDeepLink.relatedId);
-      if (match) setOpen(match);
-      onDeepLinkConsumed?.();
-    }
+    if (pendingDeepLink?.type !== "message" || !pendingDeepLink.relatedId) return;
+    const match = conversations.find(c => c.key === pendingDeepLink.relatedId || c.contact?.id === pendingDeepLink.relatedId);
+    if (match) { setOpen(match); onDeepLinkConsumed?.(); }
   }, [pendingDeepLink, onDeepLinkConsumed, conversations]);
 
   if (creatingGroup) {
@@ -696,7 +701,7 @@ export function MessagesScreen({ go, role, pendingDeepLink, onDeepLinkConsumed }
           <div style={{ padding: "8px 12px 20px" }}>
             {filtered.map(c => (
               <div key={c.key} onClick={() => setOpen(c)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 10px", borderRadius: 18, cursor: "pointer", background: c.unreadCount > 0 ? "rgba(151,114,246,.07)" : "transparent" }}>
-                {c.kind === "group" ? <GroupAvatar group={c.group!} /> : <Avatar initials={c.avatarInitials} color={c.avatarColor} online={c.online} />}
+                {c.kind === "group" ? <GroupAvatar group={c.group!} /> : <Avatar initials={c.avatarInitials} color={c.avatarColor} online={c.online} photoUrl={c.contact?.photoUrl} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <p style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#1F2937", fontFamily: QS, whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" }}>{c.title}</p>

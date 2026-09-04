@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 import {
   User, Mail, Phone, MapPin, Camera, LogOut,
   ChevronDown, ChevronUp, Lock, Save, X, Edit3,
@@ -6,8 +7,21 @@ import {
   Bell, FileText, HelpCircle, Info, Link2,
   GraduationCap, Heart,
 } from "lucide-react";
-import { STUDENT_DATA, BH_DATA, ROOM_DATA } from "./StudentHome";
-import { PARENT_DATA } from "./ParentHome";
+import { getMyParentProfile, getMyLinkedStudentData, MyParentProfile, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
+import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
+// changeMyPassword lives in landlordProfileStore.ts historically (it was built there first) but
+// is genuinely role-agnostic — real Supabase Auth re-authenticate-then-update, nothing
+// landlord-specific — so it's reused verbatim here rather than duplicating that
+// security-sensitive logic a second time.
+import { changeMyPassword } from "./landlordProfileStore";
+
+const EMPTY_PARENT: MyParentProfile = { name: "—", firstName: "—", relationship: "—", contact: "—", email: "—", address: "—", photo: null };
+const EMPTY_STUDENT: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -67,11 +81,42 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
   const [toast,      setToast]     = useState("");
 
   // Editable parent fields
-  const [name,     setName]     = useState(PARENT_DATA.name);
-  const [contact,  setContact]  = useState(PARENT_DATA.contact);
-  const [email,    setEmail]    = useState(PARENT_DATA.email);
-  const [address,  setAddress]  = useState(PARENT_DATA.address);
-  const [draft,    setDraft]    = useState({ name, contact, email, address });
+  const [uid,      setUid]      = useState<string|null>(null);
+  const [name,     setName]     = useState("—");
+  const [contact,  setContact]  = useState("—");
+  const [email,    setEmail]    = useState("—");
+  const [address,  setAddress]  = useState("—");
+  const [relationship, setRelationship] = useState("—");
+  // Email deliberately isn't editable here — it's the real Supabase Auth login identity, and
+  // changing it for real needs Auth's own confirmation-email flow, not a plain `users` table
+  // update (which would just desync the display from what's actually used to log in). Shown
+  // read-only instead of offering an edit that silently wouldn't have persisted anyway.
+  const [draft,    setDraft]    = useState({ name, contact, address });
+
+  const [studentLinked, setStudentLinked] = useState(false);
+  const [studentProfile, setStudentProfile] = useState<MyStudentProfile>(EMPTY_STUDENT);
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const [parent, linked] = await Promise.all([getMyParentProfile(), getMyLinkedStudentData()]);
+      if (!active) return;
+      if (session?.user) setUid(session.user.id);
+      if (parent) {
+        setName(parent.name); setContact(parent.contact); setEmail(parent.email); setAddress(parent.address); setRelationship(parent.relationship);
+        setDraft({ name: parent.name, contact: parent.contact, address: parent.address });
+        if (parent.photo) setPhoto(parent.photo);
+      }
+      setStudentLinked(linked.linked);
+      if (linked.profile) setStudentProfile(linked.profile);
+      if (linked.assignment) setAssignment(linked.assignment);
+    })();
+    return () => { active = false; };
+  }, []);
+  const STUDENT_DATA = studentProfile;
+  const BH_DATA = assignment.bh;
+  const ROOM_DATA = assignment.room;
 
   // Password
   const [curPw,  setCurPw]  = useState(""); const [newPw,  setNewPw]  = useState(""); const [conPw,  setConPw]  = useState("");
@@ -80,14 +125,25 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
 
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(""), 2800); };
 
-  const startEdit = () => { setDraft({ name, contact, email, address }); setEditMode(true); };
-  const saveEdit  = () => { setName(draft.name); setContact(draft.contact); setEmail(draft.email); setAddress(draft.address); setEditMode(false); showToast("Profile updated successfully."); };
+  const startEdit = () => { setDraft({ name, contact, address }); setEditMode(true); };
+  const saveEdit  = async () => {
+    setName(draft.name); setContact(draft.contact); setAddress(draft.address); setEditMode(false);
+    // Contact/address are freeform and safe to persist directly; a "Full Name" edit stays
+    // local-only here — same deliberate call as StudentProfile.tsx's savePersonal(): splitting
+    // it back into first_name/last_name needs real validation this quick-edit form doesn't have,
+    // and round-tripping it wrong risks silently corrupting a constrained column.
+    if (uid) await supabase.from("users").update({ contact_number: draft.contact, address: draft.address }).eq("id", uid);
+    showToast("Profile updated successfully.");
+  };
 
-  const savePw = () => {
+  const savePw = async () => {
     if (!curPw) { setPwErr("Enter current password."); return; }
     if (newPw.length < 6) { setPwErr("New password must be at least 6 characters."); return; }
     if (newPw !== conPw) { setPwErr("Passwords do not match."); return; }
-    setPwErr(""); setCurPw(""); setNewPw(""); setConPw(""); setShowPwMod(false); showToast("Password changed.");
+    setPwErr("");
+    const res = await changeMyPassword(curPw, newPw);
+    if (res.ok === false) { setPwErr(res.error); return; }
+    setCurPw(""); setNewPw(""); setConPw(""); setShowPwMod(false); showToast("Password changed.");
   };
 
   const initials = name.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase();
@@ -105,7 +161,7 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
 
       {/* Change Password Modal */}
       {showPwModal && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setShowPwMod(false)}>
+        <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setShowPwMod(false)}>
           <div style={{ background:"white", borderRadius:24, padding:"24px 20px", width:"100%", maxWidth:340 }} onClick={e=>e.stopPropagation()}>
             <h3 style={{ margin:"0 0 16px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Change Password</h3>
             {pwErr && <div style={{ background:"#FEF2F2", borderRadius:12, padding:"10px 14px", marginBottom:12, display:"flex", gap:8 }}><AlertCircle size={13} color="#EF4444"/><span style={{ fontSize:12, color:"#DC2626", fontFamily:IN }}>{pwErr}</span></div>}
@@ -134,16 +190,13 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
 
       {/* Logout Confirm */}
       {showLogout && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setShowLogout(false)}>
+        <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setShowLogout(false)}>
           <div style={{ background:"white", borderRadius:24, padding:"28px 22px", width:"100%", maxWidth:320 }} onClick={e=>e.stopPropagation()}>
-            <div style={{ width:52, height:52, borderRadius:18, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
-              <LogOut size={22} color="#DC2626"/>
-            </div>
             <h3 style={{ margin:"0 0 8px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"center" as const }}>Log Out?</h3>
             <p style={{ margin:"0 0 20px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.5, textAlign:"center" as const }}>You will be returned to the login screen.</p>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
               <button onClick={()=>setShowLogout(false)} style={{ height:44, borderRadius:18, border:"2px solid #E5E7EB", background:"white", cursor:"pointer", fontSize:13, fontWeight:800, color:"#374151", fontFamily:QS }}>Cancel</button>
-              <button onClick={()=>go("landing")} style={{ height:44, borderRadius:18, border:"none", background:"#EF4444", cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS }}>Log Out</button>
+              <button onClick={()=>{ supabase.auth.signOut(); go("landing"); }} style={{ height:44, borderRadius:18, border:"none", background:"#EF4444", cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS }}>Log Out</button>
             </div>
           </div>
         </div>
@@ -156,17 +209,27 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
         <div style={{ padding:"52px 20px 24px", backgroundImage:GRAD_H, textAlign:"center" as const }}>
           <h1 style={{ color:"white", fontSize:20, fontWeight:800, margin:"0 0 20px", fontFamily:QS, textAlign:"left" as const }}>My Profile</h1>
           <div style={{ position:"relative" as const, display:"inline-block" }}>
-            <div style={{ width:84, height:84, borderRadius:28, background:photo?"transparent":"rgba(255,255,255,.2)", border:"3px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+            <div style={{ width:84, height:84, borderRadius:"50%", background:photo?"transparent":"rgba(255,255,255,.2)", border:"3px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
               {photo ? <img src={photo} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt=""/> : <span style={{ fontSize:30, fontWeight:800, color:"white", fontFamily:QS }}>{initials}</span>}
             </div>
             <label style={{ position:"absolute" as const, bottom:-6, right:-6, width:28, height:28, borderRadius:10, background:"white", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", boxShadow:"0 2px 8px rgba(0,0,0,.15)" }}>
               <Camera size={13} color="#9772F6"/>
-              <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>{ const f=e.target.files?.[0]; if(f) setPhoto(URL.createObjectURL(f)); }}/>
+              <input type="file" accept="image/*" style={{ display:"none" }} onChange={async e=>{
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+                const res = await uploadProfilePhoto(f);
+                if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+                else setPhoto(res.url);
+              }}/>
             </label>
           </div>
+          {photo && (
+            <button onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ display:"block", margin:"10px auto 0", background:"none", border:"none", color:"rgba(255,255,255,.7)", fontSize:11, cursor:"pointer", fontFamily:QS, textDecoration:"underline" }}>Remove Photo</button>
+          )}
           <h2 style={{ color:"white", fontSize:20, fontWeight:800, margin:"14px 0 4px", fontFamily:QS }}>{name}</h2>
           <div style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
-            <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}><Heart size={11}/> {PARENT_DATA.relationship}</span>
+            <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}><Heart size={11}/> {relationship}</span>
             <span style={{ background:"rgba(255,255,255,.18)", borderRadius:20, padding:"3px 12px", fontSize:11, color:"white", fontFamily:QS, fontWeight:700 }}>Parent / Guardian</span>
           </div>
         </div>
@@ -190,12 +253,12 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
 
         <div style={{ padding:"0 16px 32px" }}>
 
-          {/* ── Parent Information ────────────────────────────────────────────── */}
-          <SectionCard title="My Information" icon={<User size={16} color="#9772F6"/>} defaultOpen>
+          {/* ── Personal Information ────────────────────────────────────────────── */}
+          <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6"/>}>
             {!editMode ? (
               <>
                 <InfoRow label="Full Name"        value={name}                    />
-                <InfoRow label="Relationship"     value={PARENT_DATA.relationship}/>
+                <InfoRow label="Relationship"     value={relationship}/>
                 <InfoRow label="Contact Number"   value={contact}                 />
                 <InfoRow label="Email Address"    value={email}                   />
                 <InfoRow label="Home Address"     value={address}                 last/>
@@ -207,7 +270,7 @@ export function ParentProfileScreen({ go }: { go:(s:string)=>void }) {
               <>
                 <EditableField label="Full Name"      value={draft.name}    onChange={v=>setDraft(d=>({...d,name:v}))}    placeholder="Full name"           />
                 <EditableField label="Contact Number" value={draft.contact} onChange={v=>setDraft(d=>({...d,contact:v}))} placeholder="+63 9XX XXX XXXX"    />
-                <EditableField label="Email Address"  value={draft.email}   onChange={v=>setDraft(d=>({...d,email:v}))}   placeholder="email@example.com"   />
+                <InfoRow label="Email Address" value={email} />
                 <EditableField label="Home Address"   value={draft.address} onChange={v=>setDraft(d=>({...d,address:v}))} placeholder="Purok, Brgy, City"    multiline/>
                 <div style={{ display:"flex", gap:10, marginTop:4 }}>
                   <GradBtn small outline onClick={()=>setEditMode(false)}><X size={13}/>Cancel</GradBtn>

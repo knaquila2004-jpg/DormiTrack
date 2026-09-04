@@ -6,8 +6,13 @@ import {
   Trash2, Send, Star, FileText, Bell, UserCheck, Navigation,
   BookOpen, Plus, GraduationCap, Layers,
 } from "lucide-react";
-import { GRAD, GRAD_H, Screen, NavTab } from "./shared";
+import { GRAD, GRAD_H, Screen } from "./shared";
+import { NotificationType, addNotification } from "./notificationStore";
 import { findStudentContactByName } from "./chatStore";
+import { supabase } from "../lib/supabase";
+import { getBoardingHousesForLandlord } from "./boardingHouseStore";
+import { getCurrentOccupantsForLandlord, getOccupancyStatsForLandlord, endOccupancy, Occupant as RealOccupant } from "./registrationStore";
+import { getStayChangeRequestsForLandlord, respondToStayChangeRequest, LandlordStayChangeRequest, StayUnit } from "./stayChangeStore";
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -32,115 +37,46 @@ type Occupant = {
   id: string; name: string; studentId: string; program: string; year: string;
   room: string; bed: string; moveIn: string; expectedMoveOut: string;
   status: OccupantStatus; contact: string; emergencyContact: string;
-  parentName: string; parentContact: string; initials: string; grad: string;
+  parentName: string; parentContact: string; initials: string; grad: string; photo: string | null;
   visitors: VisitEntry[]; timeline: TimelineEntry[]; notes: OccupantNote[];
   totalDays: number; totalTransfers: number;
 };
 
-// ── Seed data ─────────────────────────────────────────────────────────────────
+// ── Live data mapping ────────────────────────────────────────────────────────
+// Visitor logs, timeline events, and free-text notes don't have a backing
+// table yet — they render as real (empty) rather than fabricated until that
+// lands. Everything else here is a real column from student_assignments.
 
-const SEED_OCCUPANTS: Occupant[] = [
-  {
-    id: "o1", name: "Maria Santos", studentId: "2024-0012", program: "BS Nursing", year: "2nd Year",
-    room: "Room A", bed: "Bed 1", moveIn: "Aug 5, 2024", expectedMoveOut: "May 30, 2025",
-    status: "active", contact: "09171234001", emergencyContact: "09171234002",
-    parentName: "Rosa Santos", parentContact: "09171234003", initials: "MS",
-    grad: "linear-gradient(135deg,#9772F6,#7C3AED)", totalDays: 135, totalTransfers: 0,
-    visitors: [
-      { id: "vv1", visitorName: "Rosa Santos", relationship: "Mother", purpose: "Bring supplies", date: "Dec 10, 2024", timeIn: "10:00 AM", timeOut: "12:00 PM", duration: "2h 00m", status: "completed" },
-      { id: "vv2", visitorName: "Carl Reyes",  relationship: "Friend",  purpose: "Thesis help",   date: "Dec 18, 2024", timeIn: "2:00 PM",  timeOut: "5:00 PM",  duration: "—",       status: "pending" },
-    ],
-    timeline: [
-      { event: "Reservation Approved",           date: "Jul 28, 2024",  color: "#16A34A" },
-      { event: "Moved Into Room A · Bed 1",      date: "Aug 5, 2024",   color: "#9772F6" },
-      { event: "Visitor Rosa Santos approved",   date: "Dec 10, 2024",  color: "#EC4899" },
-      { event: "Visitor Rosa Santos checked in", date: "Dec 10, 2024",  color: "#EC4899" },
-      { event: "Visitor Rosa Santos checked out",date: "Dec 10, 2024",  color: "#6B7280" },
-    ],
-    notes: [{ id: "n1", text: "Pays rent on time every month.", date: "Nov 1, 2024" }],
-  },
-  {
-    id: "o2", name: "Kevin Cruz", studentId: "2024-0033", program: "BS Computer Science", year: "3rd Year",
-    room: "Room C", bed: "Bed 2", moveIn: "Aug 10, 2024", expectedMoveOut: "May 30, 2025",
-    status: "active", contact: "09221234001", emergencyContact: "09221234002",
-    parentName: "Rosa Cruz", parentContact: "09221234003", initials: "KC",
-    grad: "linear-gradient(135deg,#3B82F6,#6366F1)", totalDays: 130, totalTransfers: 1,
-    visitors: [
-      { id: "vv3", visitorName: "Ben Torres", relationship: "Father", purpose: "Personal visit", date: "Dec 17, 2024", timeIn: "9:05 AM", timeOut: "10:58 AM", duration: "1h 53m", status: "completed" },
-    ],
-    timeline: [
-      { event: "Reservation Approved",           date: "Aug 2, 2024",   color: "#16A34A" },
-      { event: "Moved Into Room B · Bed 3",      date: "Aug 10, 2024",  color: "#9772F6" },
-      { event: "Transferred to Room C · Bed 2",  date: "Sep 15, 2024",  color: "#F59E0B" },
-      { event: "Visitor Ben Torres checked in",  date: "Dec 17, 2024",  color: "#EC4899" },
-    ],
-    notes: [
-      { id: "n2", text: "Requested room transfer due to noise.", date: "Sep 14, 2024" },
-      { id: "n3", text: "Friendly and cooperative tenant.",       date: "Oct 5, 2024"  },
-    ],
-  },
-  {
-    id: "o3", name: "Lara Mendoza", studentId: "2024-0041", program: "BS Nursing", year: "1st Year",
-    room: "Room B", bed: "Bed 1", moveIn: "Dec 15, 2024", expectedMoveOut: "May 30, 2025",
-    status: "pendingMoveIn", contact: "09331234001", emergencyContact: "09331234002",
-    parentName: "Carla Mendoza", parentContact: "09331234003", initials: "LM",
-    grad: "linear-gradient(135deg,#10B981,#0EA5E9)", totalDays: 3, totalTransfers: 0,
-    visitors: [],
-    timeline: [
-      { event: "Registration Submitted",         date: "Dec 12, 2024",  color: "#3B82F6" },
-      { event: "Reservation Approved",           date: "Dec 14, 2024",  color: "#16A34A" },
-      { event: "Assigned Room B · Bed 1",        date: "Dec 14, 2024",  color: "#9772F6" },
-    ],
-    notes: [],
-  },
-  {
-    id: "o4", name: "Sofia Castillo", studentId: "2024-0043", program: "BS Education", year: "1st Year",
-    room: "Room D", bed: "Bed 3", moveIn: "Aug 8, 2024", expectedMoveOut: "Dec 31, 2024",
-    status: "movingOut", contact: "09441234001", emergencyContact: "09441234002",
-    parentName: "Ana Castillo", parentContact: "09441234003", initials: "SC",
-    grad: "linear-gradient(135deg,#EC4899,#9772F6)", totalDays: 132, totalTransfers: 0,
-    visitors: [
-      { id: "vv4", visitorName: "Ana Gomez", relationship: "Cousin", purpose: "Birthday cake", date: "Dec 16, 2024", timeIn: "—", timeOut: "—", duration: "—", status: "rejected" },
-    ],
-    timeline: [
-      { event: "Reservation Approved",              date: "Aug 1, 2024",   color: "#16A34A" },
-      { event: "Moved Into Room D · Bed 3",         date: "Aug 8, 2024",   color: "#9772F6" },
-      { event: "Visitor request rejected",           date: "Dec 16, 2024",  color: "#EF4444" },
-      { event: "Scheduled Move-Out",                 date: "Dec 31, 2024",  color: "#F59E0B" },
-    ],
-    notes: [{ id: "n4", text: "Moving out end of December. Room to be vacated.", date: "Dec 1, 2024" }],
-  },
-  {
-    id: "o5", name: "John Doe", studentId: "2024-0007", program: "BS Agriculture", year: "2nd Year",
-    room: "Room A", bed: "Bed 2", moveIn: "Aug 3, 2024", expectedMoveOut: "May 30, 2025",
-    status: "active", contact: "09551234001", emergencyContact: "09551234002",
-    parentName: "Jose Doe", parentContact: "09551234003", initials: "JD",
-    grad: "linear-gradient(135deg,#F59E0B,#EF4444)", totalDays: 137, totalTransfers: 0,
-    visitors: [
-      { id: "vv5", visitorName: "Mark dela Cruz", relationship: "Brother", purpose: "Bring appliances", date: "Dec 16, 2024", timeIn: "1:03 PM", timeOut: "2:50 PM", duration: "1h 47m", status: "completed" },
-    ],
-    timeline: [
-      { event: "Reservation Approved",             date: "Jul 25, 2024",  color: "#16A34A" },
-      { event: "Moved Into Room A · Bed 2",        date: "Aug 3, 2024",   color: "#9772F6" },
-      { event: "Visitor Mark dela Cruz checked in", date: "Dec 16, 2024", color: "#EC4899" },
-      { event: "Visitor Mark dela Cruz checked out",date: "Dec 16, 2024", color: "#6B7280" },
-    ],
-    notes: [],
-  },
-  {
-    id: "o6", name: "Mark Villanueva", studentId: "2024-0042", program: "BS Computer Science", year: "3rd Year",
-    room: "Room D", bed: "Bed 1", moveIn: "Aug 6, 2024", expectedMoveOut: "May 30, 2025",
-    status: "reserved", contact: "09661234001", emergencyContact: "09661234002",
-    parentName: "Ben Villanueva", parentContact: "09661234003", initials: "MV",
-    grad: "linear-gradient(135deg,#8B5CF6,#7549F6)", totalDays: 134, totalTransfers: 0,
-    visitors: [],
-    timeline: [
-      { event: "Reservation Approved",        date: "Jul 30, 2024",  color: "#16A34A" },
-      { event: "Moved Into Room D · Bed 1",   date: "Aug 6, 2024",   color: "#9772F6" },
-    ],
-    notes: [],
-  },
+const AVATAR_GRADIENTS = [
+  "linear-gradient(135deg,#9772F6,#7C3AED)", "linear-gradient(135deg,#3B82F6,#6366F1)",
+  "linear-gradient(135deg,#10B981,#0EA5E9)", "linear-gradient(135deg,#EC4899,#9772F6)",
+  "linear-gradient(135deg,#F59E0B,#EF4444)", "linear-gradient(135deg,#8B5CF6,#7549F6)",
 ];
+function gradientFor(seed: string) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
+}
+function initialsFor(name: string) {
+  return name.split(" ").filter(Boolean).slice(0, 2).map(w => w[0]?.toUpperCase() ?? "").join("");
+}
+function daysSince(dateStr: string) {
+  const d = new Date(dateStr).getTime();
+  if (Number.isNaN(d)) return 0;
+  return Math.max(0, Math.round((Date.now() - d) / (1000 * 60 * 60 * 24)));
+}
+
+function mapRealOccupant(o: RealOccupant): Occupant {
+  return {
+    id: o.studentId, name: o.studentName, studentId: o.studentIdNo,
+    program: o.program ?? "—", year: o.yearLevel ? `${o.yearLevel}${o.yearLevel === 1 ? "st" : o.yearLevel === 2 ? "nd" : o.yearLevel === 3 ? "rd" : "th"} Year` : "—",
+    room: o.roomName, bed: o.bedLabel, moveIn: o.movedInAt, expectedMoveOut: o.movedOutAt ?? "—",
+    status: "active", contact: o.contact ?? "—", emergencyContact: "—",
+    parentName: "—", parentContact: "—", initials: initialsFor(o.studentName), grad: gradientFor(o.studentId), photo: o.photo,
+    visitors: [], timeline: [], notes: [],
+    totalDays: daysSince(o.movedInAt), totalTransfers: 0,
+  };
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -189,11 +125,16 @@ function SH({ title, sub, action, onAction }: { title: string; sub?: string; act
 // ── Profile Modal ──────────────────────────────────────────────────────────────
 
 function OccupantProfileModal({
-  occupant, onClose, onMessage,
-}: { occupant: Occupant; onClose: () => void; onMessage: (o: Occupant) => void }) {
+  occupant, onClose, onMessage, stayChangeRequest, onDecideStayChange,
+}: {
+  occupant: Occupant; onClose: () => void; onMessage: (o: Occupant) => void;
+  stayChangeRequest?: LandlordStayChangeRequest;
+  onDecideStayChange?: (id: string, approve: boolean) => Promise<void>;
+}) {
   const [tab, setTab] = useState<"info"|"visitors"|"timeline"|"notes">("info");
   const [notes, setNotes] = useState<OccupantNote[]>(occupant.notes);
   const [noteInput, setNoteInput] = useState("");
+  const [decidingStay, setDecidingStay] = useState(false);
   const sm = statusMeta(occupant.status);
 
   const addNote = () => {
@@ -211,14 +152,14 @@ function OccupantProfileModal({
   ];
 
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.52)", zIndex: 80, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.52)", zIndex: 80, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
       <div style={{ background: "#F3F4F8", borderRadius: "24px 24px 0 0", height: "92%", display: "flex", flexDirection: "column" }}>
 
         {/* Modal header */}
         <div style={{ flexShrink: 0, background: "white", borderRadius: "24px 24px 0 0", padding: "18px 20px 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-            <div style={{ width: 48, height: 48, borderRadius: 16, backgroundImage: occupant.grad, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <span style={{ color: "white", fontWeight: 800, fontSize: 16, fontFamily: QS }}>{occupant.initials}</span>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", backgroundImage: occupant.grad, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, overflow: "hidden" }}>
+              {occupant.photo ? <img src={occupant.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/> : <span style={{ color: "white", fontWeight: 800, fontSize: 16, fontFamily: QS }}>{occupant.initials}</span>}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
@@ -263,6 +204,43 @@ function OccupantProfileModal({
           {/* ── INFO TAB ── */}
           {tab === "info" && (
             <>
+              {/* Pending stay-change request — a student-proposed edit to their own
+                  Move-In/Move-Out/Duration, awaiting this landlord's confirmation before
+                  the real student_assignments/student_boarding_registrations rows change. */}
+              {stayChangeRequest && (
+                <div style={{ background: "white", borderRadius: 18, padding: 16, marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.04)", border: "1.5px solid #FDE68A" }}>
+                  <SH title="Stay Change Requested" sub="Awaiting your confirmation" />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+                    {[
+                      ["Current Move-In", stayChangeRequest.currentMoveIn, "Requested Move-In", stayChangeRequest.requestedMoveIn],
+                      ["Current Move-Out", stayChangeRequest.currentMoveOut ?? "—", "Requested Move-Out", stayChangeRequest.requestedMoveOut ?? "—"],
+                      ["Current Duration",
+                        stayChangeRequest.currentStayCount && stayChangeRequest.currentStayUnit ? `${stayChangeRequest.currentStayCount} ${stayChangeRequest.currentStayUnit}` : "—",
+                        "Requested Duration",
+                        stayChangeRequest.requestedStayCount && stayChangeRequest.requestedStayUnit ? `${stayChangeRequest.requestedStayCount} ${stayChangeRequest.requestedStayUnit}` : "—"],
+                    ].flatMap(([curLabel, curVal, reqLabel, reqVal], i) => ([
+                      <div key={`${i}-cur`}>
+                        <p style={{ margin: "0 0 2px", fontSize: 9, color: "#9CA3AF", fontFamily: QS, textTransform: "uppercase" as const, fontWeight: 700 }}>{curLabel}</p>
+                        <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#1F2937", fontFamily: QS }}>{curVal}</p>
+                      </div>,
+                      <div key={`${i}-req`}>
+                        <p style={{ margin: "0 0 2px", fontSize: 9, color: "#D97706", fontFamily: QS, textTransform: "uppercase" as const, fontWeight: 700 }}>{reqLabel}</p>
+                        <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#D97706", fontFamily: QS }}>{reqVal}</p>
+                      </div>,
+                    ]))}
+                  </div>
+                  {stayChangeRequest.studentNote && (
+                    <div style={{ marginBottom: 12, padding: "8px 10px", background: "#F9FAFB", borderRadius: 10 }}>
+                      <p style={{ margin: 0, fontSize: 11, color: "#6B7280", fontFamily: IN, lineHeight: 1.5 }}>"{stayChangeRequest.studentNote}"</p>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button disabled={decidingStay} onClick={async () => { setDecidingStay(true); await onDecideStayChange?.(stayChangeRequest.id, false); setDecidingStay(false); }} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: decidingStay ? "default" : "pointer", opacity: decidingStay ? 0.7 : 1 }}>Reject</button>
+                    <button disabled={decidingStay} onClick={async () => { setDecidingStay(true); await onDecideStayChange?.(stayChangeRequest.id, true); setDecidingStay(false); }} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", backgroundImage: GRAD, color: "white", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: decidingStay ? "default" : "pointer", opacity: decidingStay ? 0.7 : 1 }}>Approve</button>
+                  </div>
+                </div>
+              )}
+
               {/* BH info */}
               <div style={{ background: "white", borderRadius: 18, padding: 16, marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.04)" }}>
                 <SH title="Boarding House Info" />
@@ -445,7 +423,7 @@ function OccupantProfileModal({
 
 function RemoveDialog({ occupant, onConfirm, onCancel }: { occupant: Occupant; onConfirm: () => void; onCancel: () => void }) {
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 24px" }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 24px" }}>
       <div style={{ background: "white", borderRadius: 24, padding: 24, width: "100%" }}>
         <div style={{ width: 48, height: 48, borderRadius: 16, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
           <Trash2 size={20} color="#EF4444" />
@@ -469,24 +447,80 @@ type FilterType = "all" | OccupantStatus | "withVisitors" | "noVisitors";
 type SortType = "nameAsc" | "nameDesc" | "newestMoveIn" | "oldestMoveIn" | "room";
 
 export function LandlordOccupantsScreen({
-  go, navLeft, navRight, onOpenChat,
+  go, onOpenChat, pendingDeepLink, onDeepLinkConsumed,
 }: {
   go: (s: Screen) => void;
-  navLeft: NavTab[];
-  navRight: NavTab[];
   onOpenChat?: (contactId: string) => void;
+  pendingDeepLink?: { type: NotificationType; relatedId?: string } | null;
+  onDeepLinkConsumed?: () => void;
 }) {
-  const [occupants, setOccupants] = useState<Occupant[]>(SEED_OCCUPANTS);
+  const [occupants, setOccupants] = useState<Occupant[]>([]);
+  const [landlordId, setLandlordId] = useState<string | null>(null);
+  const [bhName, setBhName] = useState("");
+  const [availableBeds, setAvailableBeds] = useState(0);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterType>("all");
   const [sort, setSort] = useState<SortType>("nameAsc");
   const [profileOccupant, setProfileOccupant] = useState<Occupant | null>(null);
   const [removeOccupant, setRemoveOccupant] = useState<Occupant | null>(null);
+  const [stayChangeRequests, setStayChangeRequests] = useState<LandlordStayChangeRequest[]>([]);
+
+  // Independent fetches, so each sets its own state as soon as it resolves rather than
+  // being batched behind Promise.all — a "check-in"/"check-out" notification deep-link
+  // only needs `occupants`, and waiting on all three together meant it sat blocked on
+  // whichever of the other two queries happened to be slowest.
+  const refresh = (uid: string) => {
+    getCurrentOccupantsForLandlord(uid).then(realOccupants => setOccupants(realOccupants.map(mapRealOccupant)));
+    getBoardingHousesForLandlord(uid).then(bhs => setBhName(bhs[0]?.name ?? ""));
+    getOccupancyStatsForLandlord(uid).then(stats => setAvailableBeds(stats.availableBeds));
+    getStayChangeRequestsForLandlord(uid).then(setStayChangeRequests);
+  };
+
+  React.useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const uid = session?.user?.id;
+      if (!uid || !active) return;
+      setLandlordId(uid);
+      refresh(uid);
+    });
+    return () => { active = false; };
+  }, []);
+
+  // Opened from a "Student checked in/out" (or "stay-change") notification tap — jump
+  // straight to that occupant's profile once the real roster has actually loaded
+  // (relatedId is the student's own user id, which is also this list's occupant id).
+  React.useEffect(() => {
+    const types: (NotificationType | undefined)[] = ["check-in", "check-out", "stay-change"];
+    if (!types.includes(pendingDeepLink?.type) || !pendingDeepLink?.relatedId) return;
+    const match = occupants.find(o => o.id === pendingDeepLink.relatedId);
+    if (match) { setProfileOccupant(match); onDeepLinkConsumed?.(); }
+  }, [pendingDeepLink, occupants, onDeepLinkConsumed]);
+
+  // A separate notification from "New Visitor Logged"-style events, going landlord →
+  // student once the decision is actually made real (see stayChangeStore.ts).
+  const handleDecideStayChange = async (id: string, approve: boolean) => {
+    const req = stayChangeRequests.find(r => r.id === id);
+    const res = await respondToStayChangeRequest(id, approve);
+    if (res.ok === false) { console.error("respondToStayChangeRequest failed:", res.error); return; }
+    if (landlordId) refresh(landlordId);
+    setProfileOccupant(null);
+    if (req) {
+      addNotification({
+        userId: req.studentId, type: "stay-change",
+        title: approve ? "Stay Change Approved" : "Stay Change Declined",
+        description: approve
+          ? "Your landlord approved your requested move-in/move-out change."
+          : "Your landlord declined your requested move-in/move-out change.",
+        destination: "occupants", relatedId: id,
+      });
+    }
+  };
 
   // derived stats
   const total     = occupants.length;
   const active    = occupants.filter(o => o.status === "active").length;
-  const available = 40 - occupants.filter(o => o.status !== "checkedOut").length;
+  const available = availableBeds;
   const movingOut = occupants.filter(o => o.status === "movingOut").length;
   const withVis   = occupants.filter(o => o.visitors.length > 0).length;
 
@@ -507,10 +541,13 @@ export function LandlordOccupantsScreen({
     return a.name.localeCompare(b.name);
   });
 
-  const doRemove = (o: Occupant) => {
+  const doRemove = async (o: Occupant) => {
+    const res = await endOccupancy(o.id);
+    if (res.ok === false) { console.error("endOccupancy failed:", res.error); return; }
     setOccupants(prev => prev.filter(p => p.id !== o.id));
     setRemoveOccupant(null);
     setProfileOccupant(null);
+    if (landlordId) refresh(landlordId);
   };
 
   const FILTERS: { id: FilterType; label: string }[] = [
@@ -530,7 +567,7 @@ export function LandlordOccupantsScreen({
       <div style={{ flexShrink: 0, backgroundImage: GRAD_H, paddingTop: 52, paddingBottom: 20, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.06)" }} />
         <div style={{ padding: "0 16px" }}>
-          <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>Naquila Boarding House</p>
+          <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>{bhName || "—"}</p>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 16px", fontFamily: QS }}>Occupants</h1>
 
           {/* 6 summary cards — 3+3 grid */}
@@ -593,17 +630,19 @@ export function LandlordOccupantsScreen({
           </div>
         ) : filtered.map(o => {
           const sm = statusMeta(o.status);
+          const hasPendingStayChange = stayChangeRequests.some(r => r.studentId === o.id && r.status === "pending");
           return (
             <div key={o.id} style={{ background: "white", borderRadius: 20, padding: 14, marginBottom: 10, boxShadow: "0 2px 10px rgba(0,0,0,.05)" }}>
               {/* Top row */}
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                <div style={{ width: 44, height: 44, borderRadius: 15, backgroundImage: o.grad, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <span style={{ color: "white", fontWeight: 800, fontSize: 14, fontFamily: QS }}>{o.initials}</span>
+                <div style={{ width: 44, height: 44, borderRadius: "50%", backgroundImage: o.grad, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, overflow: "hidden" }}>
+                  {o.photo ? <img src={o.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/> : <span style={{ color: "white", fontWeight: 800, fontSize: 14, fontFamily: QS }}>{o.initials}</span>}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" as const }}>
                     <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{o.name}</p>
                     <Pill label={sm.label} color={sm.color} bg={sm.bg} />
+                    {hasPendingStayChange && <Pill label="Stay Change Requested" color="#D97706" bg="#FEF3C7" />}
                   </div>
                   <p style={{ margin: 0, fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{o.studentId} · {o.year}</p>
                 </div>
@@ -639,19 +678,6 @@ export function LandlordOccupantsScreen({
         })}
       </div>
 
-      {/* ── BOTTOM NAV ── */}
-      <div style={{ flexShrink: 0, height: 64, background: "white", borderTop: "1px solid #F3F4F6", display: "flex", alignItems: "center", justifyContent: "space-around", padding: "0 8px" }}>
-        {[...navLeft, ...navRight].map(tab => {
-          const active = tab.id === "occupants";
-          return (
-            <button key={tab.id} onClick={() => go(tab.id as Screen)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: "none", border: "none", cursor: "pointer", padding: "8px 0" }}>
-              <tab.Icon size={20} color={active ? "#9772F6" : "#9CA3AF"} />
-              <span style={{ fontSize: 10, fontWeight: active ? 800 : 600, color: active ? "#9772F6" : "#9CA3AF", fontFamily: QS }}>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
       {/* ── PROFILE MODAL ── */}
       {profileOccupant && (
         <OccupantProfileModal
@@ -662,6 +688,8 @@ export function LandlordOccupantsScreen({
             const contact = findStudentContactByName(o.name);
             if (contact && onOpenChat) onOpenChat(contact.id); else go("messages");
           }}
+          stayChangeRequest={stayChangeRequests.find(r => r.studentId === profileOccupant.id && r.status === "pending")}
+          onDecideStayChange={handleDecideStayChange}
         />
       )}
 

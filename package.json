@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "migrate": "node scripts/run-migration.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
@@ -70,9 +71,11 @@
     "@tailwindcss/vite": "4.1.12",
     "@types/node": "26.1.2",
     "@vitejs/plugin-react": "4.7.0",
+    "pg": "^8.23.0",
     "tailwindcss": "4.1.12",
     "typescript": "7.0.2",
-    "vite": "6.3.5"
+    "vite": "6.3.5",
+    "vite-plugin-pwa": "^1.3.0"
   },
   "peerDependencies": {
     "react": "18.3.1",

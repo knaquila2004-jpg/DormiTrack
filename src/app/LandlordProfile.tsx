@@ -1,5 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 import { AppInfoSection } from "./AppInfo";
+import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
 import {
   User, Mail, Lock, Phone, Building2, ChevronDown, ChevronUp,
   ChevronRight, Edit3, Save, X, Camera, LogOut, Wifi, Droplet, Zap,
@@ -12,6 +14,13 @@ import { GRAD, GRAD_H, Screen } from "./shared";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
 import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationPicker";
 import { AddressComponents } from "./components/mapGeo";
+import {
+  getMyLandlordAccount, updateMyPersonalInfo, changeMyPassword,
+  getMyBoardingHouseFull, updateBoardingHouseInfo, updateBoardingHouseAmenities, updateBoardingHouseRules,
+  updateBoardingHousePayments, addExtraFee, updateExtraFee, deleteExtraFee,
+  addRoom as addRoomReal, updateRoom as updateRoomReal, deleteRoom as deleteRoomReal, updateBedStatusReal,
+  addGalleryPhoto, updateGalleryPhotoLabel, removeGalleryPhoto, updateStayInfoSettings,
+} from "./landlordProfileStore";
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -117,6 +126,15 @@ type Bed = { id: string; label: string; status: BedStatus; photo?: string };
 type Room = { id: string; name: string; desc: string; cap: number; amenities: string[]; beds: Bed[]; roomPhoto?: string; crPhoto?: string };
 type Payment = { id: string; label: string; amount: string; type: "fixed" | "metered" | "none"; enabled: boolean; custom?: boolean };
 
+const phpStr = (n: number | null | undefined): string => (n == null ? "" : n.toLocaleString());
+const parsePhp = (s: string | undefined): number | null => {
+  if (!s) return null;
+  const cleaned = s.replace(/[^\d.]/g, "");
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+};
+
 const ALL_AMENITIES = ["Wi-Fi", "Water Included", "Electricity", "Study Area", "Kitchen", "Laundry Area", "CCTV", "Parking", "Curfew", "Security", "Air-conditioned", "Refrigerator"];
 const ROOM_AMENITIES = ["Air-conditioned", "Electric Fan", "Private CR", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window", "Balcony"];
 
@@ -128,88 +146,133 @@ const AMENITY_ICONS: Record<string, React.ComponentType<{ size?: number; color?:
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
-export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEnabled, visitorFields = { name: true, contact: true, relationship: true, purpose: true, visitDate: true }, setVisitorFields, highlightsEnabled = true, setHighlightsEnabled }: { go: (s: Screen) => void; visitorEnabled?: boolean; setVisitorEnabled?: (v: boolean) => void; visitorFields?: { name: boolean; contact: boolean; relationship: boolean; purpose: boolean; visitDate: boolean }; setVisitorFields?: (f: { name: boolean; contact: boolean; relationship: boolean; purpose: boolean; visitDate: boolean }) => void; highlightsEnabled?: boolean; setHighlightsEnabled?: (v: boolean) => void }) {
+export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEnabled, visitorFields = { name: true, contact: true, relationship: true, purpose: true }, setVisitorFields, highlightsEnabled = true, setHighlightsEnabled }: { go: (s: Screen) => void; visitorEnabled?: boolean; setVisitorEnabled?: (v: boolean) => void; visitorFields?: { name: boolean; contact: boolean; relationship: boolean; purpose: boolean }; setVisitorFields?: (f: { name: boolean; contact: boolean; relationship: boolean; purpose: boolean }) => void; highlightsEnabled?: boolean; setHighlightsEnabled?: (v: boolean) => void }) {
+
+  // ── Real identity — resolved once on mount, everything below is seeded from it ──
+  const [uid, setUid] = useState<string | null>(null);
+  const [bhId, setBhId] = useState<string | null>(null);
 
   // ── Personal Info ──────────────────────────────────────────────────────────
   const [editPersonal, setEditPersonal] = useState(false);
-  const [firstName, setFirstName] = useState("Kyla");
-  const [middleName, setMiddleName] = useState("Lodripas");
-  const [lastName, setLastName] = useState("Naquila");
-  const [contact, setContact] = useState("09171234567");
-  const [sex, setSex] = useState("Female");
-  const [address, setAddress] = useState("Purok 3, Brgy. Poblacion, Calape, Bohol");
+  const [firstName, setFirstName] = useState("");
+  const [middleName, setMiddleName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [contact, setContact] = useState("");
+  const [sex, setSex] = useState("");
+  const [address, setAddress] = useState("");
   const [personalDraft, setPersonalDraft] = useState({ firstName, middleName, lastName, contact, sex, address });
 
   const startEditPersonal = () => { setPersonalDraft({ firstName, middleName, lastName, contact, sex, address }); setEditPersonal(true); };
-  const savePersonal = () => { setFirstName(personalDraft.firstName); setMiddleName(personalDraft.middleName); setLastName(personalDraft.lastName); setContact(personalDraft.contact); setSex(personalDraft.sex); setAddress(personalDraft.address); setEditPersonal(false); showToast("Personal information updated."); };
+  const savePersonal = async () => {
+    const res = await updateMyPersonalInfo(personalDraft);
+    if (res.ok === false) { showToast(res.error || "Couldn't update personal information."); return; }
+    setFirstName(personalDraft.firstName); setMiddleName(personalDraft.middleName); setLastName(personalDraft.lastName);
+    setContact(personalDraft.contact); setSex(personalDraft.sex); setAddress(personalDraft.address);
+    setEditPersonal(false); showToast("Personal information updated.");
+  };
 
   const fullName = [firstName, middleName ? middleName.charAt(0) + "." : "", lastName].filter(Boolean).join(" ");
   const username = [firstName, middleName ? middleName[0] : "", lastName].filter(Boolean).join("_").toLowerCase().replace(/\s+/g, "");
 
   // ── Account Info ───────────────────────────────────────────────────────────
-  const [email] = useState("kylanaquila@gmail.com");
+  const [email, setEmail] = useState("");
   const [showPwModal, setShowPwModal] = useState(false);
   const [curPw, setCurPw] = useState(""); const [newPw, setNewPw] = useState(""); const [conPw, setConPw] = useState("");
   const [showCur, setShowCur] = useState(false); const [showNew, setShowNew] = useState(false); const [showCon, setShowCon] = useState(false);
   const [pwError, setPwError] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
 
-  const savePw = () => {
+  const savePw = async () => {
     if (!curPw) { setPwError("Enter your current password."); return; }
     if (newPw.length < 6) { setPwError("New password must be at least 6 characters."); return; }
     if (newPw !== conPw) { setPwError("Passwords do not match."); return; }
-    setPwError(""); setCurPw(""); setNewPw(""); setConPw(""); setShowPwModal(false); showToast("Password changed successfully.");
+    setPwBusy(true); setPwError("");
+    const res = await changeMyPassword(curPw, newPw);
+    setPwBusy(false);
+    if (res.ok === false) { setPwError(res.error || "Couldn't change password."); return; }
+    setCurPw(""); setNewPw(""); setConPw(""); setShowPwModal(false); showToast("Password changed successfully.");
   };
 
   // ── BH Info ────────────────────────────────────────────────────────────────
   const [editBH, setEditBH] = useState(false);
-  const [bhName, setBhName] = useState("Naquila Boarding House");
-  const [bhAddress, setBhAddress] = useState("Purok 3, Brgy. Poblacion, Calape, Bohol");
-  const [bhContact, setBhContact] = useState("09171234567");
-  const [bhDesc, setBhDesc] = useState("A clean, secure, and student-friendly boarding house near BISU campus. Newly renovated rooms with fast Wi-Fi and 24/7 security.");
-  const [bhLat, setBhLat] = useState<number | null>(9.8886);
-  const [bhLng, setBhLng] = useState<number | null>(123.8672);
+  const [bhName, setBhName] = useState("");
+  const [bhAddress, setBhAddress] = useState("");
+  const [bhMunicipality, setBhMunicipality] = useState("");
+  const [bhContact, setBhContact] = useState("");
+  const [bhDesc, setBhDesc] = useState("");
+  const [bhLat, setBhLat] = useState<number | null>(null);
+  const [bhLng, setBhLng] = useState<number | null>(null);
   const [bhComponents, setBhComponents] = useState<AddressComponents>({});
-  const [bhLocationType, setBhLocationType] = useState<"existing" | "custom" | null>(null);
+  // The DB never stored whether the original pin was an "existing Google place" vs a "custom
+  // pin" (no location_type/place_name/place_id columns exist) — only lat/lng/address survive.
+  // Re-opening this for editing always treats it as a custom pin, which is the honest state:
+  // we genuinely don't know which it originally was.
+  const [bhLocationType, setBhLocationType] = useState<"existing" | "custom" | null>("custom");
   const [bhPlaceName, setBhPlaceName] = useState<string | null>(null);
   const [bhPlaceId, setBhPlaceId] = useState<string | null>(null);
   const [bhLocationConfirmed, setBhLocationConfirmed] = useState(true); // already-saved location starts confirmed
-  const [bhDraft, setBhDraft] = useState({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId });
+  const [bhRadius, setBhRadius] = useState(50); // the only area a student's check-in/check-out is accepted from
+  const [bhDraft, setBhDraft] = useState({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId, bhRadius });
 
-  const startEditBH = () => { setBhDraft({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId }); setBhLocationConfirmed(true); setEditBH(true); };
-  const saveBH = () => {
+  const startEditBH = () => { setBhDraft({ bhName, bhAddress, bhContact, bhDesc, bhLat, bhLng, bhComponents, bhLocationType, bhPlaceName, bhPlaceId, bhRadius }); setBhLocationConfirmed(true); setEditBH(true); };
+  const saveBH = async () => {
+    if (!bhId || bhDraft.bhLat == null || bhDraft.bhLng == null) return;
+    const res = await updateBoardingHouseInfo(bhId, {
+      name: bhDraft.bhName, address: bhDraft.bhAddress, municipality: bhMunicipality,
+      lat: bhDraft.bhLat, lng: bhDraft.bhLng, contact: bhDraft.bhContact, description: bhDraft.bhDesc,
+      checkinRadiusMeters: bhDraft.bhRadius,
+    });
+    if (res.ok === false) { showToast(res.error || "Couldn't update boarding house information."); return; }
     setBhName(bhDraft.bhName); setBhAddress(bhDraft.bhAddress); setBhContact(bhDraft.bhContact); setBhDesc(bhDraft.bhDesc);
     setBhLat(bhDraft.bhLat); setBhLng(bhDraft.bhLng); setBhComponents(bhDraft.bhComponents); setBhLocationType(bhDraft.bhLocationType); setBhPlaceName(bhDraft.bhPlaceName); setBhPlaceId(bhDraft.bhPlaceId);
+    setBhRadius(bhDraft.bhRadius);
     setEditBH(false); showToast("Boarding house information updated.");
   };
 
   // ── Amenities ──────────────────────────────────────────────────────────────
-  const [amenities, setAmenities] = useState<string[]>(["Wi-Fi", "Water Included", "Electricity", "Study Area", "Kitchen", "CCTV", "Security"]);
+  const [amenities, setAmenities] = useState<string[]>([]);
   const [editAmenities, setEditAmenities] = useState(false);
   const [amenDraft, setAmenDraft] = useState<string[]>([]);
   const toggleAmenDraft = (a: string) => setAmenDraft(d => d.includes(a) ? d.filter(x => x !== a) : [...d, a]);
-  const saveAmenities = () => { setAmenities(amenDraft); setEditAmenities(false); showToast("Amenities updated."); };
+  const saveAmenities = async () => {
+    if (!bhId) return;
+    const res = await updateBoardingHouseAmenities(bhId, amenDraft);
+    if (res.ok === false) { showToast(res.error || "Couldn't update amenities."); return; }
+    setAmenities(amenDraft); setEditAmenities(false); showToast("Amenities updated.");
+  };
 
   // ── Rooms ──────────────────────────────────────────────────────────────────
-  const [rooms, setRooms] = useState<Room[]>([
-    { id: "r1", name: "Room A", desc: "Ground floor room with 6 individual beds.", cap: 6, amenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{ id: "b1", label: "Bed 1", status: "occupied" }, { id: "b2", label: "Bed 2", status: "occupied" }, { id: "b3", label: "Bed 3", status: "available" }, { id: "b4", label: "Bed 4", status: "reserved" }, { id: "b5", label: "Bed 5", status: "available" }, { id: "b6", label: "Bed 6", status: "available" }] },
-    { id: "r2", name: "Room B", desc: "Spacious room on the second floor with balcony.", cap: 4, amenities: ["Electric Fan", "Private CR", "Study Table", "Cabinet", "Balcony"], beds: [{ id: "b1", label: "Bed 1", status: "occupied" }, { id: "b2", label: "Bed 2", status: "available" }, { id: "b3", label: "Bed 3", status: "available" }, { id: "b4", label: "Bed 4", status: "maintenance" }] },
-  ]);
-  const [expandedRoom, setExpandedRoom] = useState<string | null>("r1");
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
   const [editRoomId, setEditRoomId] = useState<string | null>(null);
   const [roomDraft, setRoomDraft] = useState<Partial<Room>>({});
 
-  const updateBedStatus = (roomId: string, bedId: string, status: BedStatus) => {
+  const updateBedStatus = async (roomId: string, bedId: string, status: BedStatus) => {
+    const res = await updateBedStatusReal(bedId, status);
+    if (res.ok === false) { showToast(res.error || "Couldn't update bed status."); return; }
     setRooms(rs => rs.map(r => r.id === roomId ? { ...r, beds: r.beds.map(b => b.id === bedId ? { ...b, status } : b) } : r));
   };
-  const deleteRoom = (id: string) => setRooms(rs => rs.filter(r => r.id !== id));
+  const deleteRoom = async (id: string) => {
+    const res = await deleteRoomReal(id);
+    if (res.ok === false) { showToast(res.error || "Couldn't delete room."); return; }
+    setRooms(rs => rs.filter(r => r.id !== id));
+    showToast("Room deleted.");
+  };
   const startEditRoom = (r: Room) => { setEditRoomId(r.id); setRoomDraft({ ...r }); };
-  const saveRoom = () => {
+  const saveRoom = async () => {
+    if (!editRoomId) return;
+    const res = await updateRoomReal(editRoomId, { name: roomDraft.name, description: roomDraft.desc, amenities: roomDraft.amenities });
+    if (res.ok === false) { showToast(res.error || "Couldn't update room."); return; }
     setRooms(rs => rs.map(r => r.id === editRoomId ? { ...r, ...roomDraft } : r));
     setEditRoomId(null); showToast("Room updated.");
   };
-  const addRoom = () => {
-    const id = `r${Date.now()}`;
-    setRooms(rs => [...rs, { id, name: `Room ${String.fromCharCode(65 + rs.length)}`, desc: "", cap: 4, amenities: [], beds: [{ id: "b1", label: "Bed 1", status: "available" }] }]);
+  const addRoom = async () => {
+    if (!bhId) return;
+    const name = `Room ${String.fromCharCode(65 + rooms.length)}`;
+    const res = await addRoomReal(bhId, { name, capacity: 4, description: "" });
+    if (res.ok === false) { showToast(res.error || "Couldn't add room."); return; }
+    await loadAll(); // pick up the real generated room + default-bed ids rather than guessing them
+    showToast("Room added.");
   };
 
   // Statistics (auto-derived)
@@ -218,56 +281,183 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
   const totalAvail = totalCap - totalOcc;
 
   // ── Gallery ────────────────────────────────────────────────────────────────
-  const [gallery, setGallery] = useState([
-    { id: "g1", label: "Exterior", url: "" }, { id: "g2", label: "Kitchen", url: "" },
-    { id: "g3", label: "Comfort Room", url: "" }, { id: "g4", label: "Hallway", url: "" },
-  ]);
+  const [gallery, setGallery] = useState<{ id: string; label: string; url: string }[]>([]);
   const [editGalleryId, setEditGalleryId] = useState<string | null>(null);
   const [newGalLabel, setNewGalLabel] = useState("");
 
+  const addGalleryPhotoReal = async (file: File) => {
+    if (!uid || !bhId) return;
+    const blobUrl = URL.createObjectURL(file);
+    const res = await addGalleryPhoto(uid, bhId, blobUrl, "New Photo");
+    if (res.ok === false) { showToast(res.error || "Couldn't upload photo."); return; }
+    setGallery(g => [...g, { id: res.id, label: "New Photo", url: res.url }]);
+    showToast("Photo added.");
+  };
+  const saveGalleryLabel = async (id: string) => {
+    const res = await updateGalleryPhotoLabel(id, newGalLabel);
+    if (res.ok === false) { showToast(res.error || "Couldn't update label."); return; }
+    setGallery(g => g.map(x => x.id === id ? { ...x, label: newGalLabel } : x));
+    setEditGalleryId(null); showToast("Label updated.");
+  };
+  const deleteGalleryPhoto = async (id: string) => {
+    const res = await removeGalleryPhoto(id);
+    if (res.ok === false) { showToast(res.error || "Couldn't remove photo."); return; }
+    setGallery(g => g.filter(x => x.id !== id));
+    showToast("Photo removed.");
+  };
+
   // ── Rules ──────────────────────────────────────────────────────────────────
-  const [rules, setRules] = useState([
-    "Curfew starts at 10:00 PM.", "Visitors allowed only during visiting hours (8AM–8PM).",
-    "Keep noise levels to a minimum after 9PM.", "Maintain cleanliness in all common areas.",
-    "No smoking inside the boarding house.", "No illegal substances or weapons allowed.",
-  ]);
+  const [rules, setRules] = useState<string[]>([]);
   const [editRuleIdx, setEditRuleIdx] = useState<number | null>(null);
   const [ruleDraft, setRuleDraft] = useState("");
   const [newRule, setNewRule] = useState("");
   const [addingRule, setAddingRule] = useState(false);
 
+  const commitRules = async (updated: string[]): Promise<boolean> => {
+    if (!bhId) return false;
+    const res = await updateBoardingHouseRules(bhId, updated);
+    if (res.ok === false) { showToast(res.error || "Couldn't update rules."); return false; }
+    setRules(updated);
+    return true;
+  };
+
   // ── Payments ───────────────────────────────────────────────────────────────
-  const [payments, setPayments] = useState<Payment[]>([
-    { id: "rent",     label: "Monthly Rent",     amount: "3,000", type: "fixed",   enabled: true },
-    { id: "electric", label: "Electrical Bill",  amount: "per reading", type: "metered", enabled: true },
-    { id: "water",    label: "Water Bill",       amount: "200",   type: "fixed",   enabled: true },
-    { id: "internet", label: "Internet Fee",     amount: "500",   type: "fixed",   enabled: false },
-  ]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [editPayId, setEditPayId] = useState<string | null>(null);
   const [payDraft, setPayDraft] = useState<Partial<Payment>>({});
   const [addingPay, setAddingPay] = useState(false);
   const [newPay, setNewPay] = useState<Payment>({ id: "", label: "", amount: "", type: "fixed", enabled: true, custom: true });
 
-  const togglePayment = (id: string) => setPayments(ps => ps.map(p => p.id === id ? { ...p, enabled: !p.enabled } : p));
-  const savePay = (id: string) => { setPayments(ps => ps.map(p => p.id === id ? { ...p, ...payDraft } : p)); setEditPayId(null); showToast("Payment updated."); };
-  const deletePay = (id: string) => setPayments(ps => ps.filter(p => p.id !== id));
-  const confirmAddPay = () => {
-    if (!newPay.label) return;
-    setPayments(ps => [...ps, { ...newPay, id: `custom_${Date.now()}`, custom: true }]);
+  // Pushes all 4 fixed slots (rent/electric/water/internet) in one call — the schema stores them
+  // as plain type+amount columns with no separate "enabled" flag, so "disabled" is represented as
+  // type/amount = null (matching how LandlordSignUp's own wizard already persists a disabled fee).
+  const pushFixedPayments = async (updated: Payment[]) => {
+    if (!bhId) return { ok: false as const, error: "No boarding house." };
+    const get = (id: string) => updated.find(p => p.id === id);
+    const rent = get("rent"), electric = get("electric"), water = get("water"), internet = get("internet");
+    return updateBoardingHousePayments(bhId, {
+      rentAmount: rent?.enabled ? parsePhp(rent.amount) : null,
+      electricType: electric?.enabled ? (electric.type === "metered" ? "metered" : "fixed") : null,
+      electricAmount: electric?.enabled && electric.type !== "metered" ? parsePhp(electric.amount) : null,
+      waterType: water?.enabled ? (water.type === "metered" ? "metered" : "fixed") : null,
+      waterAmount: water?.enabled && water.type !== "metered" ? parsePhp(water.amount) : null,
+      internetType: internet?.enabled ? (internet.type === "metered" ? "metered" : "fixed") : null,
+      internetAmount: internet?.enabled && internet.type !== "metered" ? parsePhp(internet.amount) : null,
+    });
+  };
+
+  const togglePayment = async (id: string) => {
+    const target = payments.find(p => p.id === id);
+    if (!target) return;
+    if (target.custom) {
+      const res = await updateExtraFee(id, { enabled: !target.enabled });
+      if (res.ok === false) { showToast(res.error || "Couldn't update payment."); return; }
+      setPayments(ps => ps.map(x => x.id === id ? { ...x, enabled: !x.enabled } : x));
+      return;
+    }
+    const newEnabled = !target.enabled;
+    if (newEnabled && target.type !== "metered" && !parsePhp(target.amount)) {
+      showToast("Enter an amount first (Edit), then enable this fee."); return;
+    }
+    const updatedList = payments.map(p => p.id === id ? { ...p, enabled: newEnabled } : p);
+    const res = await pushFixedPayments(updatedList);
+    if (res.ok === false) { showToast(res.error || "Couldn't update payment."); return; }
+    setPayments(updatedList);
+  };
+  const savePay = async (id: string) => {
+    const target = payments.find(p => p.id === id);
+    if (!target) return;
+    const merged: Payment = { ...target, ...payDraft };
+    if (target.custom) {
+      const res = await updateExtraFee(id, { name: merged.label, type: merged.type as "fixed" | "metered", amount: merged.type === "metered" ? null : parsePhp(merged.amount) });
+      if (res.ok === false) { showToast(res.error || "Couldn't update payment."); return; }
+    } else {
+      const updatedList = payments.map(p => p.id === id ? merged : p);
+      const res = await pushFixedPayments(updatedList);
+      if (res.ok === false) { showToast(res.error || "Couldn't update payment."); return; }
+    }
+    setPayments(ps => ps.map(p => p.id === id ? merged : p));
+    setEditPayId(null); showToast("Payment updated.");
+  };
+  const deletePay = async (id: string) => {
+    const res = await deleteExtraFee(id);
+    if (res.ok === false) { showToast(res.error || "Couldn't delete payment."); return; }
+    setPayments(ps => ps.filter(p => p.id !== id));
+    showToast("Payment removed.");
+  };
+  const confirmAddPay = async () => {
+    if (!newPay.label.trim() || !bhId) return;
+    const res = await addExtraFee(bhId, { name: newPay.label, type: newPay.type as "fixed" | "metered", amount: newPay.type === "metered" ? null : parsePhp(newPay.amount), enabled: newPay.enabled });
+    if (res.ok === false) { showToast(res.error || "Couldn't add payment."); return; }
+    setPayments(ps => [...ps, { ...newPay, id: res.id, custom: true }]);
     setAddingPay(false); setNewPay({ id: "", label: "", amount: "", type: "fixed", enabled: true, custom: true });
     showToast("Payment added.");
   };
 
   // ── Stay Info toggles ──────────────────────────────────────────────────────
   const [stayToggles, setStayToggles] = useState({ lengthOfStay: true, moveIn: true, personality: true, hobbies: true, lifestyle: true, notes: true });
-  const toggleStay = (k: keyof typeof stayToggles) => setStayToggles(t => ({ ...t, [k]: !t[k] }));
+  const toggleStay = async (k: keyof typeof stayToggles) => {
+    if (!bhId) return;
+    const updated = { ...stayToggles, [k]: !stayToggles[k] };
+    const res = await updateStayInfoSettings(bhId, updated);
+    if (res.ok === false) { showToast(res.error || "Couldn't update settings."); return; }
+    setStayToggles(updated);
+  };
 
   // ── Toast ──────────────────────────────────────────────────────────────────
   const [toast, setToast] = useState("");
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2800); };
 
+  // ── Logout confirmation ───────────────────────────────────────────────────
+  const [showLogout, setShowLogout] = useState(false);
+
   // ── Profile photo ──────────────────────────────────────────────────────────
   const [photo, setPhoto] = useState<string | null>(null);
+
+  // ── Load everything real, once on mount ─────────────────────────────────────
+  const loadAll = async () => {
+    const account = await getMyLandlordAccount();
+    if (!account) return;
+    setUid(account.uid);
+    setFirstName(account.firstName); setMiddleName(account.middleName); setLastName(account.lastName);
+    setSex(account.sex); setContact(account.contact); setAddress(account.address); setEmail(account.email);
+    setPersonalDraft({ firstName: account.firstName, middleName: account.middleName, lastName: account.lastName, contact: account.contact, sex: account.sex, address: account.address });
+    if (account.photoUrl) setPhoto(account.photoUrl);
+
+    const full = await getMyBoardingHouseFull(account.uid);
+    if (!full) return;
+    const { bh, extraFees, stayInfo } = full;
+    setBhId(bh.id);
+    setBhName(bh.name); setBhAddress(bh.address); setBhContact(bh.contact ?? ""); setBhDesc(bh.desc);
+    setBhLat(bh.lat); setBhLng(bh.lng); setBhMunicipality(bh.municipality);
+    setBhRadius(bh.checkinRadiusMeters);
+    setBhDraft({ bhName: bh.name, bhAddress: bh.address, bhContact: bh.contact ?? "", bhDesc: bh.desc, bhLat: bh.lat, bhLng: bh.lng, bhComponents: {}, bhLocationType: "custom", bhPlaceName: null, bhPlaceId: null, bhRadius: bh.checkinRadiusMeters });
+
+    setAmenities(bh.amenities.map(a => a.label));
+
+    setRooms(bh.rooms.map(r => ({
+      id: r.id, name: r.name, desc: r.description ?? "", cap: r.cap,
+      amenities: r.roomAmenities ?? [],
+      beds: (r.beds ?? []).map(b => ({ id: b.id, label: b.label, status: b.status, photo: b.photo })),
+    })));
+    setExpandedRoom(bh.rooms[0]?.id ?? null);
+
+    setGallery(bh.gallery.filter((g): g is { id: string; url: string; label: string } => !!g.id));
+
+    setRules(bh.rules ?? []);
+
+    const p = bh.payment;
+    setPayments([
+      { id: "rent", label: "Monthly Rent", amount: phpStr(p?.rent.amount), type: "fixed", enabled: !!p?.rent.enabled },
+      { id: "electric", label: "Electrical Bill", amount: p?.electric.type === "metered" ? "per reading" : phpStr(p?.electric.amount), type: p?.electric.type ?? "fixed", enabled: !!p?.electric.enabled },
+      { id: "water", label: "Water Bill", amount: p?.water.type === "metered" ? "per reading" : phpStr(p?.water.amount), type: p?.water.type ?? "fixed", enabled: !!p?.water.enabled },
+      { id: "internet", label: "Internet Fee", amount: p?.internet.type === "separate" ? phpStr(p?.internet.amount) : "", type: p?.internet.type === "separate" ? "metered" : "fixed", enabled: !!p?.internet.enabled },
+      ...extraFees.map(f => ({ id: f.id, label: f.name, amount: f.type === "metered" ? "per reading" : phpStr(f.amount), type: f.type, enabled: f.enabled, custom: true })),
+    ]);
+
+    setStayToggles(stayInfo);
+  };
+  useEffect(() => { loadAll(); }, []);
 
   const inputStyle: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "11px 14px", borderRadius: 12, border: "1.5px solid #E5E7EB", background: "#F9FAFB", color: "#1F2937", fontSize: 13, fontFamily: IN, outline: "none" };
   const pwInputWrap: React.CSSProperties = { position: "relative", marginBottom: 12 };
@@ -282,9 +472,23 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
         </div>
       )}
 
+      {/* Logout Confirm — matches ParentProfile.tsx's icon-less card exactly */}
+      {showLogout && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowLogout(false)}>
+          <div style={{ background: "white", borderRadius: 24, padding: "28px 22px", width: "100%", maxWidth: 320 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>Log Out?</h3>
+            <p style={{ margin: "0 0 20px", fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.5, textAlign: "center" as const }}>You will be returned to the login screen.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <button onClick={() => setShowLogout(false)} style={{ height: 44, borderRadius: 18, border: "2px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "#374151", fontFamily: QS }}>Cancel</button>
+              <button onClick={() => { supabase.auth.signOut(); go("landing"); }} style={{ height: 44, borderRadius: 18, border: "none", background: "#EF4444", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS }}>Log Out</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Change Password Modal */}
       {showPwModal && (
-        <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowPwModal(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowPwModal(false)}>
           <div style={{ background: "white", borderRadius: 24, padding: "24px 20px", width: "100%", maxWidth: 340 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 18px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Change Password</h3>
             {pwError && <div style={{ background: "#FEF2F2", borderRadius: 12, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 8 }}><AlertCircle size={14} color="#EF4444" /><span style={{ fontSize: 12, color: "#DC2626", fontFamily: IN }}>{pwError}</span></div>}
@@ -304,8 +508,8 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
               </div>
             ))}
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <GradBtn outline onClick={() => { setShowPwModal(false); setPwError(""); }}>Cancel</GradBtn>
-              <GradBtn onClick={savePw}>Save Password</GradBtn>
+              <GradBtn outline onClick={() => { setShowPwModal(false); setPwError(""); }} disabled={pwBusy}>Cancel</GradBtn>
+              <GradBtn onClick={savePw} disabled={pwBusy}>{pwBusy ? "Saving…" : "Save Password"}</GradBtn>
             </div>
           </div>
         </div>
@@ -318,16 +522,23 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
         <div style={{ padding: "52px 20px 24px", backgroundImage: GRAD_H, textAlign: "center" }}>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 20px", fontFamily: QS, textAlign: "left" }}>My Profile</h1>
           <div style={{ position: "relative", display: "inline-block" }}>
-            <div style={{ width: 84, height: 84, borderRadius: 28, background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
               {photo ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <User size={38} color="white" />}
             </div>
             <label style={{ position: "absolute", bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
               <Camera size={13} color="#9772F6" />
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) setPhoto(URL.createObjectURL(f)); }} />
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+                const res = await uploadProfilePhoto(f);
+                if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+                else setPhoto(res.url);
+              }} />
             </label>
           </div>
           {photo && (
-            <button onClick={() => setPhoto(null)} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
+            <button onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
           )}
           <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{fullName}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
@@ -352,7 +563,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
         <div style={{ padding: "0 16px 32px" }}>
 
           {/* ── Personal Information ── */}
-          <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6" />} defaultOpen>
+          <SectionCard title="Personal Information" icon={<User size={16} color="#9772F6" />}>
             {!editPersonal ? (
               <>
                 <InfoRow label="First Name"      value={firstName} />
@@ -408,9 +619,11 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                 <InfoRow label="Latitude"             value={bhLat != null ? bhLat.toFixed(6) : ""} />
                 <InfoRow label="Longitude"            value={bhLng != null ? bhLng.toFixed(6) : ""} />
                 {bhLocationType && <InfoRow label="Location Type" value={bhLocationType === "existing" ? "Existing Map Location" : "Custom Boarding House Pin"} />}
+                <InfoRow label="Check-In/Check-Out Radius" value={`${bhRadius}m`} />
                 <InfoRow label="Contact Number"      value={bhContact} />
                 <InfoRow label="Description"         value={bhDesc} last />
-                {/* Real Google Map of the boarding house's saved, pinned location */}
+                {/* Real Google Map of the boarding house's saved, pinned location — the shaded
+                    circle is the actual area a student's check-in/check-out is accepted from. */}
                 {bhLat != null && bhLng != null && (
                   <div style={{ marginTop: 14, borderRadius: 16, overflow: "hidden", height: 150, position: "relative" }}>
                     <GoogleMapCanvas
@@ -418,6 +631,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                       zoom={16}
                       mapType="standard"
                       markers={[{ id: "bh", variant: "bh", position: { lat: bhLat, lng: bhLng }, title: bhName }]}
+                      circle={{ center: { lat: bhLat, lng: bhLng }, radiusMeters: bhRadius, color: "#9772F6" }}
                     />
                   </div>
                 )}
@@ -442,6 +656,8 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                   confirmed={bhLocationConfirmed}
                   onConfirmedChange={setBhLocationConfirmed}
                   onLocationChange={r => setBhDraft(d => ({ ...d, bhLat: r.lat, bhLng: r.lng, bhAddress: r.address, bhComponents: r.components, bhLocationType: r.locationType, bhPlaceName: r.placeName, bhPlaceId: r.placeId }))}
+                  radiusMeters={bhDraft.bhRadius}
+                  onRadiusChange={v => setBhDraft(d => ({ ...d, bhRadius: v }))}
                 />
                 <EditableField label="Contact Number" value={bhDraft.bhContact} onChange={v => setBhDraft(d => ({ ...d, bhContact: v }))} placeholder="09XXXXXXXXX" />
                 <EditableField label="Short Description" value={bhDraft.bhDesc} onChange={v => setBhDraft(d => ({ ...d, bhDesc: v }))} multiline />
@@ -544,10 +760,21 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                                 <span style={{ fontSize: 13, fontWeight: 700, color: "#374151", fontFamily: QS }}>{bed.label}</span>
                                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                   <BedBadge status={bed.status} />
-                                  <select value={bed.status} onChange={e => updateBedStatus(room.id, bed.id, e.target.value as BedStatus)}
-                                    style={{ fontSize: 11, borderRadius: 8, border: "1px solid #E5E7EB", background: "white", color: "#374151", padding: "3px 6px", fontFamily: QS, cursor: "pointer" }}>
-                                    {["available", "occupied", "reserved", "maintenance"].map(s => <option key={s} value={s}>{s}</option>)}
-                                  </select>
+                                  {/* "reserved" is a real, system-only status now (set the instant a
+                                      student's registration goes pending, cleared on approve/reject —
+                                      0047_reserve_bed_on_registration.sql) — not something to hand-pick
+                                      here. Manually overriding it away would desync this bed from that
+                                      real registration and let a second student book it again, so the
+                                      dropdown is replaced with a read-only note while one's outstanding;
+                                      resolve it from Reservation Requests instead. */}
+                                  {bed.status === "reserved" ? (
+                                    <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: IN, fontStyle: "italic" }}>Resolve via Reservation Requests</span>
+                                  ) : (
+                                    <select value={bed.status} onChange={e => updateBedStatus(room.id, bed.id, e.target.value as BedStatus)}
+                                      style={{ fontSize: 11, borderRadius: 8, border: "1px solid #E5E7EB", background: "white", color: "#374151", padding: "3px 6px", fontFamily: QS, cursor: "pointer" }}>
+                                      {["available", "occupied", "maintenance"].map(s => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -573,21 +800,21 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
               {gallery.map(item => (
                 <div key={item.id} style={{ borderRadius: 14, overflow: "hidden", border: "1.5px solid #F3F4F6", background: "#F9FAFB" }}>
-                  <div style={{ height: 80, background: "linear-gradient(135deg,#EDE9FE,#DDD6FE)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Image size={24} color="#9772F6" opacity={0.4} />
+                  <div style={{ height: 80, background: item.url ? undefined : "linear-gradient(135deg,#EDE9FE,#DDD6FE)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {item.url ? <img src={item.url} alt={item.label} style={{ width: "100%", height: "100%", objectFit: "cover" as const }} /> : <Image size={24} color="#9772F6" opacity={0.4} />}
                   </div>
                   <div style={{ padding: "8px 10px" }}>
                     {editGalleryId === item.id ? (
                       <div style={{ display: "flex", gap: 4 }}>
                         <input value={newGalLabel} onChange={e => setNewGalLabel(e.target.value)} style={{ flex: 1, fontSize: 11, borderRadius: 8, border: "1px solid #E5E7EB", padding: "4px 8px", fontFamily: IN }} />
-                        <button onClick={() => { setGallery(g => g.map(x => x.id === item.id ? { ...x, label: newGalLabel } : x)); setEditGalleryId(null); showToast("Label updated."); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Check size={14} color="#16A34A" /></button>
+                        <button onClick={() => saveGalleryLabel(item.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Check size={14} color="#16A34A" /></button>
                       </div>
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", fontFamily: QS }}>{item.label}</span>
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={() => { setEditGalleryId(item.id); setNewGalLabel(item.label); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Edit3 size={12} color="#9CA3AF" /></button>
-                          <button onClick={() => { setGallery(g => g.filter(x => x.id !== item.id)); showToast("Photo removed."); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={12} color="#EF4444" /></button>
+                          <button onClick={() => deleteGalleryPhoto(item.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={12} color="#EF4444" /></button>
                         </div>
                       </div>
                     )}
@@ -595,10 +822,10 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                 </div>
               ))}
             </div>
-            <button onClick={() => { setGallery(g => [...g, { id: `g${Date.now()}`, label: "New Photo", url: "" }]); showToast("Photo slot added."); }}
-              style={{ width: "100%", height: 40, borderRadius: 14, border: "2px solid #9772F6", background: "white", color: "#9772F6", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <label style={{ width: "100%", height: 40, borderRadius: 14, border: "2px solid #9772F6", background: "white", color: "#9772F6", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, boxSizing: "border-box" as const }}>
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) addGalleryPhotoReal(f); e.target.value = ""; }} />
               <Plus size={14} />Upload More Photos
-            </button>
+            </label>
           </SectionCard>
 
           {/* ── Rules ── */}
@@ -610,7 +837,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                   {editRuleIdx === i ? (
                     <div style={{ flex: 1, display: "flex", gap: 6 }}>
                       <input value={ruleDraft} onChange={e => setRuleDraft(e.target.value)} style={{ flex: 1, fontSize: 12, borderRadius: 8, border: "1px solid #E5E7EB", padding: "5px 10px", fontFamily: IN }} />
-                      <button onClick={() => { setRules(rs => rs.map((r, j) => j === i ? ruleDraft : r)); setEditRuleIdx(null); showToast("Rule updated."); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Check size={14} color="#16A34A" /></button>
+                      <button onClick={async () => { if (await commitRules(rules.map((r, j) => j === i ? ruleDraft : r))) { setEditRuleIdx(null); showToast("Rule updated."); } }} style={{ background: "none", border: "none", cursor: "pointer" }}><Check size={14} color="#16A34A" /></button>
                       <button onClick={() => setEditRuleIdx(null)} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={14} color="#9CA3AF" /></button>
                     </div>
                   ) : (
@@ -618,7 +845,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                       <span style={{ flex: 1, fontSize: 12, color: "#374151", fontFamily: IN, lineHeight: 1.55 }}>{rule}</span>
                       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                         <button onClick={() => { setEditRuleIdx(i); setRuleDraft(rule); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Edit3 size={12} color="#9CA3AF" /></button>
-                        <button onClick={() => { setRules(rs => rs.filter((_, j) => j !== i)); showToast("Rule removed."); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={12} color="#EF4444" /></button>
+                        <button onClick={async () => { if (await commitRules(rules.filter((_, j) => j !== i))) showToast("Rule removed."); }} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={12} color="#EF4444" /></button>
                       </div>
                     </>
                   )}
@@ -628,7 +855,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
             {addingRule ? (
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <input value={newRule} onChange={e => setNewRule(e.target.value)} placeholder="Type a new rule..." style={{ ...inputStyle, flex: 1, fontSize: 12 }} />
-                <button onClick={() => { if (newRule.trim()) { setRules(rs => [...rs, newRule.trim()]); setNewRule(""); setAddingRule(false); showToast("Rule added."); } }} style={{ background: GRAD, border: "none", borderRadius: 10, color: "white", padding: "0 12px", cursor: "pointer" }}><Check size={14} /></button>
+                <button onClick={async () => { if (newRule.trim() && await commitRules([...rules, newRule.trim()])) { setNewRule(""); setAddingRule(false); showToast("Rule added."); } }} style={{ background: GRAD, border: "none", borderRadius: 10, color: "white", padding: "0 12px", cursor: "pointer" }}><Check size={14} /></button>
                 <button onClick={() => setAddingRule(false)} style={{ background: "none", border: "1.5px solid #E5E7EB", borderRadius: 10, color: "#9CA3AF", padding: "0 10px", cursor: "pointer" }}><X size={14} /></button>
               </div>
             ) : (
@@ -729,17 +956,17 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
             ))}
           </SectionCard>
 
-          {/* ── Highlights & Schedule Settings ── */}
-          <SectionCard title="Highlights & Schedule Settings" icon={<CalendarClock size={16} color="#9772F6" />}>
+          {/* ── Announcements & Schedule Settings ── */}
+          <SectionCard title="Announcements & Schedule Settings" icon={<CalendarClock size={16} color="#9772F6" />}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <p style={{ margin: "0 0 3px", fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Enable Highlights & Schedule</p>
+                <p style={{ margin: "0 0 3px", fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Enable Announcements & Schedule</p>
                 <p style={{ margin: "0 0 8px", fontSize: 11, color: "#6B7280", fontFamily: IN, lineHeight: 1.5 }}>
-                  Show the Highlights & Schedule section on your Home Dashboard to track reminders, events, and boarding house activities.
+                  Show the Announcements & Schedule section on your Home Dashboard to track reminders, events, and boarding house activities.
                 </p>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20, background: highlightsEnabled ? "#DCFCE7" : "#F3F4F6", fontSize: 10, fontWeight: 800, color: highlightsEnabled ? "#16A34A" : "#9CA3AF", fontFamily: QS }}>
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: highlightsEnabled ? "#16A34A" : "#9CA3AF", display: "inline-block" }} />
-                  {highlightsEnabled ? "Highlights Enabled" : "Highlights Disabled"}
+                  {highlightsEnabled ? "Announcements Enabled" : "Announcements Disabled"}
                 </span>
               </div>
               <Toggle value={highlightsEnabled} onToggle={() => setHighlightsEnabled && setHighlightsEnabled(!highlightsEnabled)} />
@@ -766,7 +993,6 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                 { key: "contact",      label: "Contact Number",   desc: "Mobile number of visitor" },
                 { key: "relationship", label: "Relationship",     desc: "Relation to the student" },
                 { key: "purpose",      label: "Purpose of Visit", desc: "Reason for visiting" },
-                { key: "visitDate",    label: "Visit Date",       desc: "Date of the scheduled visit" },
               ] as const).map(({ key, label, desc }, i, arr) => {
                 const enabled = visitorFields[key];
                 return (
@@ -786,31 +1012,12 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
           <AppInfoSection />
 
           {/* ── Logout ── */}
-          <button onClick={() => go("landing")} style={{ width: "100%", background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
+          <button onClick={() => setShowLogout(true)} style={{ width: "100%", background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
             <div style={{ width: 36, height: 36, borderRadius: 12, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center" }}><LogOut size={16} color="#DC2626" /></div>
             <span style={{ fontSize: 13, fontWeight: 800, color: "#DC2626", fontFamily: QS }}>Log Out</span>
           </button>
 
         </div>
-      </div>
-
-      {/* Bottom Nav */}
-      <div style={{ flexShrink: 0, height: 64, background: "white", borderTop: "1px solid #F3F4F6", display: "flex", alignItems: "center", justifyContent: "space-around", padding: "0 8px" }}>
-        {([
-          { id: "dashboard" as Screen, Icon: Home, label: "Home" },
-          { id: "rooms"     as Screen, Icon: Layers, label: "Rooms" },
-          { id: "payments"  as Screen, Icon: CreditCard, label: "Payments" },
-          { id: "profile"   as Screen, Icon: User, label: "Profile" },
-        ]).map(({ id, Icon, label }) => {
-          const active = id === "profile";
-          return (
-            <button key={id} onClick={() => go(id)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", gap: 3, padding: "8px 0" }}>
-              <Icon size={20} color={active ? "#9772F6" : "#9CA3AF"} />
-              <span style={{ fontSize: 10, fontWeight: 700, color: active ? "#9772F6" : "#9CA3AF", fontFamily: QS }}>{label}</span>
-              {active && <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#9772F6" }} />}
-            </button>
-          );
-        })}
       </div>
     </div>
   );

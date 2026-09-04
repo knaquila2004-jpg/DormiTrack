@@ -1,10 +1,11 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Search, Bell, MessageCircle, Layers, MapPin, Home, User,
   Users, Building2, ChevronDown, ChevronUp, X, ZoomIn, ZoomOut,
   LocateFixed, Compass, Filter,
 } from "lucide-react";
-import { BOARDING_HOUSES, BoardingHouse } from "./shared";
+import { BoardingHouse, MAP_CENTER } from "./shared";
+import { getActiveBoardingHouses } from "./boardingHouseStore";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./components/GoogleMapCanvas";
 import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
 
@@ -13,23 +14,14 @@ const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
+// "Students" / "Reports" pins need real check-in and report location data —
+// that's wired up in later phases (check_in_out_records / reports). Until
+// then this map only plots real boarding houses; those two filters
+// legitimately show the app's empty state rather than fabricated pins.
 type DemoType = "inside" | "outside" | "report";
 type FilterType = "all" | "students" | "boarding_houses" | "reports";
-
 interface DemoMarker { id: string; type: DemoType; label: string; sub: string; lat: number; lng: number; detail: Record<string, string> }
-
-const bh1 = BOARDING_HOUSES[0];
-const bh2 = BOARDING_HOUSES[1];
-
-// Student-location / report pins simulated near real registered boarding houses
-// (no live GPS backend in this prototype).
-const DEMO_MARKERS: DemoMarker[] = [
-  { id: "m1", type: "inside",  label: "Juan Dela Cruz", sub: `${bh1.name} · Room A`,      lat: bh1.lat + 0.0006, lng: bh1.lng + 0.0005, detail: { "Boarding House": bh1.name, Room: "Room A · Bed 1", "Last Check-in": "Today 8:02 AM", Status: "Inside" } },
-  { id: "m2", type: "outside", label: "Maria Santos",   sub: `Last seen near ${bh1.name}`, lat: bh1.lat - 0.0009, lng: bh1.lng + 0.0011, detail: { "Boarding House": bh1.name, Room: "Room A · Bed 2", "Last Check-in": "Today 7:55 AM", Status: "Outside" } },
-  { id: "m3", type: "inside",  label: "Lena Reyes",     sub: `${bh2.name} · Room 102`,     lat: bh2.lat + 0.0004, lng: bh2.lng - 0.0006, detail: { "Boarding House": bh2.name, Room: "Room 102 · Bed 4", "Last Check-in": "Today 9:10 AM", Status: "Inside" } },
-  { id: "m4", type: "outside", label: "Kevin Cruz",     sub: `Last seen near ${bh1.name}`, lat: bh1.lat + 0.0012, lng: bh1.lng - 0.0008, detail: { "Boarding House": bh1.name, Room: "Unassigned", "Last Check-in": "Never", Status: "Outside" } },
-  { id: "m5", type: "report",  label: "Report #07",     sub: "Noise complaint · Ben Torres", lat: bh2.lat - 0.0005, lng: bh2.lng + 0.0009, detail: { Reporter: "Ben Torres", Category: "Noise Complaint", "Boarding House": bh2.name, Date: "Aug 4, 2026", Status: "Unresolved" } },
-];
+const DEMO_MARKERS: DemoMarker[] = [];
 
 const LEGEND: { type: "bh" | "inside" | "outside" | "report"; fill: string; label: string }[] = [
   { type: "bh",      fill: "#9772F6", label: "BH"      },
@@ -65,7 +57,6 @@ function ChipRow<T extends string>({ label, options, active, onSelect }: { label
 export function AdminMapScreen({ go }: { go: (s: string) => void }) {
   const notifCount = useUnreadCount("admin");
   const [mapType, setMapType] = useState<"standard" | "satellite">("standard");
-  const [showMenu, setShowMenu] = useState(false);
   const [activeFilter, setFilter] = useState<FilterType>("all");
   const [activeMunicipality, setMunicipality] = useState<string>("all");
   const [activeStatus, setStatus] = useState<string>("all");
@@ -73,8 +64,15 @@ export function AdminMapScreen({ go }: { go: (s: string) => void }) {
   const [zoom, setZoom] = useState(14);
   const mapRef = useRef<GoogleMapHandle>(null);
 
-  const municipalities = Array.from(new Set(BOARDING_HOUSES.map(b => b.municipality)));
-  const statuses = Array.from(new Set(BOARDING_HOUSES.map(b => b.status)));
+  const [boardingHouses, setBoardingHouses] = useState<BoardingHouse[]>([]);
+  useEffect(() => {
+    let active = true;
+    getActiveBoardingHouses().then(bhs => { if (active) setBoardingHouses(bhs); });
+    return () => { active = false; };
+  }, []);
+
+  const municipalities = Array.from(new Set(boardingHouses.map(b => b.municipality)));
+  const statuses = Array.from(new Set(boardingHouses.map(b => b.status)));
 
   const matchesQuery = (text: string) => query.trim() === "" || text.toLowerCase().includes(query.trim().toLowerCase());
 
@@ -84,7 +82,7 @@ export function AdminMapScreen({ go }: { go: (s: string) => void }) {
     (activeFilter === "students" && (t === "inside" || t === "outside")) ||
     (activeFilter === "reports" && t === "report");
 
-  const bhMatches = BOARDING_HOUSES.filter(b =>
+  const bhMatches = boardingHouses.filter(b =>
     (activeMunicipality === "all" || b.municipality === activeMunicipality) &&
     (activeStatus === "all" || b.status === activeStatus) &&
     matchesQuery(`${b.name} ${b.address} ${b.municipality}`),
@@ -152,7 +150,10 @@ export function AdminMapScreen({ go }: { go: (s: string) => void }) {
       <div style={{ flex: 1, position: "relative" as const, overflow: "hidden" }}>
         <GoogleMapCanvas
           ref={mapRef}
-          center={{ lat: bh2.lat, lng: bh2.lng }}
+          // Always opens on BISU Calape Campus — a fixed, predictable reference point for an
+          // overview map plotting every boarding house at once, not tied to whichever one
+          // happens to be first. Admin can pan/zoom/search from there same as always.
+          center={MAP_CENTER}
           zoom={zoom}
           mapType={mapType}
           onZoomChange={setZoom}
@@ -160,20 +161,15 @@ export function AdminMapScreen({ go }: { go: (s: string) => void }) {
           enableClustering
         />
 
-        {/* Top-right map type */}
+        {/* Top-right map type — single click toggles standard/satellite directly */}
         <div style={{ position: "absolute" as const, top: 214, right: 12, zIndex: 20 }}>
-          <button onClick={() => setShowMenu(p => !p)} style={{ width: 38, height: 38, borderRadius: 12, background: "white", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 12px rgba(0,0,0,.14)" }}>
-            <Layers size={16} color="#374151" />
+          <button
+            onClick={() => setMapType(t => t === "standard" ? "satellite" : "standard")}
+            title={mapType === "standard" ? "Switch to satellite view" : "Switch to standard view"}
+            style={{ width: 38, height: 38, borderRadius: 12, background: "white", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 12px rgba(0,0,0,.14)" }}
+          >
+            <Layers size={16} color={mapType === "satellite" ? "#9772F6" : "#374151"} />
           </button>
-          {showMenu && (
-            <div style={{ position: "absolute" as const, top: 46, right: 0, background: "white", borderRadius: 14, padding: 6, boxShadow: "0 8px 24px rgba(0,0,0,.18)", zIndex: 50, minWidth: 110 }}>
-              {(["standard", "satellite"] as const).map(t => (
-                <button key={t} onClick={() => { setMapType(t); setShowMenu(false); }} style={{ width: "100%", padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", background: mapType === t ? "#F5F0FF" : "white", color: mapType === t ? "#9772F6" : "#374151", fontSize: 11, fontWeight: 700, fontFamily: QS, textAlign: "left" as const }}>
-                  {t === "standard" ? "Standard" : "Satellite"}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Zoom controls */}

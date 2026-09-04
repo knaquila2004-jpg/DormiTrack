@@ -5,7 +5,8 @@ import {
   Users, Minus, AlertCircle, Clock, Navigation, House,
 } from "lucide-react";
 import { ImageWithFallback } from "./components/figma/ImageWithFallback";
-import { GRAD, GRAD_H, Screen, BoardingHouse, RoomData, RegRequest, BOARDING_HOUSES, roomStatus, BedStatus, DEFAULT_BED_PHOTO } from "./shared";
+import { GRAD, GRAD_H, Screen, BoardingHouse, RoomData, RegRequest, roomStatus, BedStatus, DEFAULT_BED_PHOTO } from "./shared";
+import { getActiveBoardingHouses } from "./boardingHouseStore";
 import { FullScreenBHMap } from "./components/FullScreenBHMap";
 
 const TRAITS   = ["Friendly","Quiet","Respectful","Responsible","Organized","Independent","Studious","Outgoing","Calm","Clean","Helpful","Disciplined"];
@@ -33,7 +34,7 @@ export function ChipGroup({ options, selected, onToggle }: { options: string[]; 
   );
 }
 
-export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: (s: Screen) => void; onSubmit: (r: RegRequest) => void; studentName: string }) {
+export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitError, submitErrorIsStaleSession, onLogOut }: { go: (s: Screen) => void; onSubmit: (r: RegRequest) => void; studentName: string; submitError?: string; submitErrorIsStaleSession?: boolean; onLogOut?: () => void }) {
   const QS = "'Quicksand',sans-serif"; const IN = "'Inter',sans-serif";
   const [view, setView] = useState<"welcome" | "list" | "details" | "roomDetails" | "allRooms" | "map" | "allRules">("welcome");
   const [roomDetailsFrom, setRoomDetailsFrom] = useState<"details" | "allRooms">("details");
@@ -67,6 +68,14 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
   const [lifestyle, setLifestyle] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
+  const [houses, setHouses] = useState<BoardingHouse[]>([]);
+  const [loadingHouses, setLoadingHouses] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    getActiveBoardingHouses().then(hs => { if (active) { setHouses(hs); setLoadingHouses(false); } });
+    return () => { active = false; };
+  }, []);
 
   // After confirming a room & bed, land back on the "Available Rooms" section
   // instead of the top of the boarding house page.
@@ -111,14 +120,17 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     if (!house) e.push("Select a boarding house");
     if (!selectedRoom) e.push("Select an available room");
     if (!bedId) e.push("Select a bed in the chosen room");
-    if (!stayCount || Number(stayCount) < 1) e.push("Enter stay duration");
-    if (!moveIn) e.push("Select a move-in date");
-    if (!moveOut) e.push("Select an expected move-out date");
-    if (dateInvalid) e.push("Move-out date must be later than move-in date");
+    // A section the landlord turned off isn't shown, so it can't be required either.
+    if (house?.allowLengthOfStay !== false && (!stayCount || Number(stayCount) < 1)) e.push("Enter stay duration");
+    if (house?.allowMoveIn !== false) {
+      if (!moveIn) e.push("Select a move-in date");
+      if (!moveOut) e.push("Select an expected move-out date");
+      if (dateInvalid) e.push("Move-out date must be later than move-in date");
+    }
     setErrors(e);
     if (e.length === 0 && house && selectedRoom && bedId) {
       onSubmit({
-        studentName, house, room: selectedRoom, bed: selectedBedLabel ?? bedId,
+        studentName, house, room: selectedRoom, bed: selectedBedLabel ?? bedId, bedId: bedId ?? undefined,
         moveIn, moveOut, stayUnit, stayCount,
         traits, hobbies, lifestyle, notes,
         submittedDate: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
@@ -160,7 +172,11 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
     const bedColors: Record<BedStatus, { bg: string; border: string; text: string; label: string }> = {
       available:   { bg: "#DCFCE7", border: "#16A34A", text: "#15803D", label: "Available"   },
       occupied:    { bg: "#FEE2E2", border: "#EF4444", text: "#B91C1C", label: "Occupied"    },
-      reserved:    { bg: "#FEF3C7", border: "#D97706", text: "#92400E", label: "Reserved"    },
+      // A "reserved" bed (a real pending registration holding it — see
+      // 0047_reserve_bed_on_registration.sql) is displayed to a registering student as
+      // plain "Occupied" — they just need to know it can't be picked, not the internal
+      // distinction between "someone lives here" and "someone's approval is pending".
+      reserved:    { bg: "#FEE2E2", border: "#EF4444", text: "#B91C1C", label: "Occupied"    },
       maintenance: { bg: "#F3F4F6", border: "#9CA3AF", text: "#6B7280", label: "Maintenance" },
     };
 
@@ -265,7 +281,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
             </div>
             {/* Legend */}
             <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" as const }}>
-              {(["available","occupied","reserved"] as BedStatus[]).map(s => {
+              {(["available","occupied"] as BedStatus[]).map(s => {
                 const c = bedColors[s];
                 return (
                   <div key={s} style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -363,7 +379,18 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
           <p style={{ color: "rgba(255,255,255,.75)", fontSize: 13, margin: 0, fontFamily: IN, lineHeight: 1.5 }}>Select the boarding house where you will be staying.</p>
         </div>
         <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "16px 16px 28px" }}>
-          {BOARDING_HOUSES.map(h => {
+          {!loadingHouses && houses.length === 0 && (
+            <div style={{ background: "white", borderRadius: 24, padding: "40px 24px", textAlign: "center" as const, boxShadow: "0 4px 20px rgba(0,0,0,.07)" }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%", background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+                <Building2 size={28} color="#9772F6" />
+              </div>
+              <h2 style={{ color: "#1F2937", fontSize: 16, fontWeight: 800, margin: "0 0 8px", fontFamily: QS }}>No Boarding Houses Available</h2>
+              <p style={{ color: "#6B7280", fontSize: 13, margin: 0, lineHeight: 1.6, fontFamily: IN }}>
+                There are currently no boarding houses available for registration.
+              </p>
+            </div>
+          )}
+          {houses.map(h => {
             const avail = h.rooms.filter(r => r.cap - r.occ > 0).length;
             return (
               <div key={h.id} style={{ background: "white", borderRadius: 24, overflow: "hidden", marginBottom: 16, boxShadow: "0 4px 20px rgba(0,0,0,.07)" }}>
@@ -679,19 +706,21 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
           )}
         </div>
 
-        {/* Payment Setup */}
-        {house.payment && (() => {
+        {/* Payment Setup — only fees the landlord actually turned on in their Payment Setup are
+            shown here; a disabled fee (e.g. Internet left off) must not appear to a student browsing
+            or estimate into their monthly cost, same as it's absent from the landlord's own screens. */}
+        {house.payment && (house.payment.rent.enabled || house.payment.electric.enabled || house.payment.water.enabled || house.payment.internet.enabled) && (() => {
           const p = house.payment!;
-          const isMetered = p.electric.type === "metered" || p.water.type === "metered";
-          const electricAmt = p.electric.type === "fixed" ? (p.electric.amount ?? 0) : null;
-          const waterAmt = p.water.type === "fixed" ? (p.water.amount ?? 0) : null;
-          const internetAmt = p.internet.type === "separate" ? (p.internet.amount ?? 0) : 0;
-          const fixedTotal = p.rent + (electricAmt ?? 0) + (waterAmt ?? 0) + internetAmt;
+          const isMetered = (p.electric.enabled && p.electric.type === "metered") || (p.water.enabled && p.water.type === "metered");
+          const electricAmt = p.electric.enabled && p.electric.type === "fixed" ? (p.electric.amount ?? 0) : 0;
+          const waterAmt = p.water.enabled && p.water.type === "fixed" ? (p.water.amount ?? 0) : 0;
+          const internetAmt = p.internet.enabled && p.internet.type === "separate" ? (p.internet.amount ?? 0) : 0;
+          const fixedTotal = (p.rent.enabled ? p.rent.amount : 0) + electricAmt + waterAmt + internetAmt;
           const rows: [string, string][] = [
-            ["Monthly Rent", `₱${p.rent.toLocaleString()}`],
-            ["Electricity", p.electric.type === "fixed" ? `₱${p.electric.amount?.toLocaleString()} / Month` : "Meter-Based"],
-            ["Water", p.water.type === "fixed" ? `₱${p.water.amount?.toLocaleString()} / Month` : "Meter-Based"],
-            ["Internet", p.internet.type === "included" ? "Included" : `₱${p.internet.amount?.toLocaleString()} / Month`],
+            ...(p.rent.enabled ? [["Monthly Rent", `₱${p.rent.amount.toLocaleString()}`]] as [string, string][] : []),
+            ...(p.electric.enabled ? [["Electricity", p.electric.type === "fixed" ? `₱${p.electric.amount?.toLocaleString()} / Month` : "Meter-Based"]] as [string, string][] : []),
+            ...(p.water.enabled ? [["Water", p.water.type === "fixed" ? `₱${p.water.amount?.toLocaleString()} / Month` : "Meter-Based"]] as [string, string][] : []),
+            ...(p.internet.enabled ? [["Internet", p.internet.type === "included" ? "Included" : `₱${p.internet.amount?.toLocaleString()} / Month`]] as [string, string][] : []),
           ];
           return (
             <div style={card}>
@@ -834,65 +863,81 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
           })()}
         </div>
 
-        {/* Stay information */}
-        <div style={card}>
-          <p style={sec}>Stay Information</p>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Length of Stay</label>
-          <div style={{ display: "flex", background: "#F3F4F6", borderRadius: 14, padding: 4, marginBottom: 14 }}>
-            {(["Weeks", "Months"] as const).map(u => (
-              <button key={u} onClick={() => setStayUnit(u)} style={{
-                flex: 1, padding: "10px 0", borderRadius: 11, border: "none", cursor: "pointer",
-                background: stayUnit === u ? "white" : "transparent", color: stayUnit === u ? "#9772F6" : "#6B7280",
-                fontSize: 13, fontWeight: 800, fontFamily: QS, boxShadow: stayUnit === u ? "0 2px 8px rgba(0,0,0,.08)" : "none",
-              }}>{u}</button>
-            ))}
+        {/* Stay information — only shown when the landlord's Stay Info Settings still ask for it */}
+        {house.allowLengthOfStay !== false && (
+          <div style={card}>
+            <p style={sec}>Stay Information</p>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Length of Stay</label>
+            <div style={{ display: "flex", background: "#F3F4F6", borderRadius: 14, padding: 4, marginBottom: 14 }}>
+              {(["Weeks", "Months"] as const).map(u => (
+                <button key={u} onClick={() => setStayUnit(u)} style={{
+                  flex: 1, padding: "10px 0", borderRadius: 11, border: "none", cursor: "pointer",
+                  background: stayUnit === u ? "white" : "transparent", color: stayUnit === u ? "#9772F6" : "#6B7280",
+                  fontSize: 13, fontWeight: 800, fontFamily: QS, boxShadow: stayUnit === u ? "0 2px 8px rgba(0,0,0,.08)" : "none",
+                }}>{u}</button>
+              ))}
+            </div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Number of {stayUnit}</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => setStayCount(String(Math.max(1, Number(stayCount) - 1)))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Minus size={18} color="#9772F6" /></button>
+              <input value={stayCount} onChange={e => setStayCount(e.target.value.replace(/\D/g, ""))} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 13, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS, outline: "none" }} />
+              <button onClick={() => setStayCount(String(Number(stayCount || "0") + 1))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Plus size={18} color="#9772F6" /></button>
+            </div>
           </div>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Number of {stayUnit}</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button onClick={() => setStayCount(String(Math.max(1, Number(stayCount) - 1)))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Minus size={18} color="#9772F6" /></button>
-            <input value={stayCount} onChange={e => setStayCount(e.target.value.replace(/\D/g, ""))} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 13, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS, outline: "none" }} />
-            <button onClick={() => setStayCount(String(Number(stayCount || "0") + 1))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Plus size={18} color="#9772F6" /></button>
+        )}
+
+        {/* Move-in information — only shown when the landlord's Stay Info Settings still ask for it */}
+        {house.allowMoveIn !== false && (
+          <div style={card}>
+            <p style={sec}>Move-in Information</p>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Move-in Date</label>
+            <input type="date" value={moveIn} onChange={e => setMoveIn(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 14, color: moveIn ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none", marginBottom: 14 }} />
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Expected Move-out Date</label>
+            <input type="date" value={moveOut} onChange={e => setMoveOut(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: `1.5px solid ${dateInvalid ? "#EF4444" : "#E5E7EB"}`, background: "#F9FAFB", fontSize: 14, color: moveOut ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none" }} />
+            {dateInvalid && <p style={{ fontSize: 11, color: "#EF4444", margin: "6px 0 0", fontFamily: IN }}>Move-out date must be later than move-in date.</p>}
           </div>
-        </div>
+        )}
 
-        {/* Move-in information */}
-        <div style={card}>
-          <p style={sec}>Move-in Information</p>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Move-in Date</label>
-          <input type="date" value={moveIn} onChange={e => setMoveIn(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 14, color: moveIn ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none", marginBottom: 14 }} />
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Expected Move-out Date</label>
-          <input type="date" value={moveOut} onChange={e => setMoveOut(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: `1.5px solid ${dateInvalid ? "#EF4444" : "#E5E7EB"}`, background: "#F9FAFB", fontSize: 14, color: moveOut ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none" }} />
-          {dateInvalid && <p style={{ fontSize: 11, color: "#EF4444", margin: "6px 0 0", fontFamily: IN }}>Move-out date must be later than move-in date.</p>}
-        </div>
+        {/* Student profile for landlord — each sub-section (and the card itself) only shows up when
+            the landlord's Stay Info Settings still asks for that particular piece of information. */}
+        {(house.allowPersonality !== false || house.allowHobbies !== false || house.allowLifestyle !== false || house.allowNotes !== false) && (
+          <div style={card}>
+            <p style={sec}>Tell the Landlord About Yourself</p>
+            <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 16px", lineHeight: 1.5 }}>This information helps the landlord know more about you before approving your registration.</p>
+            {house.allowPersonality !== false && (<>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Personality Traits</label>
+              <div style={{ marginBottom: 18 }}><ChipGroup options={TRAITS} selected={traits} onToggle={toggle(setTraits)} /></div>
+            </>)}
+            {house.allowHobbies !== false && (<>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Hobbies & Interests</label>
+              <div style={{ marginBottom: 18 }}><ChipGroup options={HOBBIES} selected={hobbies} onToggle={toggle(setHobbies)} /></div>
+            </>)}
+            {house.allowLifestyle !== false && (<>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Lifestyle</label>
+              <div style={{ marginBottom: 18 }}><ChipGroup options={LIFESTYLE} selected={lifestyle} onToggle={toggle(setLifestyle)} /></div>
+            </>)}
+            {house.allowNotes !== false && (<>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Additional Notes</label>
+              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4} placeholder="Tell the landlord anything else you'd like them to know..."
+                style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 13, color: "#1F2937", fontFamily: IN, outline: "none", resize: "none" as const, lineHeight: 1.55 }} />
+            </>)}
+          </div>
+        )}
 
-        {/* Student profile for landlord */}
-        <div style={card}>
-          <p style={sec}>Tell the Landlord About Yourself</p>
-          <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 16px", lineHeight: 1.5 }}>This information helps the landlord know more about you before approving your registration.</p>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Personality Traits</label>
-          <div style={{ marginBottom: 18 }}><ChipGroup options={TRAITS} selected={traits} onToggle={toggle(setTraits)} /></div>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Hobbies & Interests</label>
-          <div style={{ marginBottom: 18 }}><ChipGroup options={HOBBIES} selected={hobbies} onToggle={toggle(setHobbies)} /></div>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 10 }}>Lifestyle</label>
-          <div style={{ marginBottom: 18 }}><ChipGroup options={LIFESTYLE} selected={lifestyle} onToggle={toggle(setLifestyle)} /></div>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Additional Notes</label>
-          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4} placeholder="Tell the landlord anything else you'd like them to know..."
-            style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 13, color: "#1F2937", fontFamily: IN, outline: "none", resize: "none" as const, lineHeight: 1.55 }} />
-        </div>
-
-        {/* Registration summary */}
+        {/* Registration summary — mirrors exactly the sections actually shown above; a row for a
+            section the landlord turned off would otherwise reappear here even though nothing above
+            ever asked the student for it. */}
         <div style={{ ...card, border: "1.5px solid #EDE4FF", background: "#FBF9FF" }}>
           <p style={sec}>Registration Summary</p>
           {[
             ["Boarding House", house.name],
             ["Selected Room", selectedRoom ? selectedRoom.name : "Not selected"],
             ["Selected Bed", selectedBedLabel ?? (bedId ? bedId : "Not selected")],
-            ["Move-in Date", moveIn || "—"],
-            ["Move-out Date", moveOut || "—"],
-            ["Length of Stay", `${stayCount || "—"} ${stayUnit}`],
-            ["Personality Traits", traits.length ? traits.join(", ") : "—"],
-            ["Hobbies", hobbies.length ? hobbies.join(", ") : "—"],
-            ["Lifestyle", lifestyle.length ? lifestyle.join(", ") : "—"],
+            ...(house.allowMoveIn !== false ? [["Move-in Date", moveIn || "—"], ["Move-out Date", moveOut || "—"]] : []),
+            ...(house.allowLengthOfStay !== false ? [["Length of Stay", `${stayCount || "—"} ${stayUnit}`]] : []),
+            ...(house.allowPersonality !== false ? [["Personality Traits", traits.length ? traits.join(", ") : "—"]] : []),
+            ...(house.allowHobbies !== false ? [["Hobbies", hobbies.length ? hobbies.join(", ") : "—"]] : []),
+            ...(house.allowLifestyle !== false ? [["Lifestyle", lifestyle.length ? lifestyle.join(", ") : "—"]] : []),
           ].map(([k, v], i, arr) => (
             <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "9px 0", borderBottom: i < arr.length - 1 ? "1px solid #F0EAFB" : "none" }}>
               <span style={{ fontSize: 12, color: "#9CA3AF", flexShrink: 0, fontFamily: IN }}>{k}</span>
@@ -909,6 +954,25 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName }: { go: 
                 <span style={{ fontSize: 12, color: "#DC2626", fontFamily: IN }}>{e}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* A real submission failure (the DB insert itself, not just client-side validation) —
+            shown instead of silently letting the student think they're all set on a "Waiting for
+            Landlord Verification" screen for a registration that was never actually saved. */}
+        {submitError && (
+          <div style={{ background: "#FEF2F2", borderRadius: 16, padding: "12px 16px", marginBottom: 14, border: "1px solid #FECACA" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: submitErrorIsStaleSession ? 10 : 0 }}>
+              <AlertCircle size={13} color="#EF4444" style={{ flexShrink: 0 }} />
+              <span style={{ fontSize: 12, color: "#DC2626", fontFamily: IN }}>{submitError}</span>
+            </div>
+            {/* A stale/out-of-sync session needs a real re-login, not a retry — offer it directly
+                rather than making the student go hunt for a logout button elsewhere. */}
+            {submitErrorIsStaleSession && onLogOut && (
+              <button onClick={onLogOut} style={{ width: "100%", padding: "11px 0", borderRadius: 12, border: "none", background: "#EF4444", color: "white", fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>
+                Log Out
+              </button>
+            )}
           </div>
         )}
 

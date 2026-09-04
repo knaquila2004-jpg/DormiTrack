@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 import {
   Settings, ChevronDown, ChevronUp, ChevronRight, X, Check,
   AlertTriangle, LogOut, Trash2, Plus, Clock, Database, RefreshCw,
@@ -9,6 +10,12 @@ import {
   Upload, HardDrive, User, Flag, Mail, Key, MonitorOff,
   ToggleLeft, Zap, MapPin,
 } from "lucide-react";
+import {
+  getAllAnnouncementsForAdmin, createAnnouncement, updateAnnouncement, setAnnouncementStatus, deleteAnnouncement,
+  getRolePermissions, setRolePermission,
+  getPendingBoardingHouses, approveBoardingHouse, rejectBoardingHouse, requestBoardingHouseRevision,
+  Announcement, AnnouncementPriority, RolePermissions, PermRole, PermKey, BHRequest,
+} from "./adminSystemStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -105,17 +112,6 @@ function Toast({ msg }: { msg: string }) {
 
 // ── Announcement Modal ────────────────────────────────────────────────────────
 
-type Announcement = {
-  id: string; title: string; desc: string; audience: string; priority: "low" | "normal" | "high" | "urgent";
-  scheduledDate: string; expiryDate: string; status: "active" | "archived" | "pinned"; createdAt: string;
-};
-
-const SEED_ANNOUNCEMENTS: Announcement[] = [
-  { id: "a1", title: "Monthly Rent Reminder", desc: "Please settle your rent payments for the month of August before August 5, 2026.", audience: "Students", priority: "high", scheduledDate: "Aug 1, 2026", expiryDate: "Aug 5, 2026", status: "pinned", createdAt: "Aug 1" },
-  { id: "a2", title: "System Maintenance Notice", desc: "DormiTrack will undergo scheduled maintenance on August 7, 2026 from 12:00 AM to 3:00 AM.", audience: "Everyone", priority: "urgent", scheduledDate: "Aug 5, 2026", expiryDate: "Aug 7, 2026", status: "active", createdAt: "Aug 3" },
-  { id: "a3", title: "GPS Check-In Policy Update", desc: "Effective August 10, all students are required to perform GPS check-in daily between 6:00 PM and 9:00 PM.", audience: "Students", priority: "normal", scheduledDate: "Aug 8, 2026", expiryDate: "Aug 31, 2026", status: "active", createdAt: "Aug 4" },
-];
-
 const PRIORITY_META: Record<string, { label: string; color: string; bg: string }> = {
   low:    { label: "Low",    color: "#6B7280", bg: "#F3F4F6" },
   normal: { label: "Normal", color: "#3B82F6", bg: "#EFF6FF" },
@@ -123,23 +119,26 @@ const PRIORITY_META: Record<string, { label: string; color: string; bg: string }
   urgent: { label: "Urgent", color: "#EF4444", bg: "#FEE2E2" },
 };
 
-function AnnouncementForm({ ann, onSave, onClose }: {
-  ann?: Announcement; onSave: (a: Announcement) => void; onClose: () => void;
+function AnnouncementForm({ ann, onSaved, onClose }: {
+  ann?: Announcement; onSaved: () => void; onClose: () => void;
 }) {
   const [title,     setTitle]     = useState(ann?.title     ?? "");
   const [desc,      setDesc]      = useState(ann?.desc      ?? "");
   const [audience,  setAudience]  = useState(ann?.audience  ?? "Everyone");
-  const [priority,  setPriority]  = useState<Announcement["priority"]>(ann?.priority ?? "normal");
+  const [priority,  setPriority]  = useState<AnnouncementPriority>(ann?.priority ?? "normal");
   const [scheduled, setScheduled] = useState(ann?.scheduledDate ?? "");
   const [expiry,    setExpiry]    = useState(ann?.expiryDate    ?? "");
+  const [saving,    setSaving]    = useState(false);
+  const [err,       setErr]       = useState("");
 
-  const handleSave = () => {
-    if (!title.trim()) return;
-    onSave({
-      id: ann?.id ?? `a${Date.now()}`, title, desc, audience, priority,
-      scheduledDate: scheduled, expiryDate: expiry,
-      status: ann?.status ?? "active", createdAt: ann?.createdAt ?? "Now",
-    });
+  const handleSave = async () => {
+    if (!title.trim() || saving) return;
+    setSaving(true); setErr("");
+    const input = { title: title.trim(), desc, audience, priority, scheduledDate: scheduled, expiryDate: expiry };
+    const res = ann ? await updateAnnouncement(ann.id, input) : await createAnnouncement(input);
+    setSaving(false);
+    if (res.ok === false) { setErr(res.error); return; }
+    onSaved();
     onClose();
   };
 
@@ -199,8 +198,9 @@ function AnnouncementForm({ ann, onSave, onClose }: {
               </div>
             ))}
           </div>
-          <button onClick={handleSave} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
-            {ann ? "Save Changes" : "Publish Announcement"}
+          {err && <p style={{ margin: "0 0 10px", fontSize: 11, color: "#EF4444", fontFamily: IN }}>{err}</p>}
+          <button onClick={handleSave} disabled={saving} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
+            {saving ? "Saving…" : ann ? "Save Changes" : "Publish Announcement"}
           </button>
         </div>
       </div>
@@ -230,16 +230,6 @@ const SECURITY_EVENTS = [
   { type: "unknown", user: "Unknown",    detail: "Unrecognized device login attempt", time: "Jul 29, 3:15 AM",   device: "Unknown Android" },
 ];
 
-// ── Boarding house pending ────────────────────────────────────────────────────
-
-type BHRequest = { id: string; name: string; landlord: string; address: string; submitted: string; status: "pending" | "approved" | "rejected" | "revision" };
-
-const SEED_BH: BHRequest[] = [
-  { id: "bh1", name: "Sunrise Dormitory 2",     landlord: "Carlos Sunrise",    address: "Poblacion, Calape, Bohol",  submitted: "Aug 3, 2026", status: "pending" },
-  { id: "bh2", name: "Eden Student Residence",  landlord: "Mylene Cabatingan", address: "Cangumba, Calape, Bohol",   submitted: "Aug 2, 2026", status: "pending" },
-  { id: "bh3", name: "CJ Boarding House",       landlord: "Crisanto Javier",   address: "Tultugan, Calape, Bohol",   submitted: "Jul 30, 2026",status: "revision"},
-];
-
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
 export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
@@ -253,14 +243,18 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
   const [maintenance,   setMaintenance]   = useState(false);
 
   // Announcements
-  const [announcements, setAnnouncements] = useState<Announcement[]>(SEED_ANNOUNCEMENTS);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [showAnnForm,   setShowAnnForm]   = useState(false);
   const [editAnn,       setEditAnn]       = useState<Announcement | undefined>();
   const [deleteAnnId,   setDeleteAnnId]   = useState<string | null>(null);
+  const refreshAnnouncements = () => { getAllAnnouncementsForAdmin().then(setAnnouncements); };
 
   // BH requests
-  const [bhRequests, setBhRequests] = useState<BHRequest[]>(SEED_BH);
-  const [confirmBH,  setConfirmBH]  = useState<{ id: string; action: "approve" | "reject" | "revision" } | null>(null);
+  const [bhRequests, setBhRequests] = useState<BHRequest[]>([]);
+  const [confirmBH,  setConfirmBH]  = useState<{ req: BHRequest; action: "approve" | "reject" | "revision" } | null>(null);
+  const refreshBhRequests = () => { getPendingBoardingHouses().then(setBhRequests); };
+
+  useEffect(() => { refreshAnnouncements(); refreshBhRequests(); getRolePermissions().then(setPerms); }, []);
 
   // Audit logs
   const [auditSearch, setAuditSearch]   = useState("");
@@ -281,8 +275,9 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
   ];
   const STATUS_META = { online: { label: "Online", color: "#16A34A", bg: "#DCFCE7", dot: "#22C55E" }, warning: { label: "Warning", color: "#D97706", bg: "#FEF3C7", dot: "#F59E0B" }, offline: { label: "Offline", color: "#EF4444", bg: "#FEE2E2", dot: "#EF4444" } };
 
-  // Role permissions
-  const [perms, setPerms] = useState({
+  // Role permissions — persisted to role_permissions (real), deliberately
+  // not enforced anywhere, matching the confirmed design decision.
+  const [perms, setPerms] = useState<RolePermissions>({
     student:  { viewDorms: true,  checkIn: true,  chat: true,  fileReport: true,  payments: true,  viewOccupants: true  },
     parent:   { viewDorms: true,  checkIn: false, chat: true,  fileReport: true,  payments: true,  viewOccupants: true  },
     landlord: { viewDorms: true,  checkIn: false, chat: true,  fileReport: false, payments: true,  viewOccupants: true  },
@@ -320,11 +315,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
       {showAnnForm && (
         <AnnouncementForm
           ann={editAnn}
-          onSave={a => {
-            if (editAnn) setAnnouncements(list => list.map(x => x.id === a.id ? a : x));
-            else setAnnouncements(list => [a, ...list]);
-            showToast(editAnn ? "Announcement updated." : "Announcement published.");
-          }}
+          onSaved={() => { refreshAnnouncements(); showToast(editAnn ? "Announcement updated." : "Announcement published."); }}
           onClose={() => { setShowAnnForm(false); setEditAnn(undefined); }}
         />
       )}
@@ -335,7 +326,13 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           title="Delete Announcement"
           msg="This announcement will be permanently removed."
           confirmLabel="Delete"
-          onConfirm={() => { setAnnouncements(list => list.filter(a => a.id !== deleteAnnId)); setDeleteAnnId(null); showToast("Announcement deleted."); }}
+          onConfirm={async () => {
+            const res = await deleteAnnouncement(deleteAnnId);
+            setDeleteAnnId(null);
+            if (res.ok === false) { showToast(`Could not delete: ${res.error}`); return; }
+            refreshAnnouncements();
+            showToast("Announcement deleted.");
+          }}
           onCancel={() => setDeleteAnnId(null)}
         />
       )}
@@ -347,10 +344,15 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           msg={confirmBH.action === "approve" ? "This boarding house will be published and visible to students." : confirmBH.action === "reject" ? "This registration request will be rejected." : "Ask the landlord to revise their submission."}
           confirmLabel={confirmBH.action === "approve" ? "Approve" : confirmBH.action === "reject" ? "Reject" : "Send Revision"}
           danger={confirmBH.action === "reject"}
-          onConfirm={() => {
-            setBhRequests(list => list.map(b => b.id === confirmBH!.id ? { ...b, status: confirmBH!.action === "revision" ? "revision" : confirmBH!.action === "approve" ? "approved" : "rejected" } : b));
-            showToast(confirmBH.action === "approve" ? "Boarding house approved." : confirmBH.action === "reject" ? "Request rejected." : "Revision request sent.");
+          onConfirm={async () => {
+            const { req, action } = confirmBH;
+            const res = action === "approve" ? await approveBoardingHouse(req.id)
+              : action === "reject" ? await rejectBoardingHouse(req.id)
+              : await requestBoardingHouseRevision(req.landlordUserId, req.name);
             setConfirmBH(null);
+            if (res.ok === false) { showToast(`Action failed: ${res.error}`); return; }
+            if (action !== "revision") refreshBhRequests();
+            showToast(action === "approve" ? "Boarding house approved." : action === "reject" ? "Request rejected." : "Revision request sent.");
           }}
           onCancel={() => setConfirmBH(null)}
         />
@@ -362,7 +364,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           title="Log Out?"
           msg="Are you sure you want to log out of the Admin account?"
           confirmLabel="Log Out"
-          onConfirm={() => go("landing")}
+          onConfirm={() => { supabase.auth.signOut(); go("landing"); }}
           onCancel={() => setShowLogout(false)}
         />
       )}
@@ -474,8 +476,8 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                   <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>Scheduled: {a.scheduledDate || "—"}</span>
                   <div style={{ display: "flex", gap: 5 }}>
                     <div onClick={() => { setEditAnn(a); setShowAnnForm(true); }} style={{ width: 28, height: 28, borderRadius: 9, background: "#EFF6FF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Edit3 size={11} color="#3B82F6" /></div>
-                    <div onClick={() => setAnnouncements(list => list.map(x => x.id === a.id ? { ...x, status: x.status === "pinned" ? "active" : "pinned" } : x))} style={{ width: 28, height: 28, borderRadius: 9, background: a.status === "pinned" ? "#F5F0FF" : "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Pin size={11} color={a.status === "pinned" ? "#9772F6" : "#9CA3AF"} /></div>
-                    <div onClick={() => setAnnouncements(list => list.map(x => x.id === a.id ? { ...x, status: "archived" } : x))} style={{ width: 28, height: 28, borderRadius: 9, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Archive size={11} color="#9CA3AF" /></div>
+                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, a.status === "pinned" ? "active" : "pinned"); if (res.ok === false) { showToast(`Could not update: ${res.error}`); return; } refreshAnnouncements(); }} style={{ width: 28, height: 28, borderRadius: 9, background: a.status === "pinned" ? "#F5F0FF" : "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Pin size={11} color={a.status === "pinned" ? "#9772F6" : "#9CA3AF"} /></div>
+                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, "archived"); if (res.ok === false) { showToast(`Could not archive: ${res.error}`); return; } refreshAnnouncements(); }} style={{ width: 28, height: 28, borderRadius: 9, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Archive size={11} color="#9CA3AF" /></div>
                     <div onClick={() => setDeleteAnnId(a.id)} style={{ width: 28, height: 28, borderRadius: 9, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Trash2 size={11} color="#EF4444" /></div>
                   </div>
                 </div>
@@ -496,7 +498,10 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                 {(Object.entries(ps) as [keyof typeof ps, boolean][]).map(([perm, val]) => (
                   <div key={perm} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #F3F4F6" }}>
                     <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: "#374151", fontFamily: IN }}>{PERM_LABELS[perm]}</p>
-                    <Toggle on={val} onToggle={() => setPerms(p => ({ ...p, [role]: { ...p[role], [perm]: !val } }))} />
+                    <Toggle on={val} onToggle={() => {
+                      setPerms(p => ({ ...p, [role]: { ...p[role], [perm]: !val } }));
+                      setRolePermission(role as PermRole, perm as PermKey, !val).then(res => { if (res.ok === false) showToast(`Could not save: ${res.error}`); });
+                    }} />
                   </div>
                 ))}
               </div>
@@ -509,11 +514,13 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           {bhRequests.length === 0 ? (
             <p style={{ margin: 0, fontSize: 12, color: "#9CA3AF", fontFamily: IN, textAlign: "center" as const, padding: "20px 0" }}>No pending requests.</p>
           ) : bhRequests.map(b => {
+            // getPendingBoardingHouses() only ever returns status='pending'
+            // rows — an approved/rejected BH simply drops off this list on
+            // the next refresh, so this only ever renders the pending look.
             const statusMeta: Record<BHRequest["status"], { label: string; color: string; bg: string }> = {
               pending:  { label: "Pending",   color: "#D97706", bg: "#FEF3C7" },
               approved: { label: "Approved",  color: "#16A34A", bg: "#DCFCE7" },
               rejected: { label: "Rejected",  color: "#EF4444", bg: "#FEE2E2" },
-              revision: { label: "Revision",  color: "#6366F1", bg: "#EEF2FF" },
             };
             const sm = statusMeta[b.status];
             return (
@@ -529,9 +536,9 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                 <p style={{ margin: "0 0 10px", fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>Submitted: {b.submitted}</p>
                 {b.status === "pending" && (
                   <div style={{ display: "flex", gap: 7 }}>
-                    <button onClick={() => setConfirmBH({ id: b.id, action: "approve" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#DCFCE7", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#16A34A", fontFamily: QS }}>Approve</button>
-                    <button onClick={() => setConfirmBH({ id: b.id, action: "revision" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#EEF2FF", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#6366F1", fontFamily: QS }}>Revision</button>
-                    <button onClick={() => setConfirmBH({ id: b.id, action: "reject" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#FEE2E2", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#EF4444", fontFamily: QS }}>Reject</button>
+                    <button onClick={() => setConfirmBH({ req: b, action: "approve" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#DCFCE7", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#16A34A", fontFamily: QS }}>Approve</button>
+                    <button onClick={() => setConfirmBH({ req: b, action: "revision" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#EEF2FF", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#6366F1", fontFamily: QS }}>Revision</button>
+                    <button onClick={() => setConfirmBH({ req: b, action: "reject" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#FEE2E2", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#EF4444", fontFamily: QS }}>Reject</button>
                   </div>
                 )}
               </div>

@@ -1,13 +1,22 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Building2, MapPin, Phone, Mail, User, Home, Bed, Users,
   ChevronLeft, ChevronRight, X, Star, Wifi, Droplet, Zap,
   Utensils, BookOpen, Shirt, Car, Shield, Clock, MessageCircle,
   AlertCircle, CheckCircle, Image, Info,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA, STUDENT_DATA } from "./StudentHome";
+import { getMyLinkedStudentData, MyBoardingHouse, MyRoom, MyAssignment } from "./studentAssignmentStore";
+import { getRoommates, Occupant as RealOccupant } from "./registrationStore";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
 import { FullScreenBHMap } from "./components/FullScreenBHMap";
+import { computeWalkingRoute, RouteResult } from "./components/mapGeo";
+import { MAP_CENTER } from "./shared";
+
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const QS   = "'Quicksand',sans-serif";
@@ -23,24 +32,10 @@ const AMENITY_ICONS: Record<string, React.ReactNode> = {
   "Parking":      <Car      size={15} color="#9CA3AF"/>,
 };
 
-// Occupants in same room (no contact info shown to parents)
-const ROOM_OCCUPANTS = [
-  { id:"o1", name:"Juan Dela Cruz",  program:"BS Computer Science", year:"2nd Year", isStudent:true  },
-  { id:"o2", name:"Maria Santos",    program:"BS Nursing",           year:"3rd Year", isStudent:false },
-  { id:"o3", name:"Kevin Cruz",      program:"BS Engineering",       year:"1st Year", isStudent:false },
-  { id:"o4", name:"Lena Reyes",      program:"BA Education",         year:"4th Year", isStudent:false },
-  { id:"o5", name:"Ben Torres",      program:"BS Criminology",       year:"2nd Year", isStudent:false },
-  { id:"o6", name:"Clara Lim",       program:"BS Business Admin",    year:"1st Year", isStudent:false },
-];
+type RoomOccupant = { id:string; name:string; program:string; year:string; isStudent:boolean; photo:string|null };
 
 const AVATAR_COLORS = ["#9772F6","#3B82F6","#16A34A","#EC4899","#D97706","#6366F1"];
 const initials = (name: string) => name.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase();
-
-// Gallery placeholder images (gradient tiles)
-const GALLERY_COLORS = [
-  ["#9772F6","#7549F6"],["#3B82F6","#1D4ED8"],["#16A34A","#14532D"],
-  ["#D97706","#92400E"],["#EC4899","#9D174D"],
-];
 
 type Tab = "info" | "room" | "gallery" | "landlord";
 
@@ -53,8 +48,17 @@ function InfoRow({ label, value, last=false }: { label:string; value:string; las
   );
 }
 
-function InfoTab() {
+function InfoTab({ bhData: BH_DATA }: { bhData: MyBoardingHouse }) {
   const [showFullMap, setShowFullMap] = useState(false);
+  // Real distance/walk-time from BISU Calape (MAP_CENTER) to the boarding house's actual
+  // coordinates — same computeWalkingRoute helper FullScreenBHMap already uses for real routing,
+  // reused here instead of the fixed "~0.5 km" every boarding house used to show.
+  const [distRoute, setDistRoute] = useState<RouteResult | null>(null);
+  useEffect(() => {
+    let active = true;
+    computeWalkingRoute(MAP_CENTER, { lat: BH_DATA.lat, lng: BH_DATA.lng }).then(r => { if (active) setDistRoute(r); });
+    return () => { active = false; };
+  }, [BH_DATA.lat, BH_DATA.lng]);
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       {/* BH Info */}
@@ -79,10 +83,8 @@ function InfoTab() {
         )}
         <InfoRow label="Name"            value={BH_DATA.name}    />
         <InfoRow label="Complete Address" value={BH_DATA.address} />
-        <InfoRow label="Distance from BISU Calape" value="~0.5 km (10-min walk)" />
-        <InfoRow label="Type"            value="Student Dormitory" />
-        <InfoRow label="Monthly Rental"  value="₱3,500 / month"  />
-        <InfoRow label="Curfew Time"     value="10:00 PM"         last/>
+        <InfoRow label="Distance from BISU Calape" value={distRoute ? `${distRoute.distanceText} (${distRoute.durationText} walk)` : "Calculating…"} />
+        <InfoRow label="Monthly Rental"  value={BH_DATA.rentAmount != null ? `₱${BH_DATA.rentAmount.toLocaleString()} / month` : "Not set by landlord"} last/>
       </div>
 
       {/* Amenities */}
@@ -116,8 +118,8 @@ function InfoTab() {
   );
 }
 
-function RoomTab() {
-  const occupancyPct = Math.round(ROOM_DATA.occupied / ROOM_DATA.capacity * 100);
+function RoomTab({ roomData: ROOM_DATA, occupants: ROOM_OCCUPANTS }: { roomData: MyRoom; occupants: RoomOccupant[] }) {
+  const occupancyPct = ROOM_DATA.capacity > 0 ? Math.round(ROOM_DATA.occupied / ROOM_DATA.capacity * 100) : 0;
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       {/* Room stats */}
@@ -159,8 +161,8 @@ function RoomTab() {
           const color = occ.isStudent ? "#9772F6" : AVATAR_COLORS[i % AVATAR_COLORS.length];
           return (
             <div key={occ.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 16px", borderBottom:i<ROOM_OCCUPANTS.length-1?"1px solid #F3F4F6":"none" }}>
-              <div style={{ width:42, height:42, borderRadius:14, backgroundImage:occ.isStudent?GRAD:undefined, background:occ.isStudent?undefined:color+"18", border:occ.isStudent?undefined:`1.5px solid ${color}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                <span style={{ fontSize:14, fontWeight:800, color:occ.isStudent?"white":color, fontFamily:QS }}>{initials(occ.name)}</span>
+              <div style={{ width:42, height:42, borderRadius:"50%", backgroundImage:occ.isStudent?GRAD:undefined, background:occ.isStudent?undefined:color+"18", border:occ.isStudent?undefined:`1.5px solid ${color}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+                {occ.photo ? <img src={occ.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:14, fontWeight:800, color:occ.isStudent?"white":color, fontFamily:QS }}>{initials(occ.name)}</span>}
               </div>
               <div style={{ flex:1 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:1 }}>
@@ -183,21 +185,26 @@ function RoomTab() {
   );
 }
 
-function GalleryTab() {
+function GalleryTab({ gallery: PHOTOS }: { gallery: { id:string; url:string; label:string }[] }) {
   const [selected, setSelected] = useState<number|null>(null);
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       <p style={{ margin:"0 0 12px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Boarding House Photos</p>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
-        {GALLERY_COLORS.map(([c1,c2],i)=>(
-          <button key={i} onClick={()=>setSelected(i)} style={{ height:120, borderRadius:16, background:"none", border:"none", cursor:"pointer", overflow:"hidden", position:"relative" as const }}>
-            <div style={{ width:"100%", height:"100%", backgroundImage:`linear-gradient(135deg,${c1},${c2})`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Image size={28} color="rgba(255,255,255,.5)"/>
-              <span style={{ position:"absolute" as const, bottom:8, left:8, fontSize:9, color:"rgba(255,255,255,.8)", fontFamily:QS, fontWeight:700 }}>Photo {i+1}</span>
-            </div>
-          </button>
-        ))}
-      </div>
+      {PHOTOS.length === 0 ? (
+        <div style={{ background:"white", borderRadius:16, padding:"32px 20px", textAlign:"center" as const, marginBottom:14, boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
+          <Image size={28} color="#D1D5DB" style={{ margin:"0 auto 10px" }}/>
+          <p style={{ margin:0, fontSize:12, color:"#9CA3AF", fontFamily:IN }}>The landlord hasn't uploaded any photos yet.</p>
+        </div>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+          {PHOTOS.map((p,i)=>(
+            <button key={p.id} onClick={()=>setSelected(i)} style={{ height:120, borderRadius:16, background:"none", border:"none", cursor:"pointer", overflow:"hidden", position:"relative" as const }}>
+              <img src={p.url} alt={p.label || "Boarding house photo"} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}/>
+              {p.label && <span style={{ position:"absolute" as const, bottom:8, left:8, fontSize:9, color:"white", fontFamily:QS, fontWeight:700, textShadow:"0 1px 4px rgba(0,0,0,.6)" }}>{p.label}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ background:"#FEF3C7", borderRadius:14, padding:"11px 14px", display:"flex", gap:8, alignItems:"flex-start" }}>
         <AlertCircle size={13} color="#D97706" style={{ flexShrink:0, marginTop:1 }}/>
         <p style={{ margin:0, fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.5 }}>
@@ -211,11 +218,9 @@ function GalleryTab() {
           <button onClick={()=>setSelected(null)} style={{ position:"absolute" as const, top:16, right:16, width:36, height:36, borderRadius:12, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <X size={16} color="white"/>
           </button>
-          <div style={{ width:320, height:280, borderRadius:20, backgroundImage:`linear-gradient(135deg,${GALLERY_COLORS[selected][0]},${GALLERY_COLORS[selected][1]})`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Image size={48} color="rgba(255,255,255,.4)"/>
-          </div>
+          <img src={PHOTOS[selected].url} alt={PHOTOS[selected].label || "Boarding house photo"} style={{ maxWidth:"88%", maxHeight:"72%", borderRadius:20, objectFit:"contain" }}/>
           <div style={{ position:"absolute" as const, bottom:40, left:"50%", transform:"translateX(-50%)", display:"flex", gap:8 }}>
-            {GALLERY_COLORS.map((_,i)=>(
+            {PHOTOS.map((_,i)=>(
               <div key={i} onClick={e=>{e.stopPropagation();setSelected(i);}} style={{ width:i===selected?24:8, height:8, borderRadius:4, background:i===selected?"white":"rgba(255,255,255,.35)", cursor:"pointer", transition:"width .2s" }}/>
             ))}
           </div>
@@ -225,16 +230,18 @@ function GalleryTab() {
   );
 }
 
-function LandlordTab() {
+function LandlordTab({ bhData: BH_DATA }: { bhData: MyBoardingHouse }) {
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       <div style={{ background:"white", borderRadius:20, padding:"20px", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
         {/* Landlord avatar */}
         <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:18 }}>
-          <div style={{ width:60, height:60, borderRadius:20, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <span style={{ fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>
-              {BH_DATA.landlord.split(" ").map((n:string)=>n[0]).join("").slice(0,2)}
-            </span>
+          <div style={{ width:60, height:60, borderRadius:"50%", backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+            {BH_DATA.landlordPhoto ? <img src={BH_DATA.landlordPhoto} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : (
+              <span style={{ fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>
+                {BH_DATA.landlord.split(" ").map((n:string)=>n[0]).join("").slice(0,2)}
+              </span>
+            )}
           </div>
           <div>
             <p style={{ margin:"0 0 2px", fontSize:16, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{BH_DATA.landlord}</p>
@@ -263,6 +270,30 @@ function LandlordTab() {
 
 export function ParentBoardingHouseScreen({ go }: { go:(s:string)=>void }) {
   const [activeTab, setActiveTab] = useState<Tab>("info");
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [roommates, setRoommates] = useState<RoomOccupant[]>([]);
+  useEffect(() => {
+    let active = true;
+    getMyLinkedStudentData().then(async linked => {
+      if (!active) return;
+      if (linked.assignment) setAssignment(linked.assignment);
+      if (linked.studentId) {
+        const mates = await getRoommates(linked.studentId);
+        if (!active) return;
+        const myStudentName = linked.profile?.name;
+        const mapped: RoomOccupant[] = mates.map((r: RealOccupant) => ({
+          id: r.studentId, name: r.studentName, program: r.program ?? "—",
+          year: r.yearLevel ? `${r.yearLevel}${r.yearLevel === 1 ? "st" : r.yearLevel === 2 ? "nd" : r.yearLevel === 3 ? "rd" : "th"} Year` : "—",
+          isStudent: false, photo: r.photo,
+        }));
+        const me: RoomOccupant[] = myStudentName ? [{ id: linked.studentId, name: myStudentName, program: linked.profile?.program ?? "—", year: linked.profile?.year ?? "—", isStudent: true, photo: linked.profile?.photo ?? null }] : [];
+        setRoommates([...me, ...mapped]);
+      }
+    });
+    return () => { active = false; };
+  }, []);
+  const BH_DATA = assignment.bh;
+  const ROOM_DATA = assignment.room;
 
   const TABS: { id:Tab; label:string }[] = [
     { id:"info",     label:"Info"     },
@@ -311,10 +342,10 @@ export function ParentBoardingHouseScreen({ go }: { go:(s:string)=>void }) {
 
       {/* Tab body */}
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
-        {activeTab === "info"     && <InfoTab />}
-        {activeTab === "room"     && <RoomTab />}
-        {activeTab === "gallery"  && <GalleryTab />}
-        {activeTab === "landlord" && <LandlordTab />}
+        {activeTab === "info"     && <InfoTab bhData={BH_DATA} />}
+        {activeTab === "room"     && <RoomTab roomData={ROOM_DATA} occupants={roommates} />}
+        {activeTab === "gallery"  && <GalleryTab gallery={BH_DATA.gallery} />}
+        {activeTab === "landlord" && <LandlordTab bhData={BH_DATA} />}
       </div>
     </div>
   );

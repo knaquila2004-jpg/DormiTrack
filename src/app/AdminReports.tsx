@@ -1,71 +1,44 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Bell, MessageCircle, BarChart2, TrendingUp, Users, Building2,
   CreditCard, LogIn, LogOut, FileText, ChevronDown, ChevronUp,
   Download, Calendar, CheckCircle, Clock, AlertCircle, X, Eye,
   RefreshCw, Filter,
 } from "lucide-react";
+import {
+  getAdminAnalyticsStats, getDailyActivity, getMonthlyRegistrations, getAdminInsights,
+  AdminAnalyticsStats, DailyActivity, MonthlyRegistration,
+} from "./adminStore";
+import { getAllReportsForAdmin, respondToReport, AdminReportRow } from "./reportStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
-const TOP_STATS = [
-  { label:"Monthly Check-ins",    val:"312",   trend:"+24",  color:"#16A34A", bg:"#DCFCE7", Icon:LogIn      },
-  { label:"Monthly Check-outs",   val:"298",   trend:"+18",  color:"#D97706", bg:"#FEF3C7", Icon:LogOut     },
-  { label:"Active Users",         val:"1,248", trend:"+12",  color:"#9772F6", bg:"#F5F0FF", Icon:Users      },
-  { label:"Dorm Occupancy",       val:"87%",   trend:"+3%",  color:"#3B82F6", bg:"#EFF6FF", Icon:Building2  },
-  { label:"Payment Completion",   val:"94%",   trend:"+2%",  color:"#6366F1", bg:"#EEF2FF", Icon:CreditCard },
-];
+const EMPTY_ANALYTICS: AdminAnalyticsStats = { monthlyCheckins: 0, monthlyCheckouts: 0, activeUsers: 0, dormOccupancyPct: 0, paymentCompletionPct: 0 };
 
-// Bar chart data (daily check-ins last 7 days)
-const DAILY_DATA = [
-  { day:"Mon", checkins:42, checkouts:38 },
-  { day:"Tue", checkins:55, checkouts:47 },
-  { day:"Wed", checkins:38, checkouts:35 },
-  { day:"Thu", checkins:60, checkouts:52 },
-  { day:"Fri", checkins:71, checkouts:65 },
-  { day:"Sat", checkins:28, checkouts:25 },
-  { day:"Sun", checkins:18, checkouts:15 },
-];
-const MAX_VAL = Math.max(...DAILY_DATA.map(d=>d.checkins));
-
-// Monthly reg data
-const MONTHLY_REG = [
-  { month:"Mar", val:45 }, { month:"Apr", val:62 }, { month:"May", val:58 },
-  { month:"Jun", val:80 }, { month:"Jul", val:95 }, { month:"Aug", val:72 },
-];
-const MAX_REG = Math.max(...MONTHLY_REG.map(r=>r.val));
-
-type ReportStatus = "pending"|"resolved"|"archived";
-
-interface Report {
-  id:string; reporter:string; category:string; bh:string;
-  date:string; status:ReportStatus;
+function buildTopStats(s: AdminAnalyticsStats) {
+  return [
+    { label:"Monthly Check-ins",  val:String(s.monthlyCheckins),        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn      },
+    { label:"Monthly Check-outs", val:String(s.monthlyCheckouts),       color:"#D97706", bg:"#FEF3C7", Icon:LogOut     },
+    { label:"Active Users",       val:String(s.activeUsers),            color:"#9772F6", bg:"#F5F0FF", Icon:Users      },
+    { label:"Dorm Occupancy",     val:`${s.dormOccupancyPct}%`,         color:"#3B82F6", bg:"#EFF6FF", Icon:Building2  },
+    { label:"Payment Completion", val:`${s.paymentCompletionPct}%`,     color:"#6366F1", bg:"#EEF2FF", Icon:CreditCard },
+  ];
 }
 
-const REPORTS: Report[] = [
-  { id:"r1", reporter:"Ben Torres",   category:"Noise Complaint",   bh:"Sunrise Dorm",  date:"Aug 4, 2026",  status:"pending"  },
-  { id:"r2", reporter:"Ana Santos",   category:"Maintenance Issue", bh:"Sunrise Dorm",  date:"Aug 3, 2026",  status:"pending"  },
-  { id:"r3", reporter:"Maria Santos", category:"Billing Dispute",   bh:"Naquila BH",    date:"Aug 2, 2026",  status:"resolved" },
-  { id:"r4", reporter:"Kevin Cruz",   category:"Safety Concern",    bh:"Naquila BH",    date:"Aug 1, 2026",  status:"pending"  },
-  { id:"r5", reporter:"Lena Reyes",   category:"Rule Violation",    bh:"Sunrise Dorm",  date:"Jul 30, 2026", status:"archived" },
-];
+// UI-only status vocabulary ("archived") maps onto the real reports table's
+// `closed` status when persisting — see handleAction below.
+type ReportStatus = "pending"|"in-progress"|"resolved"|"closed";
+type UiStatus = "pending"|"resolved"|"archived";
+function toUiStatus(s: ReportStatus): UiStatus { return s === "closed" ? "archived" : s === "in-progress" ? "pending" : s; }
 
-const STATUS_META: Record<ReportStatus,{ label:string; color:string; bg:string }> = {
+const STATUS_META: Record<UiStatus,{ label:string; color:string; bg:string }> = {
   pending:  { label:"Pending",  color:"#D97706", bg:"#FEF3C7" },
   resolved: { label:"Resolved", color:"#16A34A", bg:"#DCFCE7" },
   archived: { label:"Archived", color:"#6B7280", bg:"#F3F4F6" },
 };
-
-const INSIGHTS = [
-  "Naquila BH has the highest occupancy rate (100%) this month.",
-  "Sunrise Dorm has 8 vacant slots — highest vacancy.",
-  "Peak check-in hours: 7:00–9:00 AM on weekdays.",
-  "Juan Dela Cruz is the most active student this week.",
-  "Student registrations peaked in June 2026.",
-];
 
 function BarChart({ data, maxVal }: { data:{day:string;checkins:number;checkouts:number}[]; maxVal:number }) {
   return (
@@ -105,17 +78,57 @@ function LineChart({ data, maxVal }: { data:{month:string;val:number}[]; maxVal:
 }
 
 export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
-  const [reports,   setReports]   = useState<Report[]>(REPORTS);
-  const [selected,  setSelected]  = useState<Report|null>(null);
+  const [reports,   setReports]   = useState<AdminReportRow[]>([]);
+  const [selected,  setSelected]  = useState<AdminReportRow|null>(null);
   const [dateRange, setDateRange] = useState("This Month");
   const [showDate,  setShowDate]  = useState(false);
 
+  const [analytics, setAnalytics] = useState<AdminAnalyticsStats>(EMPTY_ANALYTICS);
+  const [daily,     setDaily]     = useState<DailyActivity[]>([]);
+  const [monthly,   setMonthly]   = useState<MonthlyRegistration[]>([]);
+  const [insights,  setInsights]  = useState<string[]>([]);
+
+  const refreshReports = () => { getAllReportsForAdmin().then(setReports); };
+  useEffect(() => {
+    let active = true;
+    refreshReports();
+    Promise.all([getAdminAnalyticsStats(), getDailyActivity(), getMonthlyRegistrations()]).then(([a, d, m]) => {
+      if (!active) return;
+      setAnalytics(a); setDaily(d); setMonthly(m);
+      getAdminInsights(d, m).then(ins => { if (active) setInsights(ins); });
+    });
+    return () => { active = false; };
+  }, []);
+
+  const TOP_STATS = buildTopStats(analytics);
+  const MAX_VAL = Math.max(1, ...daily.map(d=>d.checkins));
+  const MAX_REG = Math.max(1, ...monthly.map(r=>r.val));
+
   const DATE_OPTS = ["Today","This Week","This Month","Last 3 Months","This Year"];
 
-  const handleAction = (id:string, act:string) => {
-    if (act==="resolve")  setReports(rs => rs.map(r => r.id===id ? { ...r, status:"resolved" as const } : r));
-    if (act==="archive")  setReports(rs => rs.map(r => r.id===id ? { ...r, status:"archived" as const } : r));
+  const handleAction = async (id:string, act:string) => {
+    const res = await respondToReport(id, act === "resolve" ? "resolved" : "closed");
+    if (res.ok === false) { console.error("respondToReport failed:", res.error); return; }
+    refreshReports();
     setSelected(null);
+  };
+
+  // Real CSV download of the currently-loaded reports — this button previously had no onClick
+  // handler at all (a completely dead button, not even a fake success message).
+  const exportReportsCsv = () => {
+    const headers = ["Report ID", "Reporter", "Category", "Boarding House", "Date", "Status"];
+    const csvEscape = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const rows = reports.map(r => [r.id, r.reporterName, r.category, r.boardingHouseName, r.date, r.status]);
+    const csv = [headers, ...rows].map(row => row.map(csvEscape).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `admin-reports-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -129,15 +142,15 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
               <h3 style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Report Details</h3>
               <button onClick={()=>setSelected(null)} style={{ width:30, height:30, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={13} color="#6B7280"/></button>
             </div>
-            {[["Reporter",selected.reporter],["Category",selected.category],["Boarding House",selected.bh],["Date",selected.date],["Status",STATUS_META[selected.status].label]].map(([l,v])=>(
+            {[["Reporter",selected.reporterName],["Category",selected.category],["Boarding House",selected.boardingHouseName],["Date",selected.date],["Status",STATUS_META[toUiStatus(selected.status)].label]].map(([l,v])=>(
               <div key={l} style={{ padding:"8px 0", borderBottom:"1px solid #F3F4F6" }}>
                 <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontFamily:QS, fontWeight:700, textTransform:"uppercase" as const }}>{l}</p>
                 <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN }}>{v}</p>
               </div>
             ))}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:16 }}>
-              {selected.status !== "resolved" && <button onClick={()=>handleAction(selected.id,"resolve")} style={{ height:44, borderRadius:16, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:12, fontWeight:800, fontFamily:QS }}>Mark Resolved</button>}
-              {selected.status !== "archived" && <button onClick={()=>handleAction(selected.id,"archive")} style={{ height:44, borderRadius:16, border:"1.5px solid #9CA3AF", background:"white", cursor:"pointer", color:"#374151", fontSize:12, fontWeight:800, fontFamily:QS }}>Archive</button>}
+              {toUiStatus(selected.status) !== "resolved" && <button onClick={()=>handleAction(selected.id,"resolve")} style={{ height:44, borderRadius:16, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:12, fontWeight:800, fontFamily:QS }}>Mark Resolved</button>}
+              {toUiStatus(selected.status) !== "archived" && <button onClick={()=>handleAction(selected.id,"archive")} style={{ height:44, borderRadius:16, border:"1.5px solid #9CA3AF", background:"white", cursor:"pointer", color:"#374151", fontSize:12, fontWeight:800, fontFamily:QS }}>Archive</button>}
             </div>
           </div>
         </div>
@@ -173,7 +186,7 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
                 </div>
               )}
             </div>
-            <button style={{ height:36, padding:"0 14px", borderRadius:14, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", gap:5 }}>
+            <button onClick={exportReportsCsv} style={{ height:36, padding:"0 14px", borderRadius:14, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", gap:5 }}>
               <Download size={12} color="white"/>Export
             </button>
           </div>
@@ -183,11 +196,10 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
 
           {/* Top stat cards scroll */}
           <div style={{ display:"flex", gap:10, overflowX:"auto" as const, scrollbarWidth:"none" as const, marginBottom:18, paddingBottom:2 }}>
-            {TOP_STATS.map(({ label, val, trend, color, bg, Icon })=>(
+            {TOP_STATS.map(({ label, val, color, bg, Icon })=>(
               <div key={label} style={{ flexShrink:0, width:120, background:"white", borderRadius:18, padding:"14px 14px", boxShadow:"0 3px 12px rgba(0,0,0,.07)" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
                   <div style={{ width:28, height:28, borderRadius:9, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}><Icon size={13} color={color}/></div>
-                  <span style={{ fontSize:8, fontWeight:800, color:"#16A34A", fontFamily:QS }}>{trend}</span>
                 </div>
                 <p style={{ margin:0, fontSize:18, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{val}</p>
                 <p style={{ margin:"2px 0 0", fontSize:8, color:"#9CA3AF", fontFamily:IN, lineHeight:1.3 }}>{label}</p>
@@ -204,29 +216,40 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
                 <div style={{ display:"flex", alignItems:"center", gap:4 }}><div style={{ width:8, height:8, borderRadius:2, background:"#D97706" }}/><span style={{ fontSize:9, color:"#6B7280", fontFamily:IN }}>Check-out</span></div>
               </div>
             </div>
-            <BarChart data={DAILY_DATA} maxVal={MAX_VAL}/>
-            <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
-              {DAILY_DATA.map(d=><span key={d.day} style={{ flex:1, fontSize:8, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>{d.day}</span>)}
-            </div>
+            {daily.length === 0 ? (
+              <p style={{ textAlign:"center" as const, fontSize:11, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>No check-in/out activity in this range yet.</p>
+            ) : (<>
+              <BarChart data={daily} maxVal={MAX_VAL}/>
+              <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
+                {daily.map(d=><span key={d.day} style={{ flex:1, fontSize:8, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>{d.day}</span>)}
+              </div>
+            </>)}
           </div>
 
           {/* Monthly Registrations chart */}
           <div style={{ background:"white", borderRadius:20, padding:"16px 16px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
             <p style={{ margin:"0 0 12px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Monthly Registrations</p>
-            <LineChart data={MONTHLY_REG} maxVal={MAX_REG}/>
-            <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
-              {MONTHLY_REG.map(d=><span key={d.month} style={{ flex:1, fontSize:8, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>{d.month}</span>)}
-            </div>
+            {monthly.length === 0 ? (
+              <p style={{ textAlign:"center" as const, fontSize:11, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>No registrations submitted in this range yet.</p>
+            ) : (<>
+              <LineChart data={monthly} maxVal={MAX_REG}/>
+              <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
+                {monthly.map(d=><span key={d.month} style={{ flex:1, fontSize:8, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>{d.month}</span>)}
+              </div>
+            </>)}
           </div>
 
           {/* Submitted Reports */}
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
             <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Submitted Reports</p>
-            <span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:"#FEF3C7", color:"#D97706", fontFamily:QS }}>{reports.filter(r=>r.status==="pending").length} pending</span>
+            <span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:"#FEF3C7", color:"#D97706", fontFamily:QS }}>{reports.filter(r=>toUiStatus(r.status)==="pending").length} pending</span>
           </div>
           <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
+            {reports.length === 0 && (
+              <p style={{ textAlign:"center" as const, fontSize:11, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>No reports submitted yet.</p>
+            )}
             {reports.map((r,i)=>{
-              const sm = STATUS_META[r.status];
+              const sm = STATUS_META[toUiStatus(r.status)];
               return (
                 <div key={r.id} onClick={()=>setSelected(r)} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderBottom:i<reports.length-1?"1px solid #F9FAFB":"none", cursor:"pointer" }}>
                   <div style={{ width:36, height:36, borderRadius:12, background:sm.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -234,7 +257,7 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
                   </div>
                   <div style={{ flex:1 }}>
                     <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{r.category}</p>
-                    <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{r.reporter} · {r.bh} · {r.date}</p>
+                    <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{r.reporterName} · {r.boardingHouseName} · {r.date}</p>
                   </div>
                   <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
                 </div>
@@ -243,10 +266,11 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
           </div>
 
           {/* System Insights */}
+          {insights.length > 0 && (<>
           <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>System Insights</p>
           <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
-            {INSIGHTS.map((insight,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"11px 16px", borderBottom:i<INSIGHTS.length-1?"1px solid #F9FAFB":"none" }}>
+            {insights.map((insight,i)=>(
+              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"11px 16px", borderBottom:i<insights.length-1?"1px solid #F9FAFB":"none" }}>
                 <div style={{ width:20, height:20, borderRadius:7, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:1 }}>
                   <span style={{ fontSize:9, fontWeight:800, color:"white", fontFamily:QS }}>{i+1}</span>
                 </div>
@@ -254,6 +278,7 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
               </div>
             ))}
           </div>
+          </>)}
 
         </div>
       </div>

@@ -1,12 +1,15 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   ChevronLeft, Search, Filter, CreditCard, CheckCircle, Clock,
-  AlertCircle, XCircle, User, Users, Receipt, Download, Printer,
+  AlertCircle, XCircle, User, Users, Receipt,
   ChevronDown, ChevronUp, X, Eye, Check, Banknote, TrendingUp,
   Calendar, FileText, ArrowRight, Circle, MoreVertical,
 } from "lucide-react";
-import { STUDENT_DATA } from "./StudentHome";
-import { addNotification } from "./notificationStore";
+import { addNotification, notifyLinkedParents } from "./notificationStore";
+import { supabase } from "../lib/supabase";
+import { getBillingRosterForLandlord, verifyPaymentRecord, rejectPaymentRecord, createPaymentPeriod, CREATE_PERIOD_MAX_MONTHS_AHEAD, StudentBilling } from "./paymentStore";
+import { getBoardingHousesForLandlord } from "./boardingHouseStore";
+import type { BoardingHouse } from "./shared";
 
 const GRAD    = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H  = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -29,76 +32,42 @@ type PayTx = {
   submittedBy: "student" | "parent"; submittedByName: string;
   status: "verified" | "pending" | "rejected";
   rejectionReason?: string;
+  proofUrl: string | null;
 };
 export type StudentPayment = {
   id: string; name: string; room: string; bed: string;
-  bills: BillItem[]; dueDate: string; lastUpdated: string;
+  bills: BillItem[]; dueDate: string; lastUpdated: string; note?: string | null;
   transactions: PayTx[];
+  studentUserId: string; // real auth user id — `id` above is the display student number
 };
 
-// ── Billing config (mirrors landlord payment setup) ───────────────────────────
+// ── Live data mapping ────────────────────────────────────────────────────────
+// paymentStore.ts's StudentBilling is the real, provider-agnostic shape;
+// this maps it onto the view model this screen's JSX already expects.
 
-const BILLING: { key: string; label: string; amount: number }[] = [
-  { key: "rent",        label: "Monthly Rent",    amount: 3500 },
-  { key: "water",       label: "Water Bill",      amount: 150  },
-  { key: "electricity", label: "Electricity Bill", amount: 350  },
-  { key: "garbage",     label: "Garbage Fee",      amount: 100  },
-];
-// Internet disabled in this setup → not in BILLING
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
 
-// ── Seed data ─────────────────────────────────────────────────────────────────
-
-const mkBills = (overrides: Partial<Record<string, Partial<BillItem>>>): BillItem[] =>
-  BILLING.map(b => ({
-    key: b.key, label: b.label, amount: b.amount,
-    status: "unpaid" as BillStatus, paidAmount: 0,
-    ...(overrides[b.key] ?? {}),
-  }));
-
-export const INITIAL_PAYMENTS: StudentPayment[] = [
-  {
-    id: "2024-0041", name: "Maria Santos",    room: "Room A", bed: "Bed 2", dueDate: "Aug 1, 2026", lastUpdated: "Jul 30, 2026",
-    bills: mkBills({ rent: { status:"paid", paidAmount:3500 }, water: { status:"paid", paidAmount:150 }, electricity: { status:"paid", paidAmount:350 }, garbage: { status:"paid", paidAmount:100 } }),
-    transactions: [
-      { id:"t1", billKey:"rent",        billLabel:"Monthly Rent",    amount:3500, date:"Jul 30, 2026", time:"10:14 AM", submittedBy:"student", submittedByName:"Maria Santos",          status:"verified" },
-      { id:"t2", billKey:"water",       billLabel:"Water Bill",       amount:150,  date:"Jul 30, 2026", time:"10:15 AM", submittedBy:"student", submittedByName:"Maria Santos",          status:"verified" },
-      { id:"t3", billKey:"electricity", billLabel:"Electricity Bill", amount:350,  date:"Jul 30, 2026", time:"10:15 AM", submittedBy:"student", submittedByName:"Maria Santos",          status:"verified" },
-      { id:"t4", billKey:"garbage",     billLabel:"Garbage Fee",      amount:100,  date:"Jul 30, 2026", time:"10:16 AM", submittedBy:"student", submittedByName:"Maria Santos",          status:"verified" },
-    ],
-  },
-  {
-    id: "2024-0042", name: "Juan Dela Cruz",  room: "Room A", bed: "Bed 1", dueDate: "Aug 1, 2026", lastUpdated: "Aug 1, 2026",
-    bills: mkBills({ rent: { status:"awaiting-verification", paidAmount:3500 }, water: { status:"awaiting-verification", paidAmount:150 }, electricity: { status:"unpaid", paidAmount:0 }, garbage: { status:"unpaid", paidAmount:0 } }),
-    transactions: [
-      { id:"t5", billKey:"rent",  billLabel:"Monthly Rent", amount:3500, date:"Aug 1, 2026", time:"8:44 AM", submittedBy:"parent", submittedByName:"Rosa Dela Cruz (Mother)", status:"pending" },
-      { id:"t6", billKey:"water", billLabel:"Water Bill",   amount:150,  date:"Aug 1, 2026", time:"8:45 AM", submittedBy:"parent", submittedByName:"Rosa Dela Cruz (Mother)", status:"pending" },
-    ],
-  },
-  {
-    id: "2024-0043", name: "Kevin Cruz",      room: "Room C", bed: "Bed 3", dueDate: "Aug 1, 2026", lastUpdated: "Aug 3, 2026",
-    bills: mkBills({ rent: { status:"overdue", paidAmount:0 }, water: { status:"overdue", paidAmount:0 }, electricity: { status:"overdue", paidAmount:0 }, garbage: { status:"overdue", paidAmount:0 } }),
-    transactions: [],
-  },
-  {
-    id: "2024-0044", name: "Lara Mendoza",    room: "Room B", bed: "Bed 1", dueDate: "Aug 1, 2026", lastUpdated: "Jul 31, 2026",
-    bills: mkBills({ rent: { status:"paid", paidAmount:3500 }, water: { status:"unpaid", paidAmount:0 }, electricity: { status:"unpaid", paidAmount:0 }, garbage: { status:"unpaid", paidAmount:0 } }),
-    transactions: [
-      { id:"t7", billKey:"rent", billLabel:"Monthly Rent", amount:3500, date:"Jul 31, 2026", time:"3:02 PM", submittedBy:"student", submittedByName:"Lara Mendoza", status:"verified" },
-    ],
-  },
-  {
-    id: "2024-0045", name: "Ben Torres",      room: "Room B", bed: "Bed 2", dueDate: "Aug 1, 2026", lastUpdated: "Aug 3, 2026",
-    bills: mkBills({}),
-    transactions: [],
-  },
-  {
-    id: "2024-0046", name: "Sofia Castillo",  room: "Room D", bed: "Bed 1", dueDate: "Aug 1, 2026", lastUpdated: "Aug 3, 2026",
-    bills: mkBills({ rent: { status:"awaiting-verification", paidAmount:3500 }, water: { status:"unpaid" }, electricity: { status:"unpaid" }, garbage: { status:"unpaid" } }),
-    transactions: [
-      { id:"t8", billKey:"rent", billLabel:"Monthly Rent", amount:3500, date:"Aug 2, 2026", time:"6:30 PM", submittedBy:"student", submittedByName:"Sofia Castillo", status:"pending" },
-    ],
-  },
-];
+function toLocalPayment(b: StudentBilling): StudentPayment {
+  return {
+    id: b.studentIdNo || b.studentId, studentUserId: b.studentId, name: b.studentName, room: b.room, bed: b.bed,
+    dueDate: fmtDate(b.dueDate), lastUpdated: fmtDate(b.updatedAt), note: b.note,
+    bills: b.bills.map(bill => ({ key: bill.key, label: bill.label, amount: bill.amount, status: bill.status as BillStatus, paidAmount: bill.paidAmount })),
+    transactions: b.transactions.map(tx => ({
+      id: tx.id, billKey: tx.billKey, billLabel: tx.billLabel, amount: tx.amount,
+      date: fmtDate(tx.submittedAt), time: fmtTime(tx.submittedAt),
+      submittedBy: tx.submittedByRole, submittedByName: tx.submittedByName,
+      status: tx.status, rejectionReason: tx.rejectionReason ?? undefined,
+      proofUrl: tx.proofUrl ?? null,
+    })),
+  };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -148,6 +117,100 @@ function SummaryCard({ icon: Icon, label, value, color, bg }: { icon: React.Elem
   );
 }
 
+// ── Create Payment Period Modal ───────────────────────────────────────────────
+// Lets a landlord manually open a real billing period for a chosen month (current month
+// through CREATE_PERIOD_MAX_MONTHS_AHEAD ahead — matches create_payment_period's own
+// server-side check) across every current occupant of one of their boarding houses, with an
+// optional note. Previously the only way a period ever came into existence was
+// ensure_current_period_bill() silently creating "whichever month it happens to be right now"
+// the instant someone opened Payments — there was no landlord-facing way to plan ahead.
+function monthOptions(): { year: number; month: number; label: string }[] {
+  const now = new Date();
+  const out: { year: number; month: number; label: string }[] = [];
+  for (let i = 0; i <= CREATE_PERIOD_MAX_MONTHS_AHEAD; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    out.push({ year: d.getFullYear(), month: d.getMonth() + 1, label: d.toLocaleDateString("en-US", { month: "long", year: "numeric" }) });
+  }
+  return out;
+}
+
+function CreatePaymentPeriodModal({ boardingHouses, onClose, onCreated }: {
+  boardingHouses: BoardingHouse[]; onClose: () => void;
+  onCreated: (info: { boardingHouseId: string; periodLabel: string; newStudentIds: string[] }) => void;
+}) {
+  const months = useMemo(monthOptions, []);
+  const [bhId, setBhId]   = useState(boardingHouses[0]?.id ?? "");
+  const [sel, setSel]     = useState(0); // index into months
+  const [dueDate, setDueDate] = useState("");
+  const [note, setNote]   = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr]     = useState("");
+
+  const chosen = months[sel];
+  const canSubmit = !!bhId && !!dueDate;
+
+  const handleCreate = async () => {
+    if (!canSubmit) { setErr("Please choose a boarding house and due date."); return; }
+    setSubmitting(true);
+    const res = await createPaymentPeriod({ boardingHouseId: bhId, year: chosen.year, month: chosen.month, dueDate, note });
+    setSubmitting(false);
+    if (res.ok === false) { setErr(res.error); return; }
+    onCreated({ boardingHouseId: bhId, periodLabel: chosen.label, newStudentIds: res.results.filter(r => r.isNew).map(r => r.studentId) });
+  };
+
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
+      <div style={{ background:"#F7F8FC", borderRadius:"28px 28px 0 0", maxHeight:"92%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
+        <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:44, height:44, borderRadius:15, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Calendar size={20} color="white"/>
+          </div>
+          <div style={{ flex:1 }}>
+            <p style={{ margin:0, fontSize:16, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Create Payment Period</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Opens a real bill for every current occupant</p>
+          </div>
+          <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <X size={15} color="#6B7280"/>
+          </button>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"16px 18px 36px" }}>
+          {boardingHouses.length > 1 && (
+            <>
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Boarding House</p>
+              <select value={bhId} onChange={e=>setBhId(e.target.value)} style={{ width:"100%", background:"white", borderRadius:14, padding:"12px 14px", border:"1.5px solid #E5E7EB", marginBottom:14, fontSize:13, fontFamily:IN, color:"#1F2937", outline:"none" }}>
+                {boardingHouses.map(bh=> <option key={bh.id} value={bh.id}>{bh.name}</option>)}
+              </select>
+            </>
+          )}
+
+          <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Billing Month <span style={{ color:"#EF4444" }}>*</span></p>
+          <select value={sel} onChange={e=>setSel(Number(e.target.value))} style={{ width:"100%", background:"white", borderRadius:14, padding:"12px 14px", border:"1.5px solid #E5E7EB", marginBottom:6, fontSize:13, fontFamily:IN, color:"#1F2937", outline:"none" }}>
+            {months.map((m,i)=> <option key={i} value={i}>{m.label}{i===0?" (current month)":""}</option>)}
+          </select>
+          <p style={{ margin:"0 0 14px", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>Periods can be scheduled up to {CREATE_PERIOD_MAX_MONTHS_AHEAD} months ahead.</p>
+
+          <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Due Date <span style={{ color:"#EF4444" }}>*</span></p>
+          <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
+            <input type="date" value={dueDate} onChange={e=>{ setDueDate(e.target.value); setErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", colorScheme:"light" as const, boxSizing:"border-box" as const }}/>
+          </div>
+
+          <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Note <span style={{ fontSize:10, color:"#9CA3AF", fontWeight:600 }}>(Optional — shown to students &amp; parents)</span></p>
+          <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
+            <textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="e.g. Water rate increased this month due to summer usage." rows={3} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", resize:"none" as const, boxSizing:"border-box" as const }}/>
+          </div>
+
+          {err && <p style={{ margin:"0 0 10px", fontSize:11, color:"#EF4444", fontFamily:IN }}>{err}</p>}
+
+          <button onClick={handleCreate} disabled={submitting||!canSubmit} style={{ width:"100%", height:50, borderRadius:18, backgroundImage:canSubmit?GRAD:"none", background:canSubmit?undefined:"#E5E7EB", border:"none", cursor:submitting||!canSubmit?"default":"pointer", opacity:submitting?0.7:1, fontSize:14, fontWeight:800, color:canSubmit?"white":"#9CA3AF", fontFamily:QS, boxShadow:canSubmit?"0 4px 16px rgba(151,114,246,.3)":undefined }}>
+            {submitting ? "Creating…" : `Create for ${chosen.label}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Payment Details Modal ─────────────────────────────────────────────────────
 
 type ModalTab = "overview" | "history" | "timeline";
@@ -155,8 +218,8 @@ type ModalTab = "overview" | "history" | "timeline";
 function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
   p: StudentPayment;
   onClose: ()=>void;
-  onVerify: (studentId: string, txId: string) => void;
-  onReject: (studentId: string, txId: string, reason: string) => void;
+  onVerify: (studentId: string, studentUserId: string, txId: string) => void;
+  onReject: (studentId: string, studentUserId: string, txId: string, reason: string) => void;
 }) {
   const [tab, setTab]             = useState<ModalTab>("overview");
   const [rejectingTx, setRejTx]  = useState<PayTx|null>(null);
@@ -179,13 +242,13 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
   const timelineSteps = [
     { label:"Billing Generated",           done: true                          },
     { label:"Payment Submitted",           done: p.transactions.length > 0     },
-    { label:"Proof Uploaded",              done: p.transactions.some(t=>t.status!=="rejected") },
+    { label:"Proof Uploaded",              done: p.transactions.some(t=>!!t.proofUrl) },
     { label:"Landlord Verified",           done: p.transactions.some(t=>t.status==="verified") },
     { label:"Payment Completed",           done: status === "paid"             },
   ];
 
   return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:70, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
+    <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:70, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
       <div style={{ background:"#F3F4F8", borderRadius:"24px 24px 0 0", height:"93%", display:"flex", flexDirection:"column" as const }}>
 
         {/* Header */}
@@ -245,9 +308,14 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
                             {tx.submittedBy==="parent" ? <Users size={10} color="#6B7280"/> : <User size={10} color="#6B7280"/>}
                             {tx.submittedByName}
                           </p>
+                          {tx.proofUrl && (
+                            <a href={tx.proofUrl} target="_blank" rel="noopener noreferrer" style={{ margin:"3px 0 0", fontSize:10, color:"#9772F6", fontFamily:QS, fontWeight:800, textDecoration:"none", display:"inline-flex", alignItems:"center", gap:3 }}>
+                              <Eye size={10}/> View Proof
+                            </a>
+                          )}
                         </div>
                         <div style={{ display:"flex", gap:6 }}>
-                          <button onClick={()=>onVerify(p.id, tx.id)} style={{ padding:"6px 12px", borderRadius:10, background:"#DCFCE7", color:"#16A34A", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
+                          <button onClick={()=>onVerify(p.id, p.studentUserId, tx.id)} style={{ padding:"6px 12px", borderRadius:10, background:"#DCFCE7", color:"#16A34A", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
                             <Check size={11}/> Verify
                           </button>
                           <button onClick={()=>{setRejTx(tx);setRejR("");}} style={{ padding:"6px 12px", borderRadius:10, background:"#FEE2E2", color:"#EF4444", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
@@ -257,6 +325,14 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* Period note — set when this bill was created via "Create Payment Period" */}
+              {p.note && (
+                <div style={{ background:"#F5F0FF", borderRadius:14, padding:"10px 14px", marginBottom:14, border:"1px solid #E9DFFC", display:"flex", alignItems:"flex-start", gap:8 }}>
+                  <FileText size={13} color="#9772F6" style={{ flexShrink:0, marginTop:1 }}/>
+                  <p style={{ margin:0, fontSize:11, color:"#6B21D9", fontFamily:IN, lineHeight:1.5 }}>{p.note}</p>
                 </div>
               )}
 
@@ -353,6 +429,11 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
                             Submitted by: {tx.submittedByName}
                           </span>
                         </div>
+                        {tx.proofUrl && (
+                          <a href={tx.proofUrl} target="_blank" rel="noopener noreferrer" style={{ marginTop:4, fontSize:10, color:"#9772F6", fontFamily:QS, fontWeight:800, textDecoration:"none", display:"inline-flex", alignItems:"center", gap:3 }}>
+                            <Eye size={10}/> View Proof
+                          </a>
+                        )}
                         {tx.rejectionReason && (
                           <div style={{ marginTop:6, padding:"6px 10px", background:"#FEE2E2", borderRadius:8 }}>
                             <p style={{ margin:0, fontSize:10, color:"#EF4444", fontFamily:IN }}>Rejected: {tx.rejectionReason}</p>
@@ -360,7 +441,7 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
                         )}
                         {tx.status==="pending" && (
                           <div style={{ display:"flex", gap:6, marginTop:8 }}>
-                            <button onClick={()=>onVerify(p.id, tx.id)} style={{ padding:"5px 12px", borderRadius:9, background:"#DCFCE7", color:"#16A34A", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
+                            <button onClick={()=>onVerify(p.id, p.studentUserId, tx.id)} style={{ padding:"5px 12px", borderRadius:9, background:"#DCFCE7", color:"#16A34A", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
                               <Check size={11}/> Verify
                             </button>
                             <button onClick={()=>{setRejTx(tx);setRejR("");}} style={{ padding:"5px 12px", borderRadius:9, background:"#FEE2E2", color:"#EF4444", fontSize:10, fontWeight:800, border:"none", cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", gap:4 }}>
@@ -407,7 +488,7 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
 
       {/* Reject reason dialog */}
       {rejectingTx && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:80, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 24px" }}>
+        <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:80, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 24px" }}>
           <div style={{ background:"white", borderRadius:24, padding:22, width:"100%" }}>
             <p style={{ fontSize:15, fontWeight:800, color:"#1F2937", margin:"0 0 4px", fontFamily:QS }}>Reject Payment</p>
             <p style={{ fontSize:12, color:"#6B7280", margin:"0 0 14px", fontFamily:IN }}>{rejectingTx.billLabel} · {php(rejectingTx.amount)}</p>
@@ -421,7 +502,7 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
               style={{ width:"100%", padding:"10px 13px", borderRadius:12, border:"1.5px solid #E5E7EB", outline:"none", fontSize:12, fontFamily:IN, color:"#1F2937", resize:"none" as const, boxSizing:"border-box" as const }}/>
             <div style={{ display:"flex", gap:10, marginTop:14 }}>
               <button onClick={()=>setRejTx(null)} style={{ flex:1, padding:"12px 0", borderRadius:14, border:"1.5px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Cancel</button>
-              <button onClick={()=>{ if(!rejectReason.trim()) return; onReject(p.id, rejectingTx.id, rejectReason); setRejTx(null); }} style={{ flex:1, padding:"12px 0", borderRadius:14, border:"none", background:"#EF4444", color:"white", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Confirm Reject</button>
+              <button onClick={()=>{ if(!rejectReason.trim()) return; onReject(p.id, p.studentUserId, rejectingTx.id, rejectReason); setRejTx(null); }} style={{ flex:1, padding:"12px 0", borderRadius:14, border:"none", background:"#EF4444", color:"white", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Confirm Reject</button>
             </div>
           </div>
         </div>
@@ -432,16 +513,62 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
 
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
-export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
-  const [payments, setPayments]         = useState<StudentPayment[]>(INITIAL_PAYMENTS);
+export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { go: (s: string) => void; relatedId?: string; onDeepLinkConsumed?: () => void }) {
+  const [payments, setPayments]         = useState<StudentPayment[]>([]);
+  const [landlordId, setLandlordId]     = useState<string | null>(null);
   const [search, setSearch]             = useState("");
   const [statusFilter, setStatusFilter] = useState<PayStatus|"all">("all");
   const [sortBy, setSortBy]             = useState<"name"|"due"|"newest"|"oldest">("newest");
   const [detailP, setDetailP]           = useState<StudentPayment|null>(null);
-  const [showExport, setShowExport]     = useState(false);
+  const [showCreatePeriod, setShowCreatePeriod] = useState(false);
+  const [boardingHouses, setBoardingHouses]     = useState<BoardingHouse[]>([]);
   const [toast, setToast]               = useState("");
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(()=>setToast(""), 2800); };
+
+  const refresh = async (uid: string) => {
+    const roster = await getBillingRosterForLandlord(uid);
+    setPayments(roster.map(toLocalPayment));
+  };
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const uid = session?.user?.id;
+      if (!uid || !active) return;
+      setLandlordId(uid);
+      refresh(uid);
+      getBoardingHousesForLandlord(uid).then(bhs => { if (active) setBoardingHouses(bhs); });
+    });
+    return () => { active = false; };
+  }, []);
+
+  // A newly-created payment period is a real bill the affected students (and their linked
+  // parents) should hear about — same "notify student + notifyLinkedParents" fan-out already
+  // used for verify/reject above, just addressed to whoever this period was actually new for
+  // (re-running this for a period that already existed for some students shouldn't re-notify
+  // them, which is exactly what createPaymentPeriod's per-student isNew flag is for).
+  const handlePeriodCreated = async (info: { boardingHouseId: string; periodLabel: string; newStudentIds: string[] }) => {
+    setShowCreatePeriod(false);
+    for (const studentId of info.newStudentIds) {
+      addNotification({ userId: studentId, type: "payment", title: "New Payment Period", description: `A new bill for ${info.periodLabel} is now due.`, destination: "payments" });
+      notifyLinkedParents(studentId, { type: "payment", title: "New Payment Period", description: `Your student has a new bill for ${info.periodLabel}.`, destination: "payments" });
+    }
+    if (landlordId) refresh(landlordId);
+    showToast(info.newStudentIds.length > 0
+      ? `Created ${info.periodLabel} bills for ${info.newStudentIds.length} student${info.newStudentIds.length === 1 ? "" : "s"}.`
+      : `${info.periodLabel} was already set up for every current occupant.`);
+  };
+
+  // Opened from a "Payment Awaiting Verification" notification tap — jump straight into that
+  // student's payment detail (its "pending verification" section already surfaces the exact
+  // transaction up top with Verify/Reject right there), instead of leaving the landlord to
+  // search the whole roster themselves. Re-checks as `payments` loads in since that's async.
+  useEffect(() => {
+    if (!relatedId) return;
+    const match = payments.find(p => p.transactions.some(t => t.id === relatedId));
+    if (match) { setDetailP(match); onDeepLinkConsumed?.(); }
+  }, [relatedId, payments, onDeepLinkConsumed]);
 
   // ── Derived stats ──────────────────────────────────────────────────────────
   const stats = useMemo(()=>({
@@ -469,7 +596,9 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
   }, [payments, search, statusFilter, sortBy]);
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  const verifyTx = (studentId: string, txId: string) => {
+  const verifyTx = async (studentId: string, studentUserId: string, txId: string) => {
+    const res = await verifyPaymentRecord(txId);
+    if (res.ok === false) { showToast(`Could not verify payment: ${res.error}`); return; }
     setPayments(prev => prev.map(p => {
       if (p.id !== studentId) return p;
       const tx = p.transactions.find(t=>t.id===txId);
@@ -487,15 +616,16 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
       transactions: prev.transactions.map(t=>t.id===txId?{...t,status:"verified" as const}:t),
       bills: prev.bills.map(b=>{ const tx=prev.transactions.find(t=>t.id===txId); return tx&&b.key===tx.billKey?{...b,status:"paid" as BillStatus,paidAmount:b.amount}:b; }),
     } : null);
-    if (studentId === STUDENT_DATA.id) {
-      const description = "Your payment has been verified by the landlord.";
-      addNotification({ role: "student", type: "payment", title: "Payment Verified", description, destination: "payments", relatedId: txId });
-      addNotification({ role: "parent",  type: "payment", title: "Student Payment Verified", description: `${STUDENT_DATA.name}'s payment has been verified by the landlord.`, destination: "payments", relatedId: txId });
-    }
+    const studentName = payments.find(p=>p.id===studentId)?.name ?? "Student";
+    addNotification({ userId: studentUserId, type: "payment", title: "Payment Verified", description: "Your payment has been verified by the landlord.", destination: "payments", relatedId: txId });
+    notifyLinkedParents(studentUserId, { type: "payment", title: "Student Payment Verified", description: `${studentName}'s payment has been verified by the landlord.`, destination: "payments", relatedId: txId });
+    if (landlordId) refresh(landlordId);
     showToast("Payment verified successfully");
   };
 
-  const rejectTx = (studentId: string, txId: string, reason: string) => {
+  const rejectTx = async (studentId: string, studentUserId: string, txId: string, reason: string) => {
+    const res = await rejectPaymentRecord(txId, reason);
+    if (res.ok === false) { showToast(`Could not reject payment: ${res.error}`); return; }
     setPayments(prev => prev.map(p => p.id!==studentId ? p : {
       ...p,
       lastUpdated: "Just now",
@@ -508,11 +638,10 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
       transactions: prev.transactions.map(t=>t.id===txId?{...t,status:"rejected" as const,rejectionReason:reason}:t),
       bills: prev.bills.map(b=>{ const tx=prev.transactions.find(t=>t.id===txId); return tx&&b.key===tx.billKey?{...b,status:"unpaid" as BillStatus,paidAmount:0}:b; }),
     } : null);
-    if (studentId === STUDENT_DATA.id) {
-      addNotification({ role: "student", type: "payment", title: "Payment Rejected", description: `Your payment was rejected: ${reason}`, destination: "payments", relatedId: txId });
-    }
+    addNotification({ userId: studentUserId, type: "payment", title: "Payment Rejected", description: `Your payment was rejected: ${reason}`, destination: "payments", relatedId: txId });
     showToast("Payment rejected.");
   };
+
 
   const STATUS_FILTERS: { key: PayStatus|"all"; label: string }[] = [
     { key:"all",                  label:"All" },
@@ -536,10 +665,10 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
             <h1 style={{ color:"white", fontSize:22, fontWeight:800, margin:"0 0 4px", fontFamily:QS }}>Payment Management</h1>
-            <p style={{ color:"rgba(255,255,255,.7)", fontSize:12, margin:0, fontFamily:IN }}>August 2026 billing cycle</p>
+            <p style={{ color:"rgba(255,255,255,.7)", fontSize:12, margin:0, fontFamily:IN }}>{new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })} billing cycle</p>
           </div>
-          <button onClick={()=>setShowExport(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:14, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS }}>
-            <Download size={13} color="white"/> Export
+          <button onClick={()=>setShowCreatePeriod(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:14, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS }}>
+            <Calendar size={13} color="white"/> Create Payment Period
           </button>
         </div>
       </div>
@@ -565,9 +694,9 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
               </div>
               {/* Progress bar */}
               <div style={{ marginTop:10, height:6, background:"#F3F4F6", borderRadius:4, overflow:"hidden" }}>
-                <div style={{ height:"100%", borderRadius:4, backgroundImage:GRAD, width:`${Math.min(100,(stats.totalPaid/stats.totalExpected)*100).toFixed(1)}%`, transition:"width .4s" }}/>
+                <div style={{ height:"100%", borderRadius:4, backgroundImage:GRAD, width:`${stats.totalExpected > 0 ? Math.min(100,(stats.totalPaid/stats.totalExpected)*100).toFixed(1) : 0}%`, transition:"width .4s" }}/>
               </div>
-              <p style={{ margin:"4px 0 0", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{((stats.totalPaid/stats.totalExpected)*100).toFixed(0)}% collected · {php(stats.totalExpected-stats.totalPaid)} remaining</p>
+              <p style={{ margin:"4px 0 0", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{(stats.totalExpected > 0 ? (stats.totalPaid/stats.totalExpected)*100 : 0).toFixed(0)}% collected · {php(stats.totalExpected-stats.totalPaid)} remaining</p>
             </div>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:16 }}>
@@ -672,33 +801,13 @@ export function LandlordPaymentsScreen({ go }: { go: (s: string) => void }) {
         />
       )}
 
-      {/* ── Export sheet ───────────────────────────────────────────────────── */}
-      {showExport && (
-        <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.45)", zIndex:60, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
-          <div style={{ background:"white", borderRadius:"24px 24px 0 0", padding:"20px 20px 32px" }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
-              <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Export Report</p>
-              <button onClick={()=>setShowExport(false)} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <X size={15} color="#6B7280"/>
-              </button>
-            </div>
-            {[
-              { Icon:FileText,  label:"Export as PDF",   sub:"Save a printable PDF report",  action:()=>{setShowExport(false);showToast("PDF export ready to download.");} },
-              { Icon:Download,  label:"Export as Excel", sub:"Download spreadsheet (.xlsx)",  action:()=>{setShowExport(false);showToast("Excel export ready to download.");} },
-              { Icon:Printer,   label:"Print Report",    sub:"Open browser print dialog",     action:()=>{setShowExport(false);window.print();} },
-            ].map(({ Icon, label, sub, action })=>(
-              <button key={label} onClick={action} style={{ width:"100%", display:"flex", alignItems:"center", gap:14, padding:"14px 16px", borderRadius:16, background:"#F9FAFB", border:"1.5px solid #F3F4F6", cursor:"pointer", marginBottom:10, textAlign:"left" as const }}>
-                <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                  <Icon size={18} color="white"/>
-                </div>
-                <div>
-                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{label}</p>
-                  <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{sub}</p>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* ── Create Payment Period modal ───────────────────────────────────── */}
+      {showCreatePeriod && (
+        <CreatePaymentPeriodModal
+          boardingHouses={boardingHouses}
+          onClose={()=>setShowCreatePeriod(false)}
+          onCreated={handlePeriodCreated}
+        />
       )}
 
       {/* ── Toast ──────────────────────────────────────────────────────────── */}

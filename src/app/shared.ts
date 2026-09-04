@@ -5,8 +5,8 @@ import { Wifi, Droplet, Zap, BookOpen, Utensils, Shirt, Video, Car, Clock, Shiel
 export const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 export const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 
-// ── Map center (BISU Main Campus, Tagbilaran City, Bohol) ─────────────────────
-export const MAP_CENTER = { lat: 9.6539, lng: 123.8547 };
+// ── Map center (BISU Calape Campus, Calape, Bohol — this app's home campus) ───
+export const MAP_CENTER = { lat: 9.8947193, lng: 123.8827641 };
 
 // ── Screen & role types ───────────────────────────────────────────────────────
 export type Screen =
@@ -33,23 +33,40 @@ export type RoomData = {
 export type Amenity = { label: string; Icon: React.ComponentType<{ size?: number; color?: string }> };
 export type BoardingHouse = {
   id: string; name: string; address: string; landlord: string; cover: string;
-  gallery: { url: string; label: string }[]; desc: string; rating: number;
+  gallery: { id?: string; url: string; label: string }[]; desc: string; rating: number;
   amenities: Amenity[]; rooms: RoomData[];
   contact?: string;
   rules?: string[];
+  // Each fee's own `enabled` mirrors the landlord's Payment Setup toggle for it —
+  // a disabled fee is still present here (so the landlord's own screens can still
+  // show/edit it) but student-facing screens must check `enabled` before
+  // displaying it, matching what the landlord actually turned on.
   payment?: {
-    rent: number;
-    electric: { type: "fixed" | "metered"; amount?: number };
-    water: { type: "fixed" | "metered"; amount?: number };
-    internet: { type: "included" | "separate"; amount?: number };
+    rent: { enabled: boolean; amount: number };
+    electric: { enabled: boolean; type: "fixed" | "metered"; amount?: number };
+    water: { enabled: boolean; type: "fixed" | "metered"; amount?: number };
+    internet: { enabled: boolean; type: "included" | "separate"; amount?: number };
   };
+  // Landlord's "Student Stay Information" settings — which optional questions
+  // students are asked (and shown) while registering. Defaults to true so any
+  // boarding house that predates these settings still behaves as "show everything".
+  allowLengthOfStay?: boolean;
+  allowMoveIn?: boolean;
+  allowPersonality?: boolean;
+  allowHobbies?: boolean;
+  allowLifestyle?: boolean;
+  allowNotes?: boolean;
   lat: number; lng: number;
+  // The only area within which a student's check-in/check-out is accepted — set by the
+  // landlord while pinning the boarding house's location (defaults to 50m for houses
+  // created before this existed).
+  checkinRadiusMeters: number;
   municipality: string;
   status: "active" | "pending" | "suspended";
 };
 
 export type RegRequest = {
-  studentName: string; house: BoardingHouse; room: RoomData; bed?: string;
+  studentName: string; house: BoardingHouse; room: RoomData; bed?: string; bedId?: string;
   moveIn: string; moveOut: string; stayUnit: "Weeks" | "Months"; stayCount: string;
   traits: string[]; hobbies: string[]; lifestyle: string[]; notes: string; submittedDate: string;
 };
@@ -111,98 +128,7 @@ export function roomStatus(r: RoomData): { label: string; color: string; bg: str
   return { label: "Available", color: "#16A34A", bg: "#DCFCE7" };
 }
 
-export const BOARDING_HOUSES: BoardingHouse[] = [
-  {
-    id: "bh1", name: "Sunshine Boarding House", address: "Cangumba, Calape, Bohol",
-    lat: 9.8940, lng: 123.8590, municipality: "Calape", status: "active",
-    landlord: "Mr. Ramon Villaflor", cover: IMG.ext1, rating: 4.8,
-    desc: "A bright, secure, and student-friendly boarding house just 5 minutes from the BISU campus. Newly renovated rooms with fast Wi-Fi and 24/7 security.",
-    gallery: [
-      { url: IMG.ext1, label: "Exterior" }, { url: IMG.bed1, label: "Interior" },
-      { url: IMG.study, label: "Hallway" }, { url: IMG.bed2, label: "Rooms" },
-      { url: IMG.kitchen, label: "Kitchen" }, { url: IMG.books, label: "Study Area" },
-      { url: IMG.common, label: "Common Area" },
-    ],
-    amenities: AMENITIES,
-    contact: "09171234567",
-    rules: [
-      "Curfew starts at 10:00 PM.",
-      "Visitors allowed only during visiting hours (8AM–8PM).",
-      "Keep noise levels to a minimum after 9PM.",
-      "Maintain cleanliness in all common areas.",
-      "No smoking inside the boarding house.",
-      "No illegal substances or weapons allowed.",
-      "Report any damaged facilities to the landlord immediately.",
-      "Respect fellow occupants at all times.",
-      "Use electricity and water responsibly.",
-      "Pets are not allowed.",
-    ],
-    payment: { rent: 2500, electric: { type: "metered" }, water: { type: "fixed", amount: 250 }, internet: { type: "included" } },
-    rooms: [
-      { id: "r1", name: "Room A", photo: IMG.bed1, cap: 6, occ: 6, description: "Ground floor room with 6 individual beds, excellent ventilation, and a large window overlooking the garden.", photos: [IMG.bed1, IMG.study, IMG.books], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.study},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.books},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"},{id:"b6",label:"Bed 6",status:"occupied"}] },
-      { id: "r2", name: "Room B", photo: IMG.bed2, cap: 6, occ: 3, description: "Spacious room on the second floor with a garden view. Comes with built-in cabinets and a shared study area.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"available",photo:IMG.desk},{id:"b5",label:"Bed 5",status:"reserved",photo:IMG.common},{id:"b6",label:"Bed 6",status:"available"}] },
-      { id: "r3", name: "Room C", photo: IMG.bed3, cap: 4, occ: 3, description: "Corner room with natural lighting and a quiet environment. Ideal for studious and focused students.", photos: [IMG.bed3, IMG.books], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.books},{id:"b4",label:"Bed 4",status:"available"}] },
-      { id: "r4", name: "Room D", photo: IMG.bed4, cap: 4, occ: 1, description: "Top-floor room with a great breeze. Quiet neighborhood view. Two beds are currently under maintenance.", photos: [IMG.bed4, IMG.study, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed4},{id:"b2",label:"Bed 2",status:"available",photo:IMG.study},{id:"b3",label:"Bed 3",status:"maintenance"},{id:"b4",label:"Bed 4",status:"available"}] },
-    ],
-  },
-  {
-    id: "bh2", name: "Greenview Student Residence", address: "Poblacion, Calape, Bohol",
-    lat: 9.8886, lng: 123.8672, municipality: "Calape", status: "active",
-    landlord: "Mrs. Elena Gascon", cover: IMG.ext2, rating: 4.6,
-    desc: "Quiet, affordable residence surrounded by greenery. Ideal for students who value a calm study environment with spacious shared facilities.",
-    gallery: [
-      { url: IMG.ext2, label: "Exterior" }, { url: IMG.bed3, label: "Interior" },
-      { url: IMG.desk, label: "Study Area" }, { url: IMG.bed4, label: "Rooms" },
-      { url: IMG.counter, label: "Kitchen" }, { url: IMG.common, label: "Common Area" },
-    ],
-    amenities: AMENITIES.filter(a => !["Parking", "Curfew"].includes(a.label)),
-    contact: "09189876543",
-    rules: [
-      "Curfew at 11:00 PM on weekdays, 12:00 AM on weekends.",
-      "No visitors after 9:00 PM.",
-      "Clean up after yourself in the kitchen and dining area.",
-      "No loud music or excessive noise at any time.",
-      "Laundry schedule must be followed.",
-      "Electricity and water bills are shared monthly.",
-      "Damages caused by tenants are the tenant's responsibility.",
-      "Rooms must be kept clean and organized.",
-    ],
-    payment: { rent: 2000, electric: { type: "fixed", amount: 400 }, water: { type: "fixed", amount: 200 }, internet: { type: "separate", amount: 299 } },
-    rooms: [
-      { id: "r1", name: "Room 101", photo: IMG.bed3, cap: 5, occ: 5, description: "First floor room with easy access to the common area. Fully air-conditioned with private bathroom.", photos: [IMG.bed3, IMG.common], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied",photo:IMG.common},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"occupied"}] },
-      { id: "r2", name: "Room 102", photo: IMG.bed4, cap: 5, occ: 2, description: "Bright and airy room with large windows and a shared bathroom. Great for students who enjoy natural light.", photos: [IMG.bed4, IMG.desk, IMG.books], roomAmenities: ["Electric Fan", "Shared CR", "Study Table", "Cabinet", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed4},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available",photo:IMG.desk},{id:"b4",label:"Bed 4",status:"available"},{id:"b5",label:"Bed 5",status:"reserved",photo:IMG.books}] },
-      { id: "r3", name: "Room 201", photo: IMG.bed1, cap: 4, occ: 4, description: "Second floor room with scenic views. All beds currently occupied.", photos: [IMG.bed1, IMG.study], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.study},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
-      { id: "r4", name: "Room 202", photo: IMG.bed2, cap: 6, occ: 4, description: "Spacious 6-bed room on the second floor.", photos: [IMG.bed2, IMG.desk, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"},{id:"b5",label:"Bed 5",status:"available",photo:IMG.desk},{id:"b6",label:"Bed 6",status:"available"}] },
-    ],
-  },
-  {
-    id: "bh3", name: "Casa Verde Dormitory", address: "Tultugan, Calape, Bohol",
-    lat: 9.8790, lng: 123.8750, municipality: "Calape", status: "pending",
-    landlord: "Mr. Danilo Reyes", cover: IMG.ext3, rating: 4.9,
-    desc: "Premium dormitory with modern amenities, dedicated study areas, and a friendly community.",
-    gallery: [
-      { url: IMG.ext3, label: "Exterior" }, { url: IMG.bed2, label: "Interior" },
-      { url: IMG.study, label: "Study Area" }, { url: IMG.bed1, label: "Rooms" },
-      { url: IMG.kitchen, label: "Kitchen" }, { url: IMG.books, label: "Common Area" },
-    ],
-    amenities: AMENITIES,
-    contact: "09205551234",
-    rules: [
-      "Strict 10:30 PM curfew every day.",
-      "No male visitors in female floors and vice versa.",
-      "Common areas must be cleaned after use.",
-      "Gate pass required for overnight stays outside.",
-      "Monthly room inspections will be conducted.",
-      "No cooking inside rooms.",
-      "Internet is shared — no bandwidth-heavy activities.",
-      "Security cameras are installed in all common areas.",
-      "Lost keys incur a ₱200 replacement fee.",
-    ],
-    payment: { rent: 3000, electric: { type: "metered" }, water: { type: "metered" }, internet: { type: "included" } },
-    rooms: [
-      { id: "r1", name: "Unit 1", photo: IMG.bed2, cap: 4, occ: 2, description: "Premium semi-private unit with modern furniture.", photos: [IMG.bed2, IMG.desk], roomAmenities: ["Air-conditioned", "Private CR", "Study Table", "Cabinet", "Wi-Fi", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed2},{id:"b2",label:"Bed 2",status:"occupied"},{id:"b3",label:"Bed 3",status:"available",photo:IMG.desk},{id:"b4",label:"Bed 4",status:"available"}] },
-      { id: "r2", name: "Unit 2", photo: IMG.bed1, cap: 4, occ: 4, description: "Fully occupied cozy unit.", photos: [IMG.bed1, IMG.common], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed1},{id:"b2",label:"Bed 2",status:"occupied",photo:IMG.common},{id:"b3",label:"Bed 3",status:"occupied"},{id:"b4",label:"Bed 4",status:"occupied"}] },
-      { id: "r3", name: "Unit 3", photo: IMG.bed3, cap: 6, occ: 1, description: "Large 6-bed unit on the top floor with panoramic views.", photos: [IMG.bed3, IMG.study, IMG.books, IMG.desk], roomAmenities: ["Air-conditioned", "Shared CR", "Study Table", "Cabinet", "Wi-Fi", "Window", "Balcony"], beds: [{id:"b1",label:"Bed 1",status:"occupied",photo:IMG.bed3},{id:"b2",label:"Bed 2",status:"available",photo:IMG.study},{id:"b3",label:"Bed 3",status:"available",photo:IMG.books},{id:"b4",label:"Bed 4",status:"reserved",photo:IMG.desk},{id:"b5",label:"Bed 5",status:"available"},{id:"b6",label:"Bed 6",status:"available"}] },
-    ],
-  },
-];
+// BOARDING_HOUSES mock array removed — real listings now come from
+// src/app/boardingHouseStore.ts (getActiveBoardingHouses / getBoardingHousesForLandlord),
+// which query Supabase and map rows onto the BoardingHouse/RoomData/BedData
+// shapes defined above.

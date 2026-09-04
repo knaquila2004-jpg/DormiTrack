@@ -1,39 +1,49 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Bell, MessageCircle, User, Home, Users, Building2, LogIn, LogOut,
   CheckCircle, AlertCircle, Clock, FileText, Megaphone, Plus,
   TrendingUp, ShieldCheck, BarChart2, Zap, RefreshCw,
-  ChevronRight, UserCheck, UserPlus, CreditCard, Activity,
+  ChevronRight, UserCheck, UserPlus, Activity, X,
 } from "lucide-react";
-import { useUnreadCount, fmtBadgeCount } from "./notificationStore";
+import { useUnreadCount, fmtBadgeCount, timeAgo } from "./notificationStore";
 import { useUnreadChatCount } from "./chatStore";
+import { getAdminOverviewStats, getAdminTodayWidgets, getRecentPlatformActivity, AdminOverviewStats, AdminTodayWidgets, PlatformActivity } from "./adminStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
 const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
-const STATS = [
-  { label:"Total Students",      val:"1,248", trend:"+12",  color:"#9772F6", bg:"#F5F0FF", Icon:Users       },
-  { label:"Total Parents",       val:"986",   trend:"+8",   color:"#EC4899", bg:"#FDF2F8", Icon:Users       },
-  { label:"Total Landlords",     val:"34",    trend:"+2",   color:"#3B82F6", bg:"#EFF6FF", Icon:Building2   },
-  { label:"Boarding Houses",     val:"34",    trend:"+2",   color:"#6366F1", bg:"#EEF2FF", Icon:Home        },
-  { label:"Active (Inside)",     val:"312",   trend:"+24",  color:"#16A34A", bg:"#DCFCE7", Icon:LogIn       },
-  { label:"Outside BH",          val:"936",   trend:"-24",  color:"#D97706", bg:"#FEF3C7", Icon:LogOut      },
-  { label:"Pending Verifications",val:"18",   trend:"-5",   color:"#EF4444", bg:"#FEE2E2", Icon:AlertCircle },
-  { label:"Reports Today",       val:"7",     trend:"+3",   color:"#0891B2", bg:"#ECFEFF", Icon:FileText    },
-];
+const EMPTY_STATS: AdminOverviewStats = { totalStudents: 0, totalParents: 0, totalLandlords: 0, totalBoardingHouses: 0, activeInside: 0, outsideBH: 0, pendingVerifications: 0, reportsToday: 0 };
+const EMPTY_WIDGETS: AdminTodayWidgets = { newUsers: 0, checkIns: 0, checkOuts: 0, pendingReports: 0, bhApprovals: 0 };
 
-const ACTIVITIES = [
-  { Icon:UserPlus,    color:"#9772F6", bg:"#F5F0FF", msg:"Juan Dela Cruz registered as student.",          time:"2 min ago"  },
-  { Icon:Building2,  color:"#3B82F6", bg:"#EFF6FF", msg:"Ma. Kyla Naquila added a new boarding house.",   time:"15 min ago" },
-  { Icon:UserCheck,  color:"#EC4899", bg:"#FDF2F8", msg:"Parent Maria Reyes linked her account.",         time:"32 min ago" },
-  { Icon:LogIn,      color:"#16A34A", bg:"#DCFCE7", msg:"Kevin Cruz checked IN at Naquila BH.",           time:"1 hr ago"   },
-  { Icon:LogOut,     color:"#D97706", bg:"#FEF3C7", msg:"Ana Santos checked OUT of Sunrise Dorm.",        time:"1 hr ago"   },
-  { Icon:FileText,   color:"#EF4444", bg:"#FEE2E2", msg:"New complaint report submitted by Ben Torres.",   time:"2 hrs ago"  },
-  { Icon:CreditCard, color:"#0891B2", bg:"#ECFEFF", msg:"Payment for July verified by landlord.",         time:"3 hrs ago"  },
-  { Icon:Megaphone,  color:"#7C3AED", bg:"#EDE9FE", msg:"Landlord posted curfew reminder announcement.",  time:"4 hrs ago"  },
-];
+// No historical snapshot table exists to compute real period-over-period
+// deltas (the old mock's "+12"/"-24" trend badges), so stat cards show the
+// real current value only — an honest gap rather than a fabricated trend.
+function buildStatCards(s: AdminOverviewStats) {
+  return [
+    { label:"Total Students",       val:String(s.totalStudents),       color:"#9772F6", bg:"#F5F0FF", Icon:Users       },
+    { label:"Total Parents",        val:String(s.totalParents),        color:"#EC4899", bg:"#FDF2F8", Icon:Users       },
+    { label:"Total Landlords",      val:String(s.totalLandlords),      color:"#3B82F6", bg:"#EFF6FF", Icon:Building2   },
+    { label:"Boarding Houses",      val:String(s.totalBoardingHouses), color:"#6366F1", bg:"#EEF2FF", Icon:Home        },
+    { label:"Active (Inside)",      val:String(s.activeInside),        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn       },
+    { label:"Outside BH",           val:String(s.outsideBH),           color:"#D97706", bg:"#FEF3C7", Icon:LogOut      },
+    { label:"Pending Verifications",val:String(s.pendingVerifications),color:"#EF4444", bg:"#FEE2E2", Icon:AlertCircle },
+    { label:"Reports Today",        val:String(s.reportsToday),        color:"#0891B2", bg:"#ECFEFF", Icon:FileText    },
+  ];
+}
+
+// Icon/color treatment per PlatformActivity.type (adminStore.ts) — the real
+// event feed itself only carries a plain string type + message + timestamp.
+const ACTIVITY_META: Record<string, { Icon: React.ElementType; color: string; bg: string }> = {
+  signup:       { Icon: UserPlus,   color: "#9772F6", bg: "#F5F0FF" },
+  bh:           { Icon: Building2,  color: "#3B82F6", bg: "#EFF6FF" },
+  link:         { Icon: UserCheck,  color: "#EC4899", bg: "#FDF2F8" },
+  checkin:      { Icon: LogIn,      color: "#16A34A", bg: "#DCFCE7" },
+  checkout:     { Icon: LogOut,     color: "#D97706", bg: "#FEF3C7" },
+  report:       { Icon: FileText,   color: "#EF4444", bg: "#FEE2E2" },
+  announcement: { Icon: Megaphone,  color: "#7C3AED", bg: "#EDE9FE" },
+};
 
 const QUICK_ACTIONS = [
   { label:"Verify Users",              Icon:UserCheck,  color:"#9772F6", bg:"#F5F0FF", screen:"adminUsers"   },
@@ -44,13 +54,15 @@ const QUICK_ACTIONS = [
   { label:"System",                    Icon:Activity,   color:"#0891B2", bg:"#ECFEFF", screen:"adminSystem"  },
 ];
 
-const TODAY_WIDGETS = [
-  { label:"New Users",          val:"8",   color:"#9772F6" },
-  { label:"Check-ins",          val:"47",  color:"#16A34A" },
-  { label:"Check-outs",         val:"31",  color:"#D97706" },
-  { label:"Pending Reports",    val:"4",   color:"#EF4444" },
-  { label:"BH Approvals",       val:"2",   color:"#3B82F6" },
-];
+function buildTodayWidgets(w: AdminTodayWidgets) {
+  return [
+    { label:"New Users",       val:String(w.newUsers),       color:"#9772F6" },
+    { label:"Check-ins",       val:String(w.checkIns),       color:"#16A34A" },
+    { label:"Check-outs",      val:String(w.checkOuts),      color:"#D97706" },
+    { label:"Pending Reports", val:String(w.pendingReports), color:"#EF4444" },
+    { label:"BH Approvals",    val:String(w.bhApprovals),    color:"#3B82F6" },
+  ];
+}
 
 function fmtDate() {
   return new Date().toLocaleDateString("en-PH", { weekday:"long", month:"long", day:"numeric", year:"numeric" });
@@ -61,7 +73,21 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
   const notifCount = useUnreadCount("admin");
   const chatCount = useUnreadChatCount("admin");
 
-  const refresh = () => { setRefreshing(true); setTimeout(()=>setRefreshing(false), 1200); };
+  const [stats, setStats] = useState<AdminOverviewStats>(EMPTY_STATS);
+  const [widgets, setWidgets] = useState<AdminTodayWidgets>(EMPTY_WIDGETS);
+  // Fetched at a generous limit so "View All" has something real to show beyond the
+  // 5-item dashboard preview, without a second round-trip when it's opened.
+  const [activity, setActivity] = useState<PlatformActivity[]>([]);
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  const loadStats = () => {
+    Promise.all([getAdminOverviewStats(), getAdminTodayWidgets(), getRecentPlatformActivity(50)]).then(([s, w, a]) => { setStats(s); setWidgets(w); setActivity(a); });
+  };
+  useEffect(() => { loadStats(); }, []);
+
+  const STATS = buildStatCards(stats);
+  const TODAY_WIDGETS = buildTodayWidgets(widgets);
+
+  const refresh = () => { setRefreshing(true); loadStats(); setTimeout(()=>setRefreshing(false), 1200); };
 
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F2F4F8" }}>
@@ -87,7 +113,7 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
               <MessageCircle size={17} color="white"/>
               {chatCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(chatCount)}</span>}
             </button>
-            <button onClick={()=>go("adminProfile")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <button onClick={()=>go("adminProfile")} aria-label="My Profile" style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <User size={17} color="white"/>
             </button>
           </div>
@@ -110,13 +136,12 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
         {/* Stat cards 2-col grid */}
         <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>System Overview</p>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:18 }}>
-          {STATS.map(({ label, val, trend, color, bg, Icon })=>(
+          {STATS.map(({ label, val, color, bg, Icon })=>(
             <div key={label} style={{ background:"white", borderRadius:18, padding:"14px 14px", boxShadow:"0 3px 12px rgba(0,0,0,.06)" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
                 <div style={{ width:32, height:32, borderRadius:10, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Icon size={15} color={color}/>
                 </div>
-                <span style={{ fontSize:9, fontWeight:800, color:trend.startsWith("+")?color:"#9CA3AF", fontFamily:QS, background:trend.startsWith("+")?bg:"#F3F4F6", borderRadius:20, padding:"2px 7px" }}>{trend}</span>
               </div>
               <p style={{ margin:0, fontSize:20, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{val}</p>
               <p style={{ margin:"2px 0 0", fontSize:9, color:"#9CA3AF", fontFamily:IN, lineHeight:1.3 }}>{label}</p>
@@ -137,23 +162,32 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
           ))}
         </div>
 
-        {/* Recent Activities */}
+        {/* Recent Activity — only the 5 most recent; "View All" opens the rest (up to
+            the 50 fetched above) in a modal instead of this card growing without end. */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-          <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activities</p>
-          <span style={{ fontSize:11, color:"#9772F6", fontWeight:700, fontFamily:QS, cursor:"pointer" }}>View All</span>
+          <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
+          {activity.length>5 && (
+            <span onClick={()=>setShowAllActivity(true)} style={{ fontSize:11, color:"#9772F6", fontWeight:700, fontFamily:QS, cursor:"pointer" }}>View All</span>
+          )}
         </div>
         <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:18 }}>
-          {ACTIVITIES.map(({ Icon, color, bg, msg, time }, i)=>(
-            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 16px", borderBottom:i<ACTIVITIES.length-1?"1px solid #F9FAFB":"none" }}>
-              <div style={{ width:34, height:34, borderRadius:11, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
-                <Icon size={14} color={color}/>
+          {activity.length === 0 && (
+            <p style={{ margin:0, padding:"18px 16px", fontSize:12, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>Nothing to show yet — activity will appear here as it happens.</p>
+          )}
+          {activity.slice(0,5).map(({ id, type, msg, ts }, i, arr)=>{
+            const meta = ACTIVITY_META[type] ?? { Icon: Activity, color:"#6B7280", bg:"#F3F4F6" };
+            return (
+              <div key={id} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 16px", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
+                <div style={{ width:34, height:34, borderRadius:11, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
+                  <meta.Icon size={14} color={meta.color}/>
+                </div>
+                <div style={{ flex:1 }}>
+                  <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
+                  <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{timeAgo(ts)}</p>
+                </div>
               </div>
-              <div style={{ flex:1 }}>
-                <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
-                <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{time}</p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Pending banner */}
@@ -162,13 +196,45 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
             <AlertCircle size={20} color="#EF4444"/>
           </div>
           <div style={{ flex:1 }}>
-            <p style={{ margin:"0 0 1px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>18 Pending Verifications</p>
+            <p style={{ margin:"0 0 1px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{stats.pendingVerifications} Pending Verification{stats.pendingVerifications===1?"":"s"}</p>
             <p style={{ margin:0, fontSize:11, color:"#6B7280", fontFamily:IN }}>Accounts waiting for admin approval</p>
           </div>
           <button onClick={()=>go("adminUsers")} style={{ height:34, padding:"0 14px", borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS }}>Review</button>
         </div>
 
       </div>
+
+      {showAllActivity && (
+        <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setShowAllActivity(false)}>
+          <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"85%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+            <div style={{ padding:"18px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div>
+                <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
+                <p style={{ margin:"2px 0 0", fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{activity.length} total</p>
+              </div>
+              <button onClick={()=>setShowAllActivity(false)} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <X size={15} color="#6B7280"/>
+              </button>
+            </div>
+            <div style={{ overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"8px 20px 24px" }}>
+              {activity.map(({ id, type, msg, ts }, i)=>{
+                const meta = ACTIVITY_META[type] ?? { Icon: Activity, color:"#6B7280", bg:"#F3F4F6" };
+                return (
+                  <div key={id} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 0", borderBottom:i<activity.length-1?"1px solid #F3F4F6":"none" }}>
+                    <div style={{ width:34, height:34, borderRadius:11, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
+                      <meta.Icon size={14} color={meta.color}/>
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN, lineHeight:1.45 }}>{msg}</p>
+                      <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{timeAgo(ts)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

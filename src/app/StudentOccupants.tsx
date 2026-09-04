@@ -1,12 +1,27 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Users, Home, ChevronRight, X, Phone, BookOpen,
   GraduationCap, Calendar, Building2, MapPin, User, Bed,
   Info, Shield, Mail, Wifi, Droplet, Zap, Utensils, Star,
-  Shirt, Car, CheckCircle, AlertCircle, Clock,
+  Shirt, Car, CheckCircle, AlertCircle, Clock, Maximize2, Pencil, ChevronLeft,
 } from "lucide-react";
-import { BH_DATA, ROOM_DATA, STUDENT_DATA, STAY_DATA } from "./StudentHome";
+import { supabase } from "../lib/supabase";
+import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment, MyBoardingHouse, MyRoom, MyStay } from "./studentAssignmentStore";
+import { getRoommates } from "./registrationStore";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
+import { FullScreenBHMap } from "./components/FullScreenBHMap";
+import { notifyLandlordOfBoardingHouse } from "./notificationStore";
+import {
+  getMyCurrentStayRaw, getMyPendingStayChangeRequest, submitStayChangeRequest,
+  MyCurrentStay, StayChangeRequest, StayUnit,
+} from "./stayChangeStore";
+
+const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
+const EMPTY_ASSIGNMENT: MyAssignment = {
+  bh:   { id: "", name: "—", address: "—", lat: 0, lng: 0, cover: null, landlord: "—", landlordPhoto: null, contact: "—", email: "—", status: "Active", regStatus: "Approved", checkinRadiusMeters: 50, amenities: [], rules: [], totalRooms: 0, rentAmount: null, gallery: [] },
+  room: { id: "", name: "—", bed: "—", capacity: 0, occupied: 0, available: 0, floor: "—", type: "—" },
+  stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
+};
 
 const GRAD = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const QS   = "'Quicksand',sans-serif";
@@ -17,17 +32,8 @@ const IN   = "'Inter',sans-serif";
 interface Occupant {
   id: string; name: string; bed: string; program: string; year: string;
   block: string; contact: string; moveIn: string; status: "active"|"check-in-pending";
-  isMe?: boolean;
+  isMe?: boolean; photo: string | null;
 }
-
-const ROOM_OCCUPANTS: Occupant[] = [
-  { id:"o1", name:"Juan Dela Cruz",  bed:"Bed 1", program:"BS Computer Science", year:"2nd Year", block:"Block A", contact:"+63 912 345 6789", moveIn:"Aug 1, 2026",  status:"active", isMe:true  },
-  { id:"o2", name:"Maria Santos",    bed:"Bed 2", program:"BS Nursing",           year:"3rd Year", block:"Block B", contact:"+63 919 555 1234", moveIn:"Jun 15, 2026", status:"active"            },
-  { id:"o3", name:"Kevin Cruz",      bed:"Bed 3", program:"BS Engineering",       year:"1st Year", block:"Block A", contact:"+63 915 777 5678", moveIn:"Jul 1, 2026",  status:"active"            },
-  { id:"o4", name:"Lena Reyes",      bed:"Bed 4", program:"BA Education",         year:"4th Year", block:"Block C", contact:"+63 908 111 9876", moveIn:"May 20, 2026", status:"active"            },
-  { id:"o5", name:"Ben Torres",      bed:"Bed 5", program:"BS Criminology",       year:"2nd Year", block:"Block A", contact:"+63 933 444 2222", moveIn:"Jul 22, 2026", status:"active"            },
-  { id:"o6", name:"Clara Lim",       bed:"Bed 6", program:"BS Business Admin",    year:"1st Year", block:"Block B", contact:"+63 927 888 3333", moveIn:"Aug 1, 2026",  status:"active"            },
-];
 
 const AVATAR_COLORS = ["#9772F6","#3B82F6","#16A34A","#EC4899","#D97706","#6366F1"];
 
@@ -46,16 +52,16 @@ const AMENITY_ICONS: Record<string, React.ReactNode> = {
 
 // ── Occupant Modal ────────────────────────────────────────────────────────────
 
-function OccupantModal({ occ, idx, onClose }: { occ:Occupant; idx:number; onClose:()=>void }) {
+function OccupantModal({ occ, idx, onClose, roomName, bhName }: { occ:Occupant; idx:number; onClose:()=>void; roomName:string; bhName:string }) {
   return (
-    <div style={{ position:"absolute" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
+    <div style={{ position: "fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:80, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }}>
       <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"88%", display:"flex", flexDirection:"column" as const }}>
         <div style={{ backgroundImage:GRAD, borderRadius:"24px 24px 0 0", padding:"24px 20px 20px", display:"flex", flexDirection:"column" as const, alignItems:"center", position:"relative" as const }}>
           <button onClick={onClose} style={{ position:"absolute" as const, top:16, right:16, width:32, height:32, borderRadius:10, background:"rgba(255,255,255,.2)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <X size={15} color="white"/>
           </button>
-          <div style={{ width:72, height:72, borderRadius:24, background:"rgba(255,255,255,.2)", border:"3px solid rgba(255,255,255,.5)", display:"flex", alignItems:"center", justifyContent:"center", marginBottom:12 }}>
-            <span style={{ fontSize:24, fontWeight:800, color:"white", fontFamily:QS }}>{initials(occ.name)}</span>
+          <div style={{ width:72, height:72, borderRadius:"50%", background:"rgba(255,255,255,.2)", border:"3px solid rgba(255,255,255,.5)", display:"flex", alignItems:"center", justifyContent:"center", marginBottom:12, overflow:"hidden" }}>
+            {occ.photo ? <img src={occ.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:24, fontWeight:800, color:"white", fontFamily:QS }}>{initials(occ.name)}</span>}
           </div>
           <p style={{ margin:"0 0 6px", fontSize:17, fontWeight:800, color:"white", fontFamily:QS }}>{occ.name}</p>
           <div style={{ display:"flex", gap:6 }}>
@@ -72,8 +78,8 @@ function OccupantModal({ occ, idx, onClose }: { occ:Occupant; idx:number; onClos
             { Icon:BookOpen,      label:"Year Level",     val:occ.year       },
             { Icon:Shield,        label:"Block",          val:occ.block      },
             { Icon:Calendar,      label:"Move-in Date",   val:occ.moveIn     },
-            { Icon:Home,          label:"Room",           val:ROOM_DATA.name },
-            { Icon:Building2,     label:"Boarding House", val:BH_DATA.name   },
+            { Icon:Home,          label:"Room",           val:roomName },
+            { Icon:Building2,     label:"Boarding House", val:bhName   },
           ].map(({ Icon, label, val })=>(
             <div key={label} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 0", borderBottom:"1px solid #F3F4F6" }}>
               <div style={{ width:36, height:36, borderRadius:12, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -88,7 +94,7 @@ function OccupantModal({ occ, idx, onClose }: { occ:Occupant; idx:number; onClos
           <div style={{ background:"#EFF6FF", borderRadius:16, padding:"12px 14px", display:"flex", alignItems:"flex-start", gap:10, marginTop:14 }}>
             <Info size={14} color="#3B82F6" style={{ flexShrink:0, marginTop:1 }}/>
             <p style={{ margin:0, fontSize:11, color:"#1D4ED8", fontFamily:IN, lineHeight:1.5 }}>
-              Contact information is only shown for your assigned roommates in {ROOM_DATA.name}.
+              Contact information is only shown for your assigned roommates in {roomName}.
             </p>
           </div>
         </div>
@@ -97,9 +103,149 @@ function OccupantModal({ occ, idx, onClose }: { occ:Occupant; idx:number; onClos
   );
 }
 
+// ── Request a Stay Change ────────────────────────────────────────────────────
+// Move-in/Move-out/Stay Duration used to be 100% read-only here — these are
+// official assignment records the landlord controls, so this doesn't overwrite
+// them directly. It submits a real request; the landlord gets notified and has
+// to confirm it (in that occupant's profile in LandlordOccupants.tsx) before
+// the real student_assignments/student_boarding_registrations rows change.
+
+function StayChangeFormModal({ onClose, onSubmitted, bhId, studentName }: { onClose: () => void; onSubmitted: () => void; bhId: string; studentName: string }) {
+  const [loading, setLoading] = useState(true);
+  const [moveIn, setMoveIn] = useState("");
+  const [hasMoveOut, setHasMoveOut] = useState(false);
+  const [moveOut, setMoveOut] = useState("");
+  const [stayCount, setStayCount] = useState("");
+  const [stayUnit, setStayUnit] = useState<StayUnit>("Months");
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getMyCurrentStayRaw().then(c => {
+      if (!active) return;
+      if (!c) { setErr("Could not load your current stay info."); setLoading(false); return; }
+      setMoveIn(c.moveIn);
+      if (c.moveOut) { setHasMoveOut(true); setMoveOut(c.moveOut); }
+      if (c.stayCount) setStayCount(String(c.stayCount));
+      if (c.stayUnit) setStayUnit(c.stayUnit);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
+  const handleSubmit = async () => {
+    if (!moveIn) { setErr("Please choose a move-in date."); return; }
+    if (hasMoveOut && !moveOut) { setErr("Please choose a move-out date, or turn that off."); return; }
+    if (hasMoveOut && moveOut < moveIn) { setErr("Move-out date can't be before move-in."); return; }
+    setSubmitting(true); setErr("");
+    const res = await submitStayChangeRequest({
+      moveIn, moveOut: hasMoveOut ? moveOut : null,
+      stayUnit: stayCount.trim() ? stayUnit : null,
+      stayCount: stayCount.trim() ? Number(stayCount) : null,
+      note,
+    });
+    setSubmitting(false);
+    if (res.ok === false) { setErr(res.error); return; }
+    const { data: { session } } = await supabase.auth.getSession();
+    notifyLandlordOfBoardingHouse(bhId, {
+      type: "stay-change", title: "Stay Change Requested",
+      description: `${studentName} requested a change to their move-in/move-out/duration details.`,
+      destination: "occupants", relatedId: session?.user?.id,
+    });
+    setSuccess(true);
+  };
+
+  if (success) return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.6)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }}>
+      <div style={{ background:"white", borderRadius:28, padding:"30px 24px 24px", width:"100%", maxWidth:330, textAlign:"center" as const, boxShadow:"0 24px 60px rgba(0,0,0,.25)" }}>
+        <div style={{ width:64, height:64, borderRadius:22, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <CheckCircle size={28} color="white"/>
+        </div>
+        <h3 style={{ margin:"0 0 10px", fontSize:18, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Change Requested!</h3>
+        <p style={{ margin:"0 0 22px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.65 }}>
+          Your landlord has been notified and will need to confirm this before it takes effect.
+        </p>
+        <button onClick={()=>{ onSubmitted(); onClose(); }} style={{ width:"100%", height:48, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", fontSize:14, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
+      <div style={{ background:"#F7F8FC", borderRadius:"28px 28px 0 0", maxHeight:"93%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
+        <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12 }}>
+          <div onClick={onClose} style={{ cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}><ChevronLeft size={17} color="#374151"/></div>
+          <div style={{ flex:1 }}>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Request a Stay Change</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Your landlord will need to confirm this</p>
+          </div>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 18px 40px" }}>
+          {loading ? (
+            <p style={{ textAlign:"center" as const, fontSize:12, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>Loading…</p>
+          ) : (
+            <>
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Move-In Date <span style={{ color:"#EF4444" }}>*</span></p>
+              <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
+                <input type="date" value={moveIn} onChange={e=>{ setMoveIn(e.target.value); setErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", boxSizing:"border-box" as const }}/>
+              </div>
+
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+                <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Move-Out Date</p>
+                <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+                  <input type="checkbox" checked={hasMoveOut} onChange={e=>{ setHasMoveOut(e.target.checked); setErr(""); }}/>
+                  <span style={{ fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Set a date</span>
+                </label>
+              </div>
+              {hasMoveOut && (
+                <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
+                  <input type="date" value={moveOut} onChange={e=>{ setMoveOut(e.target.value); setErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", boxSizing:"border-box" as const }}/>
+                </div>
+              )}
+
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Stay Duration <span style={{ fontSize:10, color:"#9CA3AF", fontWeight:600 }}>(Optional)</span></p>
+              <div style={{ display:"flex", gap:10, marginBottom:14 }}>
+                <div style={{ flex:1, background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB" }}>
+                  <input type="number" min={1} value={stayCount} onChange={e=>{ setStayCount(e.target.value); setErr(""); }} placeholder="e.g. 6" style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", boxSizing:"border-box" as const }}/>
+                </div>
+                <select value={stayUnit} onChange={e=>setStayUnit(e.target.value as StayUnit)} style={{ padding:"0 14px", borderRadius:14, border:"1.5px solid #E5E7EB", fontSize:13, fontFamily:IN, color:"#1F2937", background:"white", outline:"none" }}>
+                  <option value="Weeks">Weeks</option>
+                  <option value="Months">Months</option>
+                </select>
+              </div>
+
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Note to Landlord <span style={{ fontSize:10, color:"#9CA3AF", fontWeight:600 }}>(Optional)</span></p>
+              <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:18 }}>
+                <textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Why you're requesting this change…" rows={3} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", resize:"none" as const, boxSizing:"border-box" as const }}/>
+              </div>
+
+              {err && <p style={{ margin:"0 0 10px", fontSize:11, color:"#EF4444", fontFamily:IN }}>{err}</p>}
+
+              <button onClick={handleSubmit} disabled={submitting} style={{ width:"100%", height:52, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:submitting?"default":"pointer", opacity:submitting?0.7:1, fontSize:15, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.35)" }}>
+                {submitting ? "Submitting…" : "Submit Request"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab content ───────────────────────────────────────────────────────────────
 
-function OverviewTab({ go }: { go:(s:string)=>void }) {
+function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_DATA, studentName }: { go:(s:string)=>void; bhData: MyBoardingHouse; roomData: MyRoom; stayData: MyStay; studentName: string }) {
+  const [showFullMap, setShowFullMap] = useState(false);
+  const [showStayChangeForm, setShowStayChangeForm] = useState(false);
+  const [pendingStayChange, setPendingStayChange] = useState<StayChangeRequest | null>(null);
+  const refreshPendingStayChange = () => { getMyPendingStayChangeRequest().then(setPendingStayChange); };
+  useEffect(() => { refreshPendingStayChange(); }, []);
   return (
     <div style={{ padding:"16px 16px 28px" }}>
 
@@ -113,7 +259,17 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
             mapType="standard"
             markers={[{ id:"bh", variant:"bh", position:{ lat: BH_DATA.lat, lng: BH_DATA.lng }, title: BH_DATA.name }]}
           />
+          <button onClick={()=>setShowFullMap(true)} title="Show Full Map" style={{ position:"absolute" as const, bottom:8, right:8, zIndex:20, width:30, height:30, borderRadius:10, border:"none", background:"white", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", boxShadow:"0 3px 10px rgba(0,0,0,.2)" }}>
+            <Maximize2 size={14} color="#374151"/>
+          </button>
         </div>
+        {showFullMap && (
+          <FullScreenBHMap
+            bh={{ name: BH_DATA.name, address: BH_DATA.address, landlord: BH_DATA.landlord, contact: BH_DATA.contact, lat: BH_DATA.lat, lng: BH_DATA.lng }}
+            onClose={()=>setShowFullMap(false)}
+            showDistanceInfo={false}
+          />
+        )}
         {[
           { Icon:Building2, label:"Name",            val:BH_DATA.name     },
           { Icon:MapPin,    label:"Address",         val:BH_DATA.address  },
@@ -141,7 +297,7 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
             { label:"Room",         val:ROOM_DATA.name,  color:"#9772F6", bg:"#F5F0FF" },
             { label:"Bed",          val:ROOM_DATA.bed,   color:"#3B82F6", bg:"#EFF6FF" },
             { label:"Floor",        val:ROOM_DATA.floor.replace(" Floor",""),  color:"#16A34A", bg:"#DCFCE7" },
-            { label:"Room Type",    val:"Standard",      color:"#D97706", bg:"#FEF3C7" },
+            { label:"Room Type",    val:ROOM_DATA.type,  color:"#D97706", bg:"#FEF3C7" },
           ].map(({ label, val, color, bg })=>(
             <div key={label} style={{ background:bg, borderRadius:14, padding:"12px 14px" }}>
               <p style={{ margin:0, fontSize:15, fontWeight:800, color, fontFamily:QS, lineHeight:1.1 }}>{val}</p>
@@ -156,11 +312,25 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
             <span style={{ fontSize:11, fontWeight:700, color:"#9772F6", fontFamily:QS }}>{ROOM_DATA.occupied}/{ROOM_DATA.capacity}</span>
           </div>
           <div style={{ height:8, background:"#F3F4F6", borderRadius:6, overflow:"hidden" }}>
-            <div style={{ height:"100%", borderRadius:6, backgroundImage:GRAD, width:`${Math.round(ROOM_DATA.occupied/ROOM_DATA.capacity*100)}%` }}/>
+            <div style={{ height:"100%", borderRadius:6, backgroundImage:GRAD, width:`${ROOM_DATA.capacity > 0 ? Math.round(ROOM_DATA.occupied/ROOM_DATA.capacity*100) : 0}%` }}/>
           </div>
         </div>
         {/* Stay period */}
         <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #F3F4F6" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
+            <span style={{ fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Stay Period</span>
+            {!pendingStayChange && (
+              <button onClick={()=>setShowStayChangeForm(true)} title="Request a Change" style={{ width:26, height:26, borderRadius:9, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Pencil size={12} color="#6B7280"/>
+              </button>
+            )}
+          </div>
+          {pendingStayChange && (
+            <div style={{ margin:"8px 0", padding:"10px 12px", borderRadius:12, background:"#FEF3C7", display:"flex", alignItems:"center", gap:8 }}>
+              <Clock size={13} color="#D97706" style={{ flexShrink:0 }}/>
+              <span style={{ fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.5 }}>Stay change requested — awaiting your landlord's confirmation.</span>
+            </div>
+          )}
           {[
             { Icon:Calendar, label:"Move-in Date",  val:STAY_DATA.moveIn     },
             { Icon:Calendar, label:"Move-out Date", val:STAY_DATA.moveOut    },
@@ -178,6 +348,14 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
           ))}
         </div>
       </div>
+      {showStayChangeForm && (
+        <StayChangeFormModal
+          onClose={()=>setShowStayChangeForm(false)}
+          onSubmitted={refreshPendingStayChange}
+          bhId={BH_DATA.id}
+          studentName={studentName}
+        />
+      )}
 
       {/* Status badges */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
@@ -204,8 +382,8 @@ function OverviewTab({ go }: { go:(s:string)=>void }) {
   );
 }
 
-function OccupantsTab({ setSelOcc }: { setSelOcc:(v:{occ:Occupant;idx:number}|null)=>void }) {
-  const occupancyPct = Math.round((ROOM_DATA.occupied/ROOM_DATA.capacity)*100);
+function OccupantsTab({ setSelOcc, roomData: ROOM_DATA, occupants: ROOM_OCCUPANTS }: { setSelOcc:(v:{occ:Occupant;idx:number}|null)=>void; roomData: MyRoom; occupants: Occupant[] }) {
+  const occupancyPct = ROOM_DATA.capacity > 0 ? Math.round((ROOM_DATA.occupied/ROOM_DATA.capacity)*100) : 0;
   return (
     <div style={{ padding:"16px 16px 28px" }}>
 
@@ -243,8 +421,8 @@ function OccupantsTab({ setSelOcc }: { setSelOcc:(v:{occ:Occupant;idx:number}|nu
           const color = occ.isMe ? "#9772F6" : AVATAR_COLORS[i % AVATAR_COLORS.length];
           return (
             <div key={occ.id} onClick={()=>setSelOcc({occ,idx:i})} style={{ padding:"14px 16px", borderBottom:i<ROOM_OCCUPANTS.length-1?"1px solid #F3F4F6":"none", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
-              <div style={{ width:46, height:46, borderRadius:15, backgroundImage:occ.isMe?GRAD:undefined, background:occ.isMe?undefined:color+"18", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:occ.isMe?undefined:`1.5px solid ${color}30` }}>
-                <span style={{ fontSize:16, fontWeight:800, color:occ.isMe?"white":color, fontFamily:QS }}>{initials(occ.name)}</span>
+              <div style={{ width:46, height:46, borderRadius:"50%", backgroundImage:occ.isMe?GRAD:undefined, background:occ.isMe?undefined:color+"18", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:occ.isMe?undefined:`1.5px solid ${color}30`, overflow:"hidden" }}>
+                {occ.photo ? <img src={occ.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:16, fontWeight:800, color:occ.isMe?"white":color, fontFamily:QS }}>{initials(occ.name)}</span>}
               </div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
@@ -274,7 +452,7 @@ function OccupantsTab({ setSelOcc }: { setSelOcc:(v:{occ:Occupant;idx:number}|nu
   );
 }
 
-function AmenitiesTab() {
+function AmenitiesTab({ bhData: BH_DATA }: { bhData: MyBoardingHouse }) {
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       <div style={{ background:"white", borderRadius:20, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
@@ -300,7 +478,7 @@ function AmenitiesTab() {
   );
 }
 
-function RulesTab() {
+function RulesTab({ bhData: BH_DATA }: { bhData: MyBoardingHouse }) {
   return (
     <div style={{ padding:"16px 16px 28px" }}>
       <div style={{ background:"white", borderRadius:20, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
@@ -332,6 +510,37 @@ export function StudentRoomOccupantsScreen({ go }: { go:(s:string)=>void }) {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [selOcc, setSelOcc] = useState<{occ:Occupant;idx:number}|null>(null);
 
+  const [profile, setProfile] = useState<MyStudentProfile>(EMPTY_PROFILE);
+  const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
+  const [roommates, setRoommates] = useState<Occupant[]>([]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      const [myProfile, myAssignment, myRoommates] = await Promise.all([
+        getMyProfile(), getMyAssignment(), uid ? getRoommates(uid) : Promise.resolve([]),
+      ]);
+      if (!active) return;
+      if (myProfile) setProfile(myProfile);
+      if (myAssignment) setAssignment(myAssignment);
+      const mapped: Occupant[] = myRoommates.map(r => ({
+        id: r.studentId, name: r.studentName, bed: r.bedLabel,
+        program: r.program ?? "—", year: r.yearLevel ? `${r.yearLevel}${r.yearLevel === 1 ? "st" : r.yearLevel === 2 ? "nd" : r.yearLevel === 3 ? "rd" : "th"} Year` : "—",
+        block: r.block ?? "—", contact: r.contact ?? "—", moveIn: r.movedInAt, status: "active", photo: r.photo,
+      }));
+      const me: Occupant | null = myProfile && myAssignment ? {
+        id: uid ?? myProfile.id, name: myProfile.name, bed: myAssignment.room.bed,
+        program: myProfile.program, year: myProfile.year, block: myProfile.block,
+        contact: myProfile.contact, moveIn: myAssignment.stay.moveIn, status: "active", isMe: true, photo: myProfile.photo,
+      } : null;
+      setRoommates(me ? [me, ...mapped] : mapped);
+    })();
+    return () => { active = false; };
+  }, []);
+  const BH_DATA = assignment.bh;
+  const ROOM_DATA = assignment.room;
+
   const TABS: { id:Tab; label:string }[] = [
     { id:"overview",   label:"Overview"   },
     { id:"occupants",  label:"Occupants"  },
@@ -344,8 +553,8 @@ export function StudentRoomOccupantsScreen({ go }: { go:(s:string)=>void }) {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD, position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
-        <div style={{ position:"absolute" as const, bottom:-30, left:-30, width:120, height:120, borderRadius:"50%", background:"rgba(255,255,255,.04)" }}/>
+        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.06)", pointerEvents:"none" as const }}/>
+        <div style={{ position:"absolute" as const, bottom:-30, left:-30, width:120, height:120, borderRadius:"50%", background:"rgba(255,255,255,.04)", pointerEvents:"none" as const }}/>
         <div style={{ padding:"52px 20px 20px", position:"relative" as const }}>
           <p style={{ margin:"0 0 3px", fontSize:11, color:"rgba(255,255,255,.6)", fontFamily:IN, textTransform:"uppercase" as const, letterSpacing:1, fontWeight:700 }}>My Boarding House</p>
           <h1 style={{ margin:"0 0 4px", fontSize:21, fontWeight:800, color:"white", fontFamily:QS, lineHeight:1.2 }}>{BH_DATA.name}</h1>
@@ -387,13 +596,13 @@ export function StudentRoomOccupantsScreen({ go }: { go:(s:string)=>void }) {
 
       {/* ── Tab Content ─────────────────────────────────────────────────────── */}
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
-        {activeTab === "overview"  && <OverviewTab go={go} />}
-        {activeTab === "occupants" && <OccupantsTab setSelOcc={setSelOcc} />}
-        {activeTab === "amenities" && <AmenitiesTab />}
-        {activeTab === "rules"     && <RulesTab />}
+        {activeTab === "overview"  && <OverviewTab go={go} bhData={BH_DATA} roomData={ROOM_DATA} stayData={assignment.stay} studentName={profile.name} />}
+        {activeTab === "occupants" && <OccupantsTab setSelOcc={setSelOcc} roomData={ROOM_DATA} occupants={roommates} />}
+        {activeTab === "amenities" && <AmenitiesTab bhData={BH_DATA} />}
+        {activeTab === "rules"     && <RulesTab bhData={BH_DATA} />}
       </div>
 
-      {selOcc && <OccupantModal occ={selOcc.occ} idx={selOcc.idx} onClose={()=>setSelOcc(null)}/>}
+      {selOcc && <OccupantModal occ={selOcc.occ} idx={selOcc.idx} onClose={()=>setSelOcc(null)} roomName={ROOM_DATA.name} bhName={BH_DATA.name}/>}
     </div>
   );
 }

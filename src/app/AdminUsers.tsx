@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Search, X, ChevronRight, CheckCircle, XCircle, AlertCircle,
   Clock, Trash2, Lock, Eye, Edit3, FileText, Flag,
@@ -7,6 +7,11 @@ import {
   MapPin, Shield, Image as ImageIcon, ExternalLink, Send,
   UserX, PhoneCall,
 } from "lucide-react";
+import {
+  getAllUsersForAdmin, setUserStatus, deleteUserAccount, getAllUserReportsForAdmin, respondToReportAsAdmin,
+  AdminUser as AppUser, UserRole, UserStatus, ParentLinkStatus,
+  AdminUserReport, AdminReportCategory as ReportCategory, AdminReportPriority as ReportPriority, AdminReportStatus,
+} from "./adminUsersStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -14,17 +19,13 @@ const QS     = "'Quicksand',sans-serif";
 const IN     = "'Inter',sans-serif";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+// "archived" is a UI-only status (the real reports table stores this as
+// 'closed' — see toDbStatus/toUiStatus below); everything else matches the
+// real AdminReportStatus values 1:1.
+type ReportStatus = "pending"|"under-review"|"resolved"|"rejected"|"archived";
 
-type UserRole     = "student"|"parent"|"landlord"|"admin";
-type UserStatus   = "active"|"suspended"|"pending";
-type ReportStatus   = "pending"|"under-review"|"resolved"|"rejected"|"archived";
-type ReportPriority = "low"|"medium"|"high"|"critical";
-type ReportCategory = "maintenance"|"harassment"|"payment"|"safety"|"noise"|"rule-violation"|"cleanliness"|"other";
-
-interface AppUser {
-  id:string; name:string; role:UserRole; email:string; contact:string;
-  status:UserStatus; lastLogin:string; linked?:string; bh?:string;
-}
+function toUiStatus(s: AdminReportStatus): ReportStatus { return s === "closed" ? "archived" : s; }
+function toDbStatus(s: ReportStatus): AdminReportStatus { return s === "archived" ? "closed" : s; }
 
 interface UserReport {
   id:string;
@@ -50,6 +51,24 @@ interface UserReport {
   imageColors?:string[];
 }
 
+// Maps the real (richer) AdminUserReport onto this screen's existing
+// UserReport view-model — same "shadow the mock shape" strategy used
+// throughout this migration, so the JSX below needed no rewrite.
+function mapReport(r: AdminUserReport): UserReport {
+  return {
+    id: r.id, targetUserId: r.targetUserId ?? "", submitterUserId: r.submitterUserId,
+    reporterName: r.reporterName, reporterRole: r.reporterRole,
+    category: r.category, reportType: "", title: r.title, shortDesc: r.shortDesc, fullDesc: r.fullDesc,
+    status: toUiStatus(r.status), priority: r.priority,
+    dateSubmitted: r.dateSubmitted, timeSubmitted: r.timeSubmitted, lastUpdated: r.lastUpdated,
+    boardingHouse: r.boardingHouse, roomNumber: r.roomNumber, location: undefined,
+    assignedReviewer: r.assignedReviewer, resolutionNotes: r.resolutionNotes,
+    // No real photo-upload path exists for reports yet (same gap noted in
+    // reportStore.ts) — never fabricated here either.
+    imageColors: undefined,
+  };
+}
+
 // ── Metadata ──────────────────────────────────────────────────────────────────
 
 const REPORT_STATUS_META: Record<ReportStatus,{ label:string; color:string; bg:string; dot:string }> = {
@@ -65,10 +84,15 @@ const PRIORITY_META: Record<ReportPriority,{ label:string; color:string; bg:stri
   "high":     { label:"High",     color:"#EF4444", bg:"#FEE2E2" },
   "critical": { label:"Critical", color:"#7F1D1D", bg:"#FEE2E2" },
 };
+// Full real category set (reports.category's CHECK constraint) — wider than
+// the original mock's 8 admin-only values, since this table is shared with
+// the student-concern flow (reportStore.ts).
 const CATEGORY_LABEL: Record<ReportCategory,string> = {
+  "room-issue":"Room Issue", bathroom:"Bathroom Issue", electrical:"Electrical Problem",
+  water:"Water Supply", internet:"Internet Connection", noise:"Noise Complaint",
   maintenance:"Maintenance", harassment:"Harassment", payment:"Payment",
-  safety:"Safety", noise:"Noise", "rule-violation":"Rule Violation",
-  cleanliness:"Cleanliness", other:"Other",
+  safety:"Safety", "rule-violation":"Rule Violation",
+  cleanliness:"Cleanliness", roommate:"Roommate Concern", "lost-item":"Lost Item", other:"Other",
 };
 const ROLE_META: Record<UserRole,{ label:string; color:string; bg:string }> = {
   student:  { label:"Student",          color:"#9772F6", bg:"#F5F0FF" },
@@ -81,37 +105,20 @@ const STATUS_META: Record<UserStatus,{ label:string; color:string; bg:string }> 
   suspended: { label:"Suspended", color:"#EF4444", bg:"#FEE2E2" },
   pending:   { label:"Pending",   color:"#D97706", bg:"#FEF3C7" },
 };
+// Student/parent linking status — a link only ever becomes real once the
+// student confirms it from their Home screen (ParentSignUp.tsx), so admin
+// needs to tell "confirmed" apart from "request still awaiting the student"
+// or "declined", not just see a name once it's fully linked.
+const LINK_STATUS_META: Record<ParentLinkStatus,{ label:string; color:string; bg:string }> = {
+  linked:   { label:"Linked",       color:"#16A34A", bg:"#DCFCE7" },
+  pending:  { label:"Awaiting Confirmation", color:"#D97706", bg:"#FEF3C7" },
+  rejected: { label:"Declined",     color:"#EF4444", bg:"#FEE2E2" },
+  none:     { label:"Not Linked",   color:"#9CA3AF", bg:"#F3F4F6" },
+};
 
 const AVATAR_COLORS = ["#9772F6","#3B82F6","#16A34A","#EC4899","#D97706","#6366F1","#0891B2","#7C3AED"];
 const initials  = (n:string) => n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-const avatarCol = (id:string) => AVATAR_COLORS[parseInt(id.replace(/\D/g,""))%AVATAR_COLORS.length];
-
-// ── Seed data ─────────────────────────────────────────────────────────────────
-
-const ALL_USERS: AppUser[] = [
-  { id:"u1",  name:"Juan Dela Cruz",      role:"student",  email:"jdelacruz@bisu.edu.ph",  contact:"+63 912 345 6789", status:"active",    lastLogin:"Today 8:02 AM",  linked:"Maria Dela Cruz", bh:"Naquila BH"   },
-  { id:"u2",  name:"Maria Santos",        role:"student",  email:"msantos@bisu.edu.ph",    contact:"+63 919 555 1234", status:"active",    lastLogin:"Today 7:55 AM",  linked:"Rosa Santos",     bh:"Naquila BH"   },
-  { id:"u3",  name:"Kevin Cruz",          role:"student",  email:"kcruz@bisu.edu.ph",      contact:"+63 915 777 5678", status:"pending",   lastLogin:"Never"                                       },
-  { id:"u4",  name:"Lena Reyes",          role:"student",  email:"lreyes@bisu.edu.ph",     contact:"+63 908 111 9876", status:"active",    lastLogin:"Yesterday",      linked:"Pedro Reyes",     bh:"Sunrise Dorm" },
-  { id:"u5",  name:"Ben Torres",          role:"student",  email:"btorres@bisu.edu.ph",    contact:"+63 933 444 2222", status:"suspended", lastLogin:"3 days ago"                                  },
-  { id:"u6",  name:"Maria Dela Cruz",     role:"parent",   email:"mariadelacruz@gmail.com",contact:"+63 917 123 4567", status:"active",    lastLogin:"Today 9:00 AM",  linked:"Juan Dela Cruz"   },
-  { id:"u7",  name:"Rosa Santos",         role:"parent",   email:"rosasantos@gmail.com",   contact:"+63 920 888 0000", status:"active",    lastLogin:"Yesterday",      linked:"Maria Santos"     },
-  { id:"u8",  name:"Pedro Reyes",         role:"parent",   email:"preyes@gmail.com",       contact:"+63 921 777 3333", status:"pending",   lastLogin:"Never",          linked:"Lena Reyes"       },
-  { id:"u9",  name:"Ma. Kyla L. Naquila", role:"landlord", email:"kylanaquila@gmail.com",  contact:"+63 912 345 6789", status:"active",    lastLogin:"Today 10:00 AM", bh:"Naquila BH"           },
-  { id:"u10", name:"Carlos Sunrise",      role:"landlord", email:"carlos@sunrise.com",     contact:"+63 918 000 1111", status:"active",    lastLogin:"Yesterday",      bh:"Sunrise Dorm"         },
-  { id:"u11", name:"Ana Pending",         role:"landlord", email:"ana@pending.com",        contact:"+63 999 000 1234", status:"pending",   lastLogin:"Never"                                       },
-];
-
-const SEED_REPORTS: UserReport[] = [
-  { id:"rp1", targetUserId:"u9",  submitterUserId:"u1", reporterName:"Juan Dela Cruz",  reporterRole:"Student",  category:"maintenance",    reportType:"Plumbing",        title:"Persistent Leaking Faucet Ignored for 2 Weeks",       shortDesc:"The bathroom faucet has been leaking continuously. Multiple requests to the landlord were made but no action was taken.", fullDesc:"I reported the leaking faucet in the shared bathroom on July 20 and again on July 25. The landlord acknowledged both times but no repair has been made. Water is wasting constantly and the dripping sound at night is affecting sleep quality for multiple boarders in Room A. I have also noticed water damage forming on the floor tiles.", status:"under-review", priority:"high",     dateSubmitted:"Aug 1, 2026",  timeSubmitted:"9:14 AM",  lastUpdated:"Aug 2, 2026",  boardingHouse:"Naquila BH", roomNumber:"Room A",       location:"Shared Bathroom", assignedReviewer:"Admin", imageColors:["#93C5FD","#6EE7B7","#FCA5A5"] },
-  { id:"rp2", targetUserId:"u9",  submitterUserId:"u2", reporterName:"Maria Santos",    reporterRole:"Student",  category:"safety",         reportType:"Security",        title:"Main Door Lock Broken – Anyone Can Enter",            shortDesc:"The main entrance lock is broken. Any outsider can push the door open without a key, posing a major security risk.", fullDesc:"The main entrance lock has been broken since July 28. The door does not lock properly and can be opened by simply pushing it. This is a serious security concern especially at night. I informed the landlord on July 28 and July 31 but the lock has not been repaired.", status:"pending",      priority:"critical", dateSubmitted:"Aug 2, 2026",  timeSubmitted:"11:32 AM", lastUpdated:"Aug 2, 2026",  boardingHouse:"Naquila BH", roomNumber:"Room B",       location:"Main Entrance",   imageColors:["#FCA5A5","#FDBA74"] },
-  { id:"rp3", targetUserId:"u9",  submitterUserId:"u6", reporterName:"Maria Dela Cruz", reporterRole:"Parent",   category:"payment",        reportType:"Extra Charge",    title:"Extra Charges Added Without Prior Agreement",          shortDesc:"My son's July billing included a ₱500 cleaning fee not stated in the original contract.", fullDesc:"Upon reviewing my son Juan's July billing statement, I noticed an additional ₱500 labeled as 'monthly cleaning fee'. This was never disclosed in the boarding agreement signed in June 2026. When I contacted the landlord to clarify, I was told it had always been part of the terms, which contradicts our signed contract. I am requesting a formal review and refund of this charge.", status:"pending",      priority:"medium",   dateSubmitted:"Jul 31, 2026", timeSubmitted:"3:45 PM",  lastUpdated:"Jul 31, 2026", boardingHouse:"Naquila BH" },
-  { id:"rp4", targetUserId:"u10", submitterUserId:"u4", reporterName:"Lena Reyes",      reporterRole:"Student",  category:"noise",          reportType:"Curfew Violation",title:"Landlord Allows Late-Night Noise – Curfew Unenforced", shortDesc:"Boarders regularly return past midnight with full knowledge of the landlord. Curfew is 10 PM per house rules.", fullDesc:"Several boarders in Sunrise Dorm consistently return after midnight and make loud noise in the corridors. When I raised this with the landlord Mr. Carlos Sunrise, he said he could not always monitor everyone. However, the house rules clearly state a 10 PM curfew. This has been happening multiple times per week since July.", status:"under-review", priority:"medium",   dateSubmitted:"Jul 28, 2026", timeSubmitted:"8:20 PM",  lastUpdated:"Aug 1, 2026",  boardingHouse:"Sunrise Dorm", roomNumber:"Room 2",    assignedReviewer:"Admin",   imageColors:["#C4B5FD"] },
-  { id:"rp5", targetUserId:"u5",  submitterUserId:"u2", reporterName:"Maria Santos",    reporterRole:"Student",  category:"harassment",     reportType:"Verbal",          title:"Hostile and Threatening Behavior Toward Roommates",    shortDesc:"Ben Torres has repeatedly used threatening language toward fellow boarders when confronted about shared space misuse.", fullDesc:"On three separate occasions (July 15, July 22, and July 30), Ben Torres reacted aggressively when asked to clean up the shared kitchen area. On July 30, he used explicitly threatening language which made multiple boarders feel unsafe. I documented these incidents via text messages.", status:"resolved",     priority:"high",     dateSubmitted:"Jul 30, 2026", timeSubmitted:"10:05 PM", lastUpdated:"Aug 2, 2026",  boardingHouse:"Naquila BH", roomNumber:"Room A",       assignedReviewer:"Admin",   resolutionNotes:"Account suspended pending investigation. Warning letter issued.", imageColors:["#FDE68A","#FCA5A5"] },
-  { id:"rp6", targetUserId:"u5",  submitterUserId:"u1", reporterName:"Juan Dela Cruz",  reporterRole:"Student",  category:"rule-violation", reportType:"Property Damage", title:"Damaged Shared Refrigerator – Denies Responsibility",  shortDesc:"The shared refrigerator door hinge was broken. Multiple witnesses saw Ben Torres slam it repeatedly.", fullDesc:"On July 19, the shared refrigerator door hinge was broken. Three boarders witnessed Ben Torres slamming the refrigerator door multiple times in anger. When confronted, he denied responsibility. The landlord has asked all boarders to share the repair cost which is unfair.", status:"rejected",     priority:"medium",   dateSubmitted:"Jul 20, 2026", timeSubmitted:"2:30 PM",  lastUpdated:"Jul 25, 2026", boardingHouse:"Naquila BH", roomNumber:"Kitchen",      resolutionNotes:"Insufficient direct evidence. Parties advised to resolve internally." },
-  { id:"rp7", targetUserId:"u10", submitterUserId:"u8", reporterName:"Pedro Reyes",     reporterRole:"Parent",   category:"payment",        reportType:"Missing Receipt",  title:"No Official Receipt Issued for August Payment",        shortDesc:"Despite paying August rent via GCash on Aug 1, no receipt has been issued after multiple follow-ups.", fullDesc:"My daughter Lena Reyes paid her August rent of ₱3,200 via GCash on August 1, 2026 at 9:45 AM. The transaction reference is GC20260801-0042. Despite this, the landlord has not issued an official receipt and has not updated the payment status in DormiTrack. I have sent 3 follow-up messages which have been read but not responded to.", status:"pending",      priority:"high",     dateSubmitted:"Aug 3, 2026",  timeSubmitted:"7:55 AM",  lastUpdated:"Aug 3, 2026",  boardingHouse:"Sunrise Dorm" },
-  { id:"rp8", targetUserId:"u9",  submitterUserId:"u2", reporterName:"Maria Santos",    reporterRole:"Student",  category:"cleanliness",    reportType:"Hygiene",         title:"Shared Bathroom Not Cleaned for Over a Week",          shortDesc:"The common bathroom on the ground floor has not been cleaned since July 26. Conditions are now unsanitary.", fullDesc:"According to the house rules, the landlord is responsible for cleaning the shared bathroom twice a week. As of August 3, it has not been cleaned since July 26 — eight days. The floor is dirty, the toilet bowl needs cleaning, and there is visible mold forming near the drain.", status:"resolved",     priority:"medium",   dateSubmitted:"Aug 3, 2026",  timeSubmitted:"6:40 AM",  lastUpdated:"Aug 3, 2026",  boardingHouse:"Naquila BH", location:"Ground Floor",   assignedReviewer:"Admin",   resolutionNotes:"Landlord contacted and confirmed cleaning done Aug 3 evening.", imageColors:["#6EE7B7","#93C5FD","#FDE68A","#C4B5FD"] },
-];
+const avatarCol = (id:string) => AVATAR_COLORS[[...id].reduce((a,c)=>a+c.charCodeAt(0),0)%AVATAR_COLORS.length];
 
 // ── Confirm Dialog ────────────────────────────────────────────────────────────
 
@@ -194,7 +201,7 @@ function ReportDetailPanel({ report, users, onClose, onUpdateStatus }: {
               </span>
               <span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:pm.bg, color:pm.color, fontFamily:QS }}>{pm.label} Priority</span>
               <span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:"#F5F0FF", color:"#9772F6", fontFamily:QS }}>{CATEGORY_LABEL[report.category]}</span>
-              <span style={{ fontSize:9, fontWeight:700, padding:"3px 9px", borderRadius:20, background:"#F9FAFB", color:"#6B7280", fontFamily:IN }}>{report.reportType}</span>
+              {report.reportType && <span style={{ fontSize:9, fontWeight:700, padding:"3px 9px", borderRadius:20, background:"#F9FAFB", color:"#6B7280", fontFamily:IN }}>{report.reportType}</span>}
             </div>
           </div>
           {/* Body */}
@@ -206,8 +213,8 @@ function ReportDetailPanel({ report, users, onClose, onUpdateStatus }: {
                   <p style={{ margin:"0 0 7px", fontSize:9, fontWeight:800, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{label}</p>
                   {u ? (
                     <>
-                      <div style={{ width:30, height:30, borderRadius:10, background:avatarCol(u.id)+"18", display:"flex", alignItems:"center", justifyContent:"center", marginBottom:5 }}>
-                        <span style={{ fontSize:11, fontWeight:800, color:avatarCol(u.id), fontFamily:QS }}>{initials(u.name)}</span>
+                      <div style={{ width:30, height:30, borderRadius:"50%", background:avatarCol(u.id)+"18", display:"flex", alignItems:"center", justifyContent:"center", marginBottom:5, overflow:"hidden" }}>
+                        {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:11, fontWeight:800, color:avatarCol(u.id), fontFamily:QS }}>{initials(u.name)}</span>}
                       </div>
                       <p style={{ margin:"0 0 2px", fontSize:11, fontWeight:800, color:"#1F2937", fontFamily:QS, lineHeight:1.3 }}>{u.name}</p>
                       <span style={{ fontSize:8, fontWeight:800, padding:"2px 7px", borderRadius:20, background:ROLE_META[u.role].bg, color:ROLE_META[u.role].color, fontFamily:QS }}>{ROLE_META[u.role].label}</span>
@@ -443,8 +450,8 @@ function ReportsCenterModal({ reports, users, onClose, onUpdateStatus }: {
                   {/* Reported user */}
                   <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                     <div style={{ position:"relative" as const, flexShrink:0 }}>
-                      <div style={{ width:40, height:40, borderRadius:13, background:tcol+"18", border:`1.5px solid ${tcol}30`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        <span style={{ fontSize:13, fontWeight:800, color:tcol, fontFamily:QS }}>{target?initials(target.name):"?"}</span>
+                      <div style={{ width:40, height:40, borderRadius:"50%", background:tcol+"18", border:`1.5px solid ${tcol}30`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+                        {target?.photo ? <img src={target.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:13, fontWeight:800, color:tcol, fontFamily:QS }}>{target?initials(target.name):"?"}</span>}
                       </div>
                     </div>
                     <div style={{ flex:1, minWidth:0 }}>
@@ -512,8 +519,8 @@ function ReportsCenterModal({ reports, users, onClose, onUpdateStatus }: {
 
 // ── Per-user reports modal (flag on user row) ─────────────────────────────────
 
-function UserReportsModal({ user, reports, onClose, onUpdateStatus }: {
-  user:AppUser; reports:UserReport[]; onClose:()=>void;
+function UserReportsModal({ user, reports, users, onClose, onUpdateStatus }: {
+  user:AppUser; reports:UserReport[]; users:AppUser[]; onClose:()=>void;
   onUpdateStatus:(id:string,s:ReportStatus,note?:string)=>void;
 }) {
   const [detailReport, setDetailReport] = useState<UserReport|null>(null);
@@ -526,7 +533,7 @@ function UserReportsModal({ user, reports, onClose, onUpdateStatus }: {
 
   const visible = statusFilter==="all" ? userReports : userReports.filter(r=>r.status===statusFilter);
 
-  if (detailReport) return <ReportDetailPanel report={detailReport} users={ALL_USERS} onClose={()=>setDetailReport(null)} onUpdateStatus={onUpdateStatus}/>;
+  if (detailReport) return <ReportDetailPanel report={detailReport} users={users} onClose={()=>setDetailReport(null)} onUpdateStatus={onUpdateStatus}/>;
 
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:300, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
@@ -534,8 +541,8 @@ function UserReportsModal({ user, reports, onClose, onUpdateStatus }: {
         <div style={{ flexShrink:0, display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
         <div style={{ flexShrink:0, background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 0", borderBottom:"1px solid #F3F4F6" }}>
           <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
-            <div style={{ width:44, height:44, borderRadius:15, background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(user.name)}</span>
+            <div style={{ width:44, height:44, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+              {user.photo ? <img src={user.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(user.name)}</span>}
             </div>
             <div style={{ flex:1 }}>
               <p style={{ margin:"0 0 3px", fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{user.name}</p>
@@ -611,8 +618,8 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
         <div style={{ backgroundImage:GRAD, borderRadius:"28px 28px 0 0", padding:"22px 20px 18px", position:"relative" as const }}>
           <button onClick={onClose} style={{ position:"absolute" as const, top:16, right:16, width:32, height:32, borderRadius:10, background:"rgba(255,255,255,.2)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={15} color="white"/></button>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-            <div style={{ width:56, height:56, borderRadius:18, background:"rgba(255,255,255,.25)", border:"2px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <span style={{ fontSize:18, fontWeight:800, color:"white", fontFamily:QS }}>{initials(user.name)}</span>
+            <div style={{ width:56, height:56, borderRadius:"50%", background:"rgba(255,255,255,.25)", border:"2px solid rgba(255,255,255,.4)", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+              {user.photo ? <img src={user.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:18, fontWeight:800, color:"white", fontFamily:QS }}>{initials(user.name)}</span>}
             </div>
             <div>
               <p style={{ margin:"0 0 5px", fontSize:16, fontWeight:800, color:"white", fontFamily:QS }}>{user.name}</p>
@@ -624,7 +631,21 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
           </div>
         </div>
         <div style={{ padding:"14px 18px 30px" }}>
-          {([["Email",user.email],["Contact",user.contact],["Last Login",user.lastLogin],user.linked?["Linked",user.linked]:null,user.bh?["Boarding House",user.bh]:null] as any[]).filter(Boolean).map(([l,v]:string[])=>(
+          {(user.role==="student"||user.role==="parent")&&(()=>{
+            const lsm=LINK_STATUS_META[user.linkStatus??"none"];
+            return (
+              <div style={{ padding:"8px 0", borderBottom:"1px solid #F3F4F6" }}>
+                <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>
+                  {user.role==="student"?"Parent Link":"Student Link"}
+                </p>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4, flexWrap:"wrap" as const }}>
+                  <span style={{ fontSize:9, fontWeight:800, padding:"2px 9px", borderRadius:20, background:lsm.bg, color:lsm.color, fontFamily:QS }}>{lsm.label}</span>
+                  {user.linked&&<span style={{ fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN }}>{user.linked}</span>}
+                </div>
+              </div>
+            );
+          })()}
+          {([["Email",user.email],["Contact",user.contact],["Last Login",user.lastLogin],user.bh?["Boarding House",user.bh]:null] as any[]).filter(Boolean).map(([l,v]:string[])=>(
             <div key={l} style={{ padding:"8px 0", borderBottom:"1px solid #F3F4F6" }}>
               <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{l}</p>
               <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN }}>{v}</p>
@@ -667,11 +688,15 @@ type UFilter = "all"|UserRole;
 export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
   const [filter,       setFilter]       = useState<UFilter>("all");
   const [query,        setQuery]        = useState("");
-  const [users,        setUsers]        = useState<AppUser[]>(ALL_USERS);
-  const [reports,      setReports]      = useState<UserReport[]>(SEED_REPORTS);
+  const [users,        setUsers]        = useState<AppUser[]>([]);
+  const [reports,      setReports]      = useState<UserReport[]>([]);
   const [selected,     setSelected]     = useState<AppUser|null>(null);
   const [reportsUser,  setReportsUser]  = useState<AppUser|null>(null);
   const [showCenter,   setShowCenter]   = useState(false);
+
+  const refreshUsers = () => { getAllUsersForAdmin().then(setUsers); };
+  const refreshReports = () => { getAllUserReportsForAdmin().then(rows => setReports(rows.map(mapReport))); };
+  useEffect(() => { refreshUsers(); refreshReports(); }, []);
 
   const pendingReportsBadge = reports.filter(r=>r.status==="pending"||r.status==="under-review").length;
 
@@ -683,16 +708,30 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
   const pending  = filtered.filter(u=>u.status==="pending");
   const rest     = filtered.filter(u=>u.status!=="pending");
 
-  const handleAction = (id:string, act:string) => {
-    if (act==="delete")      setUsers(us=>us.filter(u=>u.id!==id));
-    else if (act==="suspend")    setUsers(us=>us.map(u=>u.id===id?{...u,status:"suspended" as const}:u));
-    else if (act==="reactivate") setUsers(us=>us.map(u=>u.id===id?{...u,status:"active"    as const}:u));
-    else if (act==="approve")    setUsers(us=>us.map(u=>u.id===id?{...u,status:"active"    as const}:u));
-    else if (act==="reject")     setUsers(us=>us.filter(u=>u.id!==id));
+  // "approve"/"reject" exist for a pending-account-verification workflow the
+  // mock UI depicts, but no real flow in this app ever sets users.status to
+  // 'pending' (signup grants an active session immediately — see Phase 1) —
+  // real accounts wired here are honestly ready for that gate if one's ever
+  // added, but `pending` will legitimately stay empty until then.
+  const handleAction = async (id:string, act:string) => {
+    if (act==="delete" || act==="reject") {
+      const res = await deleteUserAccount(id);
+      if (res.ok === false) { console.error("deleteUserAccount failed:", res.error); return; }
+    } else if (act==="suspend") {
+      const res = await setUserStatus(id, "suspended");
+      if (res.ok === false) { console.error("setUserStatus failed:", res.error); return; }
+    } else if (act==="reactivate" || act==="approve") {
+      const res = await setUserStatus(id, "active");
+      if (res.ok === false) { console.error("setUserStatus failed:", res.error); return; }
+    }
+    refreshUsers();
   };
 
-  const handleUpdateStatus = (id:string, status:ReportStatus, note?:string) =>
-    setReports(rs=>rs.map(r=>r.id===id?{...r,status,...(note?{resolutionNotes:note}:{})}:r));
+  const handleUpdateStatus = async (id:string, status:ReportStatus, note?:string) => {
+    const res = await respondToReportAsAdmin(id, toDbStatus(status), note);
+    if (res.ok === false) { console.error("respondToReportAsAdmin failed:", res.error); return; }
+    refreshReports();
+  };
 
   const pendingCount  = (uid:string) => reports.filter(r=>(r.targetUserId===uid||r.submitterUserId===uid)&&(r.status==="pending"||r.status==="under-review")).length;
   const totalCount    = (uid:string) => reports.filter(r=>r.targetUserId===uid||r.submitterUserId===uid).length;
@@ -705,7 +744,7 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
       {showCenter&&<ReportsCenterModal reports={reports} users={users} onClose={()=>setShowCenter(false)} onUpdateStatus={handleUpdateStatus}/>}
 
       {/* Per-user reports */}
-      {reportsUser&&<UserReportsModal user={reportsUser} reports={reports} onClose={()=>setReportsUser(null)} onUpdateStatus={handleUpdateStatus}/>}
+      {reportsUser&&<UserReportsModal user={reportsUser} reports={reports} users={users} onClose={()=>setReportsUser(null)} onUpdateStatus={handleUpdateStatus}/>}
 
       {/* User Detail */}
       {selected&&!reportsUser&&!showCenter&&(
@@ -767,8 +806,8 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
                 return (
                   <div key={u.id} style={{ padding:"13px 16px", borderBottom:i<pending.length-1?"1px solid #FEF2F2":"none" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                      <div style={{ width:42, height:42, borderRadius:14, background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                        <span style={{ fontSize:14, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>
+                      <div style={{ width:42, height:42, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+                        {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:14, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
                       </div>
                       <div style={{ flex:1 }}>
                         <p style={{ margin:"0 0 1px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{u.name}</p>
@@ -808,8 +847,8 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
                 return (
                   <div key={u.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 16px", borderBottom:i<rest.length-1?"1px solid #F3F4F6":"none" }}>
                     <div onClick={()=>setSelected(u)} style={{ position:"relative" as const, flexShrink:0, cursor:"pointer" }}>
-                      <div style={{ width:44, height:44, borderRadius:15, background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>
+                      <div style={{ width:44, height:44, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+                        {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
                       </div>
                       {pc>0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:16, height:16, borderRadius:"50%", background:"#EF4444", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:7, color:"white", fontWeight:800 }}>{pc}</span></div>}
                     </div>
@@ -818,7 +857,12 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
                       <div style={{ display:"flex", alignItems:"center", gap:5 }}>
                         <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:rm.bg, color:rm.color, fontFamily:QS }}>{rm.label}</span>
                         <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
-                        <span style={{ fontSize:9, color:"#C4C9D4", fontFamily:IN }}>{u.lastLogin}</span>
+                        {/* Parent-student link status, at a glance — lastLogin has no real data
+                            behind it (see adminUsersStore.ts) so this replaces it for the two
+                            roles it actually applies to instead of sitting next to a "—". */}
+                        {(u.role==="student"||u.role==="parent")
+                          ? <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:LINK_STATUS_META[u.linkStatus??"none"].bg, color:LINK_STATUS_META[u.linkStatus??"none"].color, fontFamily:QS }}>{LINK_STATUS_META[u.linkStatus??"none"].label}</span>
+                          : <span style={{ fontSize:9, color:"#C4C9D4", fontFamily:IN }}>{u.lastLogin}</span>}
                       </div>
                     </div>
                     <button onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:36, height:36, borderRadius:12, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>

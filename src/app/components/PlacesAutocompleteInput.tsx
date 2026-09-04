@@ -25,10 +25,31 @@ export function PlacesAutocompleteInput({ value, onChangeText, onPlaceSelected, 
     let cancelled = false;
     let autocompleteInstance: any = null;
     let pacContainer: HTMLElement | null = null;
+    let enterTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Google's own Autocomplete widget only fires place_changed when Enter is pressed on a
+    // keyboard-*highlighted* suggestion (via arrow keys) — pressing Enter right after typing,
+    // the way most people actually search, does nothing at all: no pin, no address, no error,
+    // dropdown just closes. Detect that exact case and simulate the missing ArrowDown ourselves
+    // so the first suggestion becomes highlighted before Google processes the Enter.
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Enter") return;
+      const pac = document.querySelector(".pac-container") as HTMLElement | null;
+      if (!pac || pac.style.display === "none" || pac.childElementCount === 0) return;
+      if (pac.querySelector(".pac-item-selected")) return; // already highlighted — let Google handle it
+      e.preventDefault();
+      const input = inputRef.current;
+      if (!input) return;
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", keyCode: 40, which: 40, bubbles: true }));
+      enterTimer = setTimeout(() => {
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+      }, 30);
+    }
 
     loadGoogleMaps().then((g) => {
       if (cancelled || !inputRef.current || !g.maps.places) return;
       const containersBefore = new Set(document.querySelectorAll(".pac-container"));
+      inputRef.current.addEventListener("keydown", handleKeyDown);
       const autocomplete = new g.maps.places.Autocomplete(inputRef.current, {
         fields: [
           "place_id", "geometry", "formatted_address", "name", "address_components",
@@ -76,6 +97,8 @@ export function PlacesAutocompleteInput({ value, onChangeText, onPlaceSelected, 
     });
     return () => {
       cancelled = true;
+      if (enterTimer) clearTimeout(enterTimer);
+      inputRef.current?.removeEventListener("keydown", handleKeyDown);
       if (autocompleteInstance) {
         (window as any).google?.maps?.event?.clearInstanceListeners(autocompleteInstance);
       }

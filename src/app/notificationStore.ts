@@ -1,35 +1,43 @@
-// ── Notification System — module-level store ──────────────────────────────────
-// Mirrors the pattern used by reportStore.ts: a single in-memory store (no
-// backend in this prototype) that every role's Home screen and Notifications
-// page reads from. A tiny pub/sub layer + useSyncExternalStore gives every
-// subscriber (badges, the Notifications list) an automatic re-render the
-// instant a notification is added or its read state changes — no manual
-// refresh needed anywhere in the app.
+// ── Notification System — live Supabase-backed store ──────────────────────────
+// Same external shape as the old mock (module-level cache + pub/sub +
+// useSyncExternalStore, so badges/lists re-render automatically), but the
+// cache is now a periodically-refreshed mirror of the signed-in user's real
+// `notifications` rows instead of a static seeded array.
+//
+// `role` stays in every hook/hook-adjacent signature purely so call sites
+// don't need touching — a signed-in session is always exactly one role's
+// data already, so the real filter is just "the current user", resolved via
+// auth.uid() under the hood.
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ComponentType } from "react";
 import {
   User, Building2, DoorOpen, CreditCard, LogIn, LogOut,
-  Flag, Megaphone, ShieldCheck, Settings, MessageCircle,
+  Flag, Megaphone, ShieldCheck, Settings, MessageCircle, UserCheck, Calendar,
 } from "lucide-react";
 import type { Role, Screen } from "./shared";
+import { supabase } from "../lib/supabase";
 
 export type NotificationType =
   | "account" | "boarding-house" | "room" | "payment"
   | "check-in" | "check-out" | "report" | "announcement"
-  | "verification" | "system" | "message";
+  | "verification" | "system" | "message" | "visitor" | "stay-change";
 
 export interface AppNotification {
   id: string;
-  role: Role;                 // which account's inbox this belongs to
   type: NotificationType;
   title: string;
   description: string;
-  timestamp: number;          // Date.now() epoch ms — used for sort + relative time
+  timestamp: number;          // Date.now()-style epoch ms, derived from created_at
   read: boolean;
-  relatedId?: string;         // e.g. a report id, payment/student id — lets the
-                               // destination screen open the exact record
-  destination: Screen;        // page this notification opens when tapped
+  // Distinct from `read`: `read` flips the moment the Notifications page is opened at
+  // all (it's what clears the bell badge), while `opened` only flips when the user
+  // actually taps into this specific card. Without the split, a card the user merely
+  // scrolled past would be indistinguishable from one they opened the instant the
+  // Notifications screen was left and reopened (see NotificationsScreen).
+  opened: boolean;
+  relatedId?: string;
+  destination: Screen;
 }
 
 // ── Category → icon / color meta (no emoji, DormiTrack palette) ───────────────
@@ -45,13 +53,17 @@ export const NOTIF_META: Record<NotificationType, { label: string; Icon: Compone
   "verification":   { label: "Verification",    Icon: ShieldCheck, color: "#0891B2", bg: "#ECFEFF" },
   "system":         { label: "System",          Icon: Settings,    color: "#6B7280", bg: "#F3F4F6" },
   "message":        { label: "Message",         Icon: MessageCircle, color: "#8B5CF6", bg: "#EDE9FE" },
+  "visitor":        { label: "Visitor",         Icon: UserCheck,   color: "#EC4899", bg: "#FCE7F3" },
+  "stay-change":    { label: "Stay Change",     Icon: Calendar,    color: "#D97706", bg: "#FEF3C7" },
 };
 
 // ── Relative-time formatter ("2 hours ago", "Yesterday", "Aug 3, 2026") ────────
 export function timeAgo(ts: number): string {
   const diffMs = Date.now() - ts;
-  const min = Math.floor(diffMs / 60000);
-  if (min < 1) return "Just now";
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 5) return "Just now";
+  if (sec < 60) return `${sec} second${sec === 1 ? "" : "s"} ago`;
+  const min = Math.floor(sec / 60);
   if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
@@ -64,104 +76,148 @@ export function timeAgo(ts: number): string {
 // Badge count display, capped per spec: "99+" beyond 99.
 export function fmtBadgeCount(n: number): string { return n > 99 ? "99+" : String(n); }
 
-// ── Seed data — realistic starting inbox per role ──────────────────────────────
-const now = Date.now();
-const H = 60 * 60 * 1000;
-const D = 24 * H;
-
-let _seq = 0;
-const mk = (n: Omit<AppNotification, "id">): AppNotification => ({ id: `ntf_seed_${_seq++}`, ...n });
-
-const SEED: AppNotification[] = [
-  // ── Student ──────────────────────────────────────────────────────────────
-  mk({ role: "student", type: "payment",        title: "Payment Verified",             description: "Your payment for August has been verified by the landlord.",              timestamp: now - 2 * H,  read: false, destination: "payments",  relatedId: "p-aug" }),
-  mk({ role: "student", type: "announcement",    title: "New Landlord Announcement",    description: "Water Service Interruption — scheduled maintenance on August 5.",         timestamp: now - 5 * H,  read: false, destination: "dashboard", relatedId: "a1" }),
-  mk({ role: "student", type: "check-in",        title: "Check-In Recorded",            description: "Your check-in was successfully verified at Naquila Boarding House.",       timestamp: now - 1 * D,  read: false, destination: "map" }),
-  mk({ role: "student", type: "boarding-house",  title: "Registration Approved",        description: "Your boarding house registration has been approved by the landlord.",     timestamp: now - 2 * D,  read: true,  destination: "occupants" }),
-  mk({ role: "student", type: "report",          title: "Landlord Responded",           description: "Your landlord responded to \"Broken Electric Fan in Room A\".",            timestamp: now - 3 * D,  read: true,  destination: "dashboard", relatedId: "sr1" }),
-  mk({ role: "student", type: "room",            title: "Room Assignment Updated",      description: "You have been assigned to Room A · Bed 1.",                                timestamp: now - 6 * D,  read: true,  destination: "occupants" }),
-
-  // ── Parent / Guardian ────────────────────────────────────────────────────
-  mk({ role: "parent", type: "payment",        title: "Student Payment Verified",   description: "Juan's payment for August has been verified by the landlord.",              timestamp: now - 3 * H,  read: false, destination: "payments" }),
-  mk({ role: "parent", type: "check-in",       title: "Student Checked In",         description: "Juan Dela Cruz checked in at Naquila Boarding House.",                       timestamp: now - 1 * D,  read: false, destination: "map" }),
-  mk({ role: "parent", type: "report",         title: "Student Submitted a Concern", description: "Juan reported \"Broken Electric Fan in Room A\" to the landlord.",           timestamp: now - 3 * D,  read: true,  destination: "dashboard", relatedId: "sr1" }),
-  mk({ role: "parent", type: "boarding-house", title: "Registration Approved",       description: "Juan's boarding house registration has been approved.",                     timestamp: now - 6 * D,  read: true,  destination: "occupants" }),
-
-  // ── Landlord ─────────────────────────────────────────────────────────────
-  mk({ role: "landlord", type: "verification",    title: "New Registration Request",     description: "Sofia Castillo submitted a boarding house registration request.",         timestamp: now - 1 * H,  read: false, destination: "dashboard" }),
-  mk({ role: "landlord", type: "payment",         title: "Payment Awaiting Verification", description: "Juan Dela Cruz submitted a payment for verification.",                    timestamp: now - 4 * H,  read: false, destination: "payments" }),
-  mk({ role: "landlord", type: "report",          title: "New Student Concern",           description: "Juan Dela Cruz submitted a concern about Room A.",                        timestamp: now - 1 * D,  read: false, destination: "dashboard", relatedId: "sr1" }),
-  mk({ role: "landlord", type: "check-out",       title: "Student Checked Out",           description: "Maria Santos checked out of Room B.",                                     timestamp: now - 2 * D,  read: true,  destination: "occupants" }),
-  mk({ role: "landlord", type: "room",            title: "New Student Assigned",          description: "Kevin Cruz was assigned to Room C.",                                      timestamp: now - 4 * D,  read: true,  destination: "occupants" }),
-
-  // ── Admin / Housing Director ─────────────────────────────────────────────
-  mk({ role: "admin", type: "verification",    title: "New Landlord Registration",   description: "A new landlord account is awaiting verification.",                          timestamp: now - 2 * H,  read: false, destination: "adminUsers" }),
-  mk({ role: "admin", type: "boarding-house",  title: "Boarding House Update",       description: "Naquila Boarding House updated its room capacity.",                          timestamp: now - 8 * H,  read: false, destination: "adminMap" }),
-  mk({ role: "admin", type: "report",          title: "Report Requires Attention",   description: "A safety concern was flagged and needs review.",                             timestamp: now - 1 * D,  read: false, destination: "adminReports" }),
-  mk({ role: "admin", type: "system",          title: "System Alert",               description: "Scheduled maintenance completed successfully.",                              timestamp: now - 3 * D,  read: true,  destination: "adminSystem" }),
-];
-
 // ── Store internals ─────────────────────────────────────────────────────────
-let _notifications: AppNotification[] = [...SEED];
+function mapRow(row: any): AppNotification {
+  return {
+    id: row.id, type: row.type, title: row.title, description: row.description,
+    timestamp: new Date(row.created_at).getTime(), read: row.read, opened: row.opened,
+    relatedId: row.related_id ?? undefined, destination: row.destination as Screen,
+  };
+}
+
+let _notifications: AppNotification[] = [];
+let _currentUserId: string | null = null;
 const _listeners = new Set<() => void>();
 function _emit() { _listeners.forEach(l => l()); }
-
 function subscribe(listener: () => void): () => void {
   _listeners.add(listener);
   return () => { _listeners.delete(listener); };
 }
 function getSnapshot(): AppNotification[] { return _notifications; }
 
-/** All notifications, unfiltered, kept in a referentially-stable array
- *  (only reassigned on real mutation) so it's safe to feed straight into
- *  useSyncExternalStore. Filter/sort per-role in the caller. */
+// Real-time channel for the signed-in user's own notifications (0033_notifications_realtime
+// enabled replication for this table). Re-subscribed whenever the signed-in user changes so a
+// stale subscription from a previous session never leaks into a new one. The 15s poll below
+// stays as a safety net (reconnects after the tab was backgrounded, a missed websocket event,
+// etc.) — this channel is what makes a brand-new notification (e.g. "New Registration Request")
+// show up in an already-open tab instantly, without waiting on the poll or a manual refresh.
+let _channel: ReturnType<typeof supabase.channel> | null = null;
+function _subscribeRealtime(uid: string) {
+  if (_channel) { supabase.removeChannel(_channel); _channel = null; }
+  _channel = supabase
+    .channel(`notifications:${uid}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` }, () => { refresh(); })
+    .subscribe();
+}
+function _unsubscribeRealtime() {
+  if (_channel) { supabase.removeChannel(_channel); _channel = null; }
+}
+
+async function refresh(): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id ?? null;
+  const userChanged = uid !== _currentUserId;
+  _currentUserId = uid;
+  if (!uid) {
+    _unsubscribeRealtime();
+    if (_notifications.length) { _notifications = []; _emit(); }
+    return;
+  }
+  if (userChanged) _subscribeRealtime(uid);
+  const { data, error } = await supabase
+    .from("notifications").select("*")
+    .eq("user_id", uid).order("created_at", { ascending: false }).limit(100);
+  if (error) { console.error("notifications refresh:", error.message); return; }
+  _notifications = (data ?? []).map(mapRow);
+  _emit();
+}
+
+// Poll stays as a fallback (see _subscribeRealtime above) rather than the primary mechanism —
+// same cadence pattern used elsewhere in this app (PendingVerificationScreen,
+// ParentLinkingScreen). Also re-syncs on every auth state change (login/logout/session restore).
+let _pollStarted = false;
+function ensurePolling() {
+  if (_pollStarted) return;
+  _pollStarted = true;
+  refresh();
+  setInterval(refresh, 15000);
+  supabase.auth.onAuthStateChange(() => { refresh(); });
+}
+
 export function useAllNotifications(): AppNotification[] {
+  useEffect(() => { ensurePolling(); }, []);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-export function useNotifications(role: Role): AppNotification[] {
-  const all = useAllNotifications();
-  return useMemo(
-    () => all.filter(n => n.role === role).sort((a, b) => b.timestamp - a.timestamp),
-    [all, role],
-  );
+export function useNotifications(_role: Role): AppNotification[] {
+  return useAllNotifications();
 }
 
-export function useUnreadCount(role: Role): number {
+export function useUnreadCount(_role: Role): number {
   const all = useAllNotifications();
-  return useMemo(
-    () => all.reduce((c, n) => (n.role === role && !n.read ? c + 1 : c), 0),
-    [all, role],
-  );
+  return useMemo(() => all.reduce((c, n) => (n.read ? c : c + 1), 0), [all]);
 }
 
-export function markNotificationRead(id: string): void {
+// Called when a specific notification card is actually tapped — sets both
+// `read` (same badge-clearing effect as markAllRead) and `opened` (the one
+// markAllRead deliberately never touches; see AppNotification.opened above).
+export async function markNotificationRead(id: string): Promise<void> {
   const target = _notifications.find(n => n.id === id);
-  if (!target || target.read) return;
-  _notifications = _notifications.map(n => n.id === id ? { ...n, read: true } : n);
+  if (!target || (target.read && target.opened)) return;
+  _notifications = _notifications.map(n => n.id === id ? { ...n, read: true, opened: true } : n);
   _emit();
+  const { error } = await supabase.from("notifications").update({ read: true, opened: true }).eq("id", id);
+  if (error) console.error("markNotificationRead:", error.message);
 }
 
-export function markAllRead(role: Role): void {
+export async function markAllRead(_role: Role): Promise<void> {
+  const uid = _currentUserId;
+  if (!uid) return;
   let changed = false;
   _notifications = _notifications.map(n => {
-    if (n.role === role && !n.read) { changed = true; return { ...n, read: true }; }
-    return n;
+    if (n.read) return n;
+    changed = true;
+    return { ...n, read: true };
   });
   if (changed) _emit();
+  const { error } = await supabase.from("notifications").update({ read: true }).eq("user_id", uid).eq("read", false);
+  if (error) console.error("markAllRead:", error.message);
 }
 
-export function addNotification(input: {
-  role: Role; type: NotificationType; title: string; description: string;
-  destination: Screen; relatedId?: string; read?: boolean;
-}): AppNotification {
-  const n: AppNotification = {
-    id: `ntf_${Date.now()}_${_seq++}`,
-    role: input.role, type: input.type, title: input.title, description: input.description,
-    destination: input.destination, relatedId: input.relatedId,
-    timestamp: Date.now(), read: input.read ?? false,
-  };
-  _notifications = [n, ..._notifications];
-  _emit();
-  return n;
+export type NotifyInput = {
+  userId: string; type: NotificationType; title: string; description: string;
+  destination: Screen; relatedId?: string;
+};
+
+// Real insert, addressed to a specific real user. RLS (notif_insert_authenticated)
+// deliberately lets any authenticated user notify anyone — the access-control
+// question is "do you know the right user_id", which the two helpers below
+// answer for the app's two repeating fan-out patterns.
+export async function addNotification(input: NotifyInput): Promise<void> {
+  const { error } = await supabase.from("notifications").insert({
+    user_id: input.userId, type: input.type, title: input.title, description: input.description,
+    destination: input.destination, related_id: input.relatedId ?? null,
+  });
+  if (error) { console.error("addNotification:", error.message); return; }
+  if (input.userId === _currentUserId) refresh();
+}
+
+// "Notify the landlord who owns this boarding house" — boarding_houses is
+// publicly readable, so this is just a lookup + direct insert.
+export async function notifyLandlordOfBoardingHouse(bhId: string, input: Omit<NotifyInput, "userId">): Promise<void> {
+  const { data: bh } = await supabase.from("boarding_houses").select("landlord_id").eq("id", bhId).maybeSingle();
+  if (bh?.landlord_id) await addNotification({ ...input, userId: bh.landlord_id });
+}
+
+// "Notify this student's linked parent(s)" — parent_student_links is only
+// readable by the student/parent themselves, not by the landlord who most
+// often needs to trigger this (payment verified, report responded to,
+// registration approved), so this goes through a SECURITY DEFINER RPC
+// instead of a client-side select + fan-out.
+export async function notifyLinkedParents(studentId: string, input: Omit<NotifyInput, "userId">): Promise<void> {
+  const { error } = await supabase.rpc("notify_linked_parents", {
+    p_student_id: studentId, p_type: input.type, p_title: input.title,
+    p_description: input.description, p_destination: input.destination, p_related_id: input.relatedId ?? null,
+  });
+  if (error) console.error("notifyLinkedParents:", error.message);
 }

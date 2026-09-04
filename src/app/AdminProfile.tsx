@@ -1,4 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "../lib/supabase";
+import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
 import {
   ChevronLeft, ChevronDown, ChevronUp, ChevronRight,
   User, Edit3, Shield, Mail, Phone, Key, Lock,
@@ -209,6 +211,25 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
   const [contact, setContact] = useState("+63 912 000 0001");
   const [photo,   setPhoto]   = useState<string | null>(null);
 
+  // Real identity, read-only-in-practice here — this section has no save
+  // trigger in the original design (typed edits never persisted anywhere,
+  // even locally-only), so this only fixes what's shown on load.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const { data } = await supabase.from("users").select("first_name, last_name, email, contact_number, photo_url").eq("id", uid).single();
+      if (!active || !data) return;
+      setName([data.first_name, data.last_name].filter(Boolean).join(" ") || "Housing Director");
+      setEmail(data.email);
+      if (data.contact_number) setContact(data.contact_number);
+      if (data.photo_url) setPhoto(data.photo_url);
+    })();
+    return () => { active = false; };
+  }, []);
+
   const [notifs, setNotifs] = useState({
     newUsers: true, pendingVerif: true, newReports: true, payments: false,
     bhRequests: true, systemAlerts: true, push: true, emailNotifs: false,
@@ -219,11 +240,20 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
   const [showPwd,     setShowPwd]     = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showLogout,  setShowLogout]  = useState(false);
+  const [toast, setToast] = useState("");
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2800); };
 
   const toggleNotif = (k: keyof typeof notifs) => setNotifs(n => ({ ...n, [k]: !n[k] }));
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" as const, background: "#F7F8FC" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" as const, background: "#F7F8FC", position: "relative" as const }}>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position: "absolute" as const, top: 60, left: "50%", transform: "translateX(-50%)", background: "#1F2937", color: "white", borderRadius: 20, padding: "10px 20px", fontSize: 12, fontFamily: QS, fontWeight: 700, zIndex: 999, whiteSpace: "nowrap" as const, boxShadow: "0 4px 20px rgba(0,0,0,.25)" }}>
+          {toast}
+        </div>
+      )}
 
       {/* Sheets & dialogs */}
       {showPwd     && <ChangePasswordSheet onClose={() => setShowPwd(false)} />}
@@ -233,7 +263,7 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
           title="Log Out?"
           msg="Are you sure you want to log out of the Admin account?"
           confirmLabel="Log Out"
-          onConfirm={() => go("landing")}
+          onConfirm={() => { supabase.auth.signOut(); go("landing"); }}
           onCancel={() => setShowLogout(false)}
         />
       )}
@@ -252,20 +282,27 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
 
         {/* Avatar */}
         <div style={{ position: "relative" as const, display: "inline-block" }}>
-          <div style={{ width: 84, height: 84, borderRadius: 28, background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+          <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
             {photo
               ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" as const }} />
               : <User size={38} color="white" />}
           </div>
           <label style={{ position: "absolute" as const, bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
             <Camera size={13} color="#9772F6" />
-            <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) setPhoto(URL.createObjectURL(f)); }} />
+            <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+              const res = await uploadProfilePhoto(f);
+              if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+              else setPhoto(res.url);
+            }} />
           </label>
         </div>
 
         {photo && (
           <div style={{ marginTop: 8 }}>
-            <span onClick={() => setPhoto(null)} style={{ fontSize: 11, color: "rgba(255,255,255,.7)", fontFamily: QS, cursor: "pointer", textDecoration: "underline" }}>Remove Photo</span>
+            <span onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ fontSize: 11, color: "rgba(255,255,255,.7)", fontFamily: QS, cursor: "pointer", textDecoration: "underline" }}>Remove Photo</span>
           </div>
         )}
 
@@ -297,7 +334,7 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
       <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "0 16px 32px" }}>
 
         {/* Personal Information */}
-        <SectionCard icon={<User size={16} color="#9772F6" />} title="Personal Information" defaultOpen>
+        <SectionCard icon={<User size={16} color="#9772F6" />} title="Personal Information">
           {[
             { label: "Full Name",    val: name,    editable: true,  setFn: setName    },
             { label: "Email",        val: email,   editable: true,  setFn: setEmail   },
