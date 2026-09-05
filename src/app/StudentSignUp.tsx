@@ -70,6 +70,15 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
     if (!middleName.trim()) e.middleName = "Middle name is required.";
     if (!lastName.trim()) e.lastName = "Last name is required.";
     if (!birthdate) e.birthdate = "Birthdate is required.";
+    else {
+      // A birthdate is only ever valid up to today, and the (already-computed) age
+      // catches the other end — silently blanking to "" below age 1 previously let a
+      // clearly-wrong birthdate (tomorrow, or 300 years ago) through with no feedback.
+      const dob = new Date(birthdate + "T00:00:00");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (dob.getTime() > today.getTime()) e.birthdate = "Birthdate can't be in the future.";
+      else if (today.getFullYear() - dob.getFullYear() > 100) e.birthdate = "Please enter a valid birthdate.";
+    }
     if (!sex) e.sex = "Please select your sex.";
     if (!contact.trim()) e.contact = "Contact number is required.";
     else if (!/^\d{11}$/.test(contact.trim())) e.contact = "Contact number must be exactly 11 digits.";

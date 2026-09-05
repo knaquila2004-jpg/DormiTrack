@@ -95,6 +95,10 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
   const pendingRoom = house?.rooms.find(r => r.id === pendingRoomId) ?? null;
   const selectedBedLabel = selectedRoom?.beds?.find(b => b.id === bedId)?.label ?? null;
   const dateInvalid = moveIn && moveOut && new Date(moveOut) <= new Date(moveIn);
+  // A move-in date for a registration being submitted right now can't be somewhere in
+  // the past — only "today" or later actually makes sense here.
+  const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  const moveInInvalid = !!moveIn && moveIn < todayISO;
 
   const openHouse = (h: BoardingHouse) => {
     setHouse(h); setCarousel(0); setRoomId(null); setBedId(null); setView("details");
@@ -124,6 +128,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
     if (house?.allowLengthOfStay !== false && (!stayCount || Number(stayCount) < 1)) e.push("Enter stay duration");
     if (house?.allowMoveIn !== false) {
       if (!moveIn) e.push("Select a move-in date");
+      else if (moveInInvalid) e.push("Move-in date can't be in the past");
       if (!moveOut) e.push("Select an expected move-out date");
       if (dateInvalid) e.push("Move-out date must be later than move-in date");
     }
@@ -891,9 +896,10 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
           <div style={card}>
             <p style={sec}>Move-in Information</p>
             <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Move-in Date</label>
-            <input type="date" value={moveIn} onChange={e => setMoveIn(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 14, color: moveIn ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none", marginBottom: 14 }} />
+            <input type="date" min={todayISO} value={moveIn} onChange={e => setMoveIn(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: `1.5px solid ${moveInInvalid ? "#EF4444" : "#E5E7EB"}`, background: "#F9FAFB", fontSize: 14, color: moveIn ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none", marginBottom: moveInInvalid ? 6 : 14 }} />
+            {moveInInvalid && <p style={{ fontSize: 11, color: "#EF4444", margin: "0 0 14px", fontFamily: IN }}>Move-in date can't be in the past.</p>}
             <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 6 }}>Expected Move-out Date</label>
-            <input type="date" value={moveOut} onChange={e => setMoveOut(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: `1.5px solid ${dateInvalid ? "#EF4444" : "#E5E7EB"}`, background: "#F9FAFB", fontSize: 14, color: moveOut ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none" }} />
+            <input type="date" min={moveIn || todayISO} value={moveOut} onChange={e => setMoveOut(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 14, border: `1.5px solid ${dateInvalid ? "#EF4444" : "#E5E7EB"}`, background: "#F9FAFB", fontSize: 14, color: moveOut ? "#1F2937" : "#9CA3AF", fontFamily: IN, outline: "none" }} />
             {dateInvalid && <p style={{ fontSize: 11, color: "#EF4444", margin: "6px 0 0", fontFamily: IN }}>Move-out date must be later than move-in date.</p>}
           </div>
         )}

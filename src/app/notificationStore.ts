@@ -21,7 +21,7 @@ import { supabase } from "../lib/supabase";
 export type NotificationType =
   | "account" | "boarding-house" | "room" | "payment"
   | "check-in" | "check-out" | "report" | "announcement"
-  | "verification" | "system" | "message" | "visitor" | "stay-change";
+  | "verification" | "system" | "message" | "visitor" | "stay-change" | "status-update";
 
 export interface AppNotification {
   id: string;
@@ -55,6 +55,7 @@ export const NOTIF_META: Record<NotificationType, { label: string; Icon: Compone
   "message":        { label: "Message",         Icon: MessageCircle, color: "#8B5CF6", bg: "#EDE9FE" },
   "visitor":        { label: "Visitor",         Icon: UserCheck,   color: "#EC4899", bg: "#FCE7F3" },
   "stay-change":    { label: "Stay Change",     Icon: Calendar,    color: "#D97706", bg: "#FEF3C7" },
+  "status-update":  { label: "Status Update",   Icon: UserCheck,   color: "#D97706", bg: "#FEF3C7" },
 };
 
 // ── Relative-time formatter ("2 hours ago", "Yesterday", "Aug 3, 2026") ────────

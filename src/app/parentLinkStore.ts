@@ -5,6 +5,7 @@
 // here (RLS: psl_update_student requires student_id = auth.uid() AND
 // decided_by = auth.uid() — see 0003_rls.sql).
 import { supabase } from "../lib/supabase";
+import { notifyLandlordOfBoardingHouse } from "./notificationStore";
 
 export type ParentLinkRequest = {
   id: string;
@@ -43,6 +44,28 @@ export async function approveParentLink(linkId: string): Promise<{ ok: true } | 
     .update({ status: "linked", decided_at: new Date().toISOString(), decided_by: uid })
     .eq("id", linkId);
   if (error) return { ok: false, error: error.message };
+
+  // Real notification to the landlord — a parent now being linked to one of their
+  // tenants is something they should see, and be able to tap straight into that
+  // student's profile for (relatedId = the student's own user id, same convention
+  // LandlordOccupants.tsx already uses for check-in/check-out/stay-change deep
+  // links). psl_select_landlord + users_select_landlord_of_parent
+  // (0024_chat_roster_and_conversation_rpc.sql) already grant the reads this needs.
+  const [{ data: link }, { data: me }, { data: sa }] = await Promise.all([
+    supabase.from("parent_student_links").select("parents!inner ( users!inner ( first_name, last_name ) )").eq("id", linkId).maybeSingle(),
+    supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle(),
+    supabase.from("student_assignments").select("boarding_house_id").eq("student_id", uid).eq("is_current", true).maybeSingle(),
+  ]);
+  if (sa?.boarding_house_id) {
+    const parentUser = (link as any)?.parents?.users;
+    const parentName = parentUser ? [parentUser.first_name, parentUser.last_name].filter(Boolean).join(" ") : "A parent";
+    const studentName = me ? [me.first_name, me.last_name].filter(Boolean).join(" ") : "Your student";
+    notifyLandlordOfBoardingHouse(sa.boarding_house_id, {
+      type: "account", title: "Parent Linked",
+      description: `${parentName} is now linked as ${studentName}'s parent/guardian.`,
+      destination: "occupants", relatedId: uid,
+    });
+  }
   return { ok: true };
 }
 

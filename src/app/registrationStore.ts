@@ -203,6 +203,74 @@ export async function endOccupancy(studentId: string): Promise<{ ok: true } | { 
   return { ok: true };
 }
 
+// ── Transfer Room (LandlordOccupants.tsx's "Transfer Room" quick action) ────
+
+export type AvailableBed = { roomId: string; roomName: string; bedId: string; bedLabel: string };
+
+// Every other bed still free in this same boarding house — the RPC below only
+// ever moves a student within the boarding house they're already in.
+export async function getAvailableBedsForTransfer(boardingHouseId: string): Promise<AvailableBed[]> {
+  const { data: rooms, error: roomsErr } = await supabase.from("rooms").select("id, name").eq("boarding_house_id", boardingHouseId);
+  if (roomsErr) { console.error("getAvailableBedsForTransfer:", roomsErr.message); return []; }
+  const roomIds = (rooms ?? []).map(r => r.id);
+  if (!roomIds.length) return [];
+  const { data: beds, error: bedsErr } = await supabase.from("beds").select("id, label, room_id, status").in("room_id", roomIds).eq("status", "available");
+  if (bedsErr) { console.error("getAvailableBedsForTransfer:", bedsErr.message); return []; }
+  const roomNameById = new Map((rooms ?? []).map(r => [r.id, r.name]));
+  return (beds ?? []).map(b => ({ roomId: b.room_id, roomName: roomNameById.get(b.room_id) ?? "—", bedId: b.id, bedLabel: b.label }));
+}
+
+// Atomic (transfer_student_room, 0049) — frees the student's current bed and
+// reserves the destination bed in the same statement, so a concurrent
+// registration/transfer can't double-book it in between.
+export async function transferStudentRoom(studentId: string, newRoomId: string, newBedId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.rpc("transfer_student_room", { p_student_id: studentId, p_new_room_id: newRoomId, p_new_bed_id: newBedId });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+// ── Update Status (LandlordOccupants.tsx's "Update Status" quick action) ────
+// The only real, landlord-settable "status" an occupant has is whether a
+// move-out date is scheduled (student_boarding_registrations.move_out, linked
+// through the current assignment's registration_id) — pass null to clear it
+// back to "Active", or a real date to mark them as moving out on it. Every
+// call also logs a real occupant_status_updates row (0050) — the landlord's
+// optional note lives there, and the returned id becomes the notification's
+// relatedId so the student can tap it and see the actual note/date in a
+// detail modal, not just land on a generic screen.
+export async function updateOccupantMoveOut(studentId: string, moveOut: string | null, note?: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return { ok: false, error: "Not signed in." };
+  const { data: sa, error: saErr } = await supabase
+    .from("student_assignments")
+    .select("registration_id, boarding_house_id")
+    .eq("student_id", studentId).eq("is_current", true).maybeSingle();
+  if (saErr || !sa) return { ok: false, error: "Could not find this student's current assignment." };
+  if (!sa.registration_id) return { ok: false, error: "This occupant has no linked registration to update." };
+  const { error } = await supabase.from("student_boarding_registrations").update({ move_out: moveOut }).eq("id", sa.registration_id);
+  if (error) return { ok: false, error: error.message };
+
+  const { data: row, error: insErr } = await supabase.from("occupant_status_updates").insert({
+    student_id: studentId, boarding_house_id: sa.boarding_house_id,
+    move_out: moveOut, note: note?.trim() || null, created_by: uid,
+  }).select("id").single();
+  if (insErr || !row) return { ok: false, error: insErr?.message ?? "Could not record this status update." };
+  return { ok: true, id: row.id };
+}
+
+export type OccupantStatusUpdate = {
+  id: string; moveOut: string | null; note: string | null; createdAt: string;
+};
+
+// Student/parent/landlord-facing lookup by id (osu_select_student/_landlord/_parent,
+// 0050) — how the "status-update" notification's detail modal gets its content.
+export async function getOccupantStatusUpdate(id: string): Promise<OccupantStatusUpdate | null> {
+  const { data, error } = await supabase.from("occupant_status_updates").select("id, move_out, note, created_at").eq("id", id).maybeSingle();
+  if (error || !data) return null;
+  return { id: data.id, moveOut: data.move_out, note: data.note, createdAt: data.created_at };
+}
+
 export type Occupant = {
   studentId: string;
   studentName: string;
@@ -210,6 +278,9 @@ export type Occupant = {
   program: string | null;
   yearLevel: number | null;
   contact?: string | null;
+  // Only populated by getCurrentOccupantsForLandlord — needed so "Transfer Room"
+  // knows which boarding house's other beds to offer.
+  boardingHouseId?: string;
   roomId: string;
   block?: string | null;
   roomName: string;
@@ -221,6 +292,12 @@ export type Occupant = {
   // Only populated by getCurrentOccupantsForLandlord; getRoommates doesn't need it.
   movedOutAt?: string | null;
   photo: string | null;
+  // Real linked (status='linked' only — not pending/rejected) parent(s)/guardian(s) —
+  // was always a hardcoded "—" on the landlord's Occupants screen before. A student can
+  // have more than one linked parent, joined with ", " when there's more than one.
+  // Only populated by getCurrentOccupantsForLandlord; getRoommates doesn't need it.
+  parentName?: string | null;
+  parentContact?: string | null;
 };
 
 export async function getCurrentOccupantsForLandlord(landlordId: string): Promise<Occupant[]> {
@@ -230,13 +307,43 @@ export async function getCurrentOccupantsForLandlord(landlordId: string): Promis
       student_id, moved_in_at, room_id, bed_id,
       students!inner ( student_id_no, program, year_level, users!inner ( first_name, middle_name, last_name, contact_number, photo_url ) ),
       rooms ( name ), beds ( label ),
-      boarding_houses!inner ( landlord_id ),
+      boarding_houses!inner ( id, landlord_id ),
       student_boarding_registrations ( move_out )
     `)
     .eq("boarding_houses.landlord_id", landlordId)
     .eq("is_current", true);
   if (error) { console.error("getCurrentOccupantsForLandlord:", error.message); return []; }
-  return (data ?? []).map((r: any) => ({
+
+  // Real linked parent(s) — psl_select_landlord + users_select_landlord_of_parent
+  // (0024_chat_roster_and_conversation_rpc.sql) already grant this landlord read
+  // access for their own tenants; nothing previously queried it for this screen.
+  // Two separate queries rather than one embed through `parents`: 0024 never
+  // granted the landlord SELECT on `parents` itself (only parent_student_links and
+  // the parent's own `users` row), so a `parents!inner(...)` embed silently drops
+  // every row — confirmed live. Going student_links -> users directly sidesteps
+  // that gap entirely instead of needing another RLS migration for it.
+  const studentIds = [...new Set((data ?? []).map((r: any) => r.student_id))];
+  const { data: links } = studentIds.length
+    ? await supabase.from("parent_student_links").select("student_id, parent_id").in("student_id", studentIds).eq("status", "linked")
+    : { data: [] as any[] };
+  const parentIds = [...new Set((links ?? []).map((l: any) => l.parent_id))];
+  const { data: parentUsers } = parentIds.length
+    ? await supabase.from("users").select("id, first_name, last_name, contact_number").in("id", parentIds)
+    : { data: [] as any[] };
+  const parentUserById = new Map((parentUsers ?? []).map((u: any) => [u.id, u]));
+  const parentsByStudent = new Map<string, { name: string; contact: string }[]>();
+  for (const l of links ?? []) {
+    const u = parentUserById.get((l as any).parent_id);
+    if (!u) continue;
+    const entry = { name: fullName(u), contact: u.contact_number ?? "—" };
+    const arr = parentsByStudent.get((l as any).student_id) ?? [];
+    arr.push(entry);
+    parentsByStudent.set((l as any).student_id, arr);
+  }
+
+  return (data ?? []).map((r: any) => {
+    const parents = parentsByStudent.get(r.student_id) ?? [];
+    return {
     studentId: r.student_id,
     movedOutAt: r.student_boarding_registrations?.move_out ?? null,
     studentName: fullName(r.students.users),
@@ -244,13 +351,17 @@ export async function getCurrentOccupantsForLandlord(landlordId: string): Promis
     program: r.students.program,
     yearLevel: r.students.year_level,
     contact: r.students.users.contact_number ?? null,
+    boardingHouseId: r.boarding_houses?.id,
     roomId: r.room_id,
     roomName: r.rooms?.name ?? "",
     bedId: r.bed_id,
     bedLabel: r.beds?.label ?? "",
     movedInAt: r.moved_in_at,
+    parentName: parents.length ? parents.map(p => p.name).join(", ") : null,
+    parentContact: parents.length ? parents.map(p => p.contact).join(", ") : null,
     photo: r.students.users.photo_url ?? null,
-  }));
+    };
+  });
 }
 
 // Roommates: everyone else currently assigned to the same room as this student.

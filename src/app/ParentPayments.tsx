@@ -100,7 +100,10 @@ function SubmitPaymentModal({ billRows, periodLabel, totalDue, onClose, onSubmit
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [proofPreview, setProofPreview] = useState<string | null>(null);
   const [proofError, setProofError] = useState("");
-  const canSubmit = method && refNo && date;
+  const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  // A payment already made can't have happened on a date that hasn't occurred yet.
+  const dateInvalid = !!date && date > todayISO;
+  const canSubmit = method && refNo && date && !dateInvalid;
 
   const MAX_BYTES = 5 * 1024 * 1024;
   const pickProof = (f: File | undefined) => {
@@ -179,14 +182,15 @@ function SubmitPaymentModal({ billRows, periodLabel, totalDue, onClose, onSubmit
           </div>
 
           {/* Date of Payment */}
-          <div style={{ background:"white", borderRadius:18, padding:"16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:12 }}>
+          <div style={{ background:"white", borderRadius:18, padding:"16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:dateInvalid?6:12 }}>
             <label style={{ display:"block", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS, marginBottom:10 }}>Date of Payment *</label>
-            <div style={{ display:"flex", alignItems:"center", gap:10, background:"#F9FAFB", borderRadius:13, padding:"0 14px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, background:"#F9FAFB", borderRadius:13, padding:"0 14px", border:dateInvalid?"1.5px solid #EF4444":"1.5px solid transparent" }}>
               <Calendar size={15} color="#9772F6"/>
-              <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+              <input type="date" max={todayISO} value={date} onChange={e=>setDate(e.target.value)}
                 style={{ flex:1, padding:"11px 0", border:"none", background:"transparent", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", colorScheme:"light" as const }}/>
             </div>
           </div>
+          {dateInvalid && <p style={{ margin:"0 0 12px", fontSize:11, color:"#EF4444", fontFamily:IN }}>Payment date can't be in the future.</p>}
 
           {/* Upload Receipt */}
           <div style={{ background:"white", borderRadius:18, padding:"16px", boxShadow:"0 2px 8px rgba(0,0,0,.05)", marginBottom:14 }}>

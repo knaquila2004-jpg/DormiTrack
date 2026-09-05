@@ -4,17 +4,22 @@ import {
   GraduationCap, Calendar, Building2, MapPin, User, Bed,
   Info, Shield, Mail, Wifi, Droplet, Zap, Utensils, Star,
   Shirt, Car, CheckCircle, AlertCircle, Clock, Maximize2, Pencil, ChevronLeft,
+  ArrowRightLeft,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment, MyBoardingHouse, MyRoom, MyStay } from "./studentAssignmentStore";
-import { getRoommates } from "./registrationStore";
+import { getRoommates, getOccupantStatusUpdate, OccupantStatusUpdate, getAvailableBedsForTransfer, AvailableBed } from "./registrationStore";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
 import { FullScreenBHMap } from "./components/FullScreenBHMap";
-import { notifyLandlordOfBoardingHouse } from "./notificationStore";
+import { notifyLandlordOfBoardingHouse, NotificationType } from "./notificationStore";
 import {
   getMyCurrentStayRaw, getMyPendingStayChangeRequest, submitStayChangeRequest,
   MyCurrentStay, StayChangeRequest, StayUnit,
 } from "./stayChangeStore";
+import {
+  getMyCurrentRoomBed, getMyPendingRoomTransferRequest, submitRoomTransferRequest,
+  RoomTransferRequest,
+} from "./roomTransferStore";
 
 const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
 const EMPTY_ASSIGNMENT: MyAssignment = {
@@ -77,7 +82,6 @@ function OccupantModal({ occ, idx, onClose, roomName, bhName }: { occ:Occupant; 
             { Icon:GraduationCap, label:"Program",        val:occ.program    },
             { Icon:BookOpen,      label:"Year Level",     val:occ.year       },
             { Icon:Shield,        label:"Block",          val:occ.block      },
-            { Icon:Calendar,      label:"Move-in Date",   val:occ.moveIn     },
             { Icon:Home,          label:"Room",           val:roomName },
             { Icon:Building2,     label:"Boarding House", val:bhName   },
           ].map(({ Icon, label, val })=>(
@@ -238,6 +242,178 @@ function StayChangeFormModal({ onClose, onSubmitted, bhId, studentName }: { onCl
   );
 }
 
+// ── Request a Room / Bed Transfer ────────────────────────────────────────────
+// Same shape as StayChangeFormModal just above: a student can't just move
+// themselves to another bed (that's the landlord's own real assignment/beds
+// data) — this submits a real request against a real available bed (the same
+// list the landlord's own "Transfer Room" quick action offers), the landlord
+// gets notified and reviews it in that occupant's profile, and only on
+// approval does the real transfer happen (transfer_student_room, 0049).
+
+function RoomTransferFormModal({ onClose, onSubmitted, bhId, studentName }: { onClose: () => void; onSubmitted: () => void; bhId: string; studentName: string }) {
+  const [loading, setLoading] = useState(true);
+  const [current, setCurrent] = useState<{ roomName: string; bedLabel: string } | null>(null);
+  const [beds, setBeds] = useState<AvailableBed[]>([]);
+  const [selected, setSelected] = useState<AvailableBed | null>(null);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const [mine, avail] = await Promise.all([getMyCurrentRoomBed(), getAvailableBedsForTransfer(bhId)]);
+      if (!active) return;
+      if (!mine) { setErr("Could not load your current room/bed."); setLoading(false); return; }
+      setCurrent({ roomName: mine.roomName, bedLabel: mine.bedLabel });
+      setBeds(avail);
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [bhId]);
+
+  const handleSubmit = async () => {
+    if (!selected) { setErr("Please choose a destination bed."); return; }
+    setSubmitting(true); setErr("");
+    const res = await submitRoomTransferRequest(selected.roomId, selected.bedId, note);
+    setSubmitting(false);
+    if (res.ok === false) { setErr(res.error); return; }
+    notifyLandlordOfBoardingHouse(bhId, {
+      type: "room", title: "Room Transfer Requested",
+      description: `${studentName} requested to move to ${selected.roomName} — ${selected.bedLabel}.`,
+      destination: "occupants", relatedId: (await supabase.auth.getSession()).data.session?.user?.id,
+    });
+    setSuccess(true);
+  };
+
+  if (success) return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.6)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }}>
+      <div style={{ background:"white", borderRadius:28, padding:"30px 24px 24px", width:"100%", maxWidth:330, textAlign:"center" as const, boxShadow:"0 24px 60px rgba(0,0,0,.25)" }}>
+        <div style={{ width:64, height:64, borderRadius:22, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <CheckCircle size={28} color="white"/>
+        </div>
+        <h3 style={{ margin:"0 0 10px", fontSize:18, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Transfer Requested!</h3>
+        <p style={{ margin:"0 0 22px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.65 }}>
+          Your landlord has been notified and will need to confirm this before you're moved.
+        </p>
+        <button onClick={()=>{ onSubmitted(); onClose(); }} style={{ width:"100%", height:48, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", fontSize:14, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
+      <div style={{ background:"#F7F8FC", borderRadius:"28px 28px 0 0", maxHeight:"93%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
+        <div style={{ background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12 }}>
+          <div onClick={onClose} style={{ cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}><ChevronLeft size={17} color="#374151"/></div>
+          <div style={{ flex:1 }}>
+            <p style={{ margin:0, fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Request a Room / Bed Transfer</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Your landlord will need to confirm this</p>
+          </div>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 18px 40px" }}>
+          {loading ? (
+            <p style={{ textAlign:"center" as const, fontSize:12, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>Loading…</p>
+          ) : (
+            <>
+              {current && (
+                <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
+                  <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, fontWeight:700, letterSpacing:0.5 }}>Current Room / Bed</p>
+                  <p style={{ margin:"3px 0 0", fontSize:13, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{current.roomName} — {current.bedLabel}</p>
+                </div>
+              )}
+
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Destination Bed <span style={{ color:"#EF4444" }}>*</span></p>
+              {beds.length === 0 ? (
+                <div style={{ background:"white", borderRadius:14, padding:"20px 14px", border:"1.5px solid #E5E7EB", marginBottom:14, textAlign:"center" as const }}>
+                  <p style={{ margin:0, fontSize:12, color:"#9CA3AF", fontFamily:IN }}>No other beds are available right now.</p>
+                </div>
+              ) : (
+                <div style={{ marginBottom:14 }}>
+                  {beds.map(b => (
+                    <button key={b.bedId} onClick={()=>{ setSelected(b); setErr(""); }}
+                      style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", borderRadius:14, marginBottom:8,
+                        background: selected?.bedId===b.bedId ? "#F5F0FF" : "white", border: selected?.bedId===b.bedId ? "1.5px solid #9772F6" : "1.5px solid #E5E7EB", cursor:"pointer" }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:"#1F2937", fontFamily:QS }}>{b.roomName} — {b.bedLabel}</span>
+                      {selected?.bedId===b.bedId && <CheckCircle size={16} color="#9772F6"/>}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Note to Landlord <span style={{ fontSize:10, color:"#9CA3AF", fontWeight:600 }}>(Optional)</span></p>
+              <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:18 }}>
+                <textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Why you're requesting this move…" rows={3} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", resize:"none" as const, boxSizing:"border-box" as const }}/>
+              </div>
+
+              {err && <p style={{ margin:"0 0 10px", fontSize:11, color:"#EF4444", fontFamily:IN }}>{err}</p>}
+
+              <button onClick={handleSubmit} disabled={submitting || beds.length===0} style={{ width:"100%", height:52, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:(submitting||beds.length===0)?"default":"pointer", opacity:(submitting||beds.length===0)?0.7:1, fontSize:15, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.35)" }}>
+                {submitting ? "Submitting…" : "Submit Request"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Status Update Detail Modal ───────────────────────────────────────────────
+// What a "status-update" notification tap opens — the actual real occupant_status_updates
+// row it points to (LandlordOccupants.tsx's "Update Status" quick action), not just a
+// generic screen. `moveOut` null means the landlord cleared a previously scheduled date.
+
+function fmtStatusDate(iso: string): string {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
+function StatusUpdateDetailModal({ update, onClose }: { update: OccupantStatusUpdate; onClose: () => void }) {
+  const cleared = update.moveOut === null;
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }} onClick={onClose}>
+      <div style={{ background:"white", borderRadius:28, padding:"28px 24px 24px", width:"100%", maxWidth:340, boxShadow:"0 24px 60px rgba(0,0,0,.25)" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ width:56, height:56, borderRadius:20, background: cleared ? "#DCFCE7" : "#FEF3C7", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <Calendar size={24} color={cleared ? "#16A34A" : "#D97706"}/>
+        </div>
+        <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"center" as const }}>
+          {cleared ? "Move-Out Cleared" : "Move-Out Scheduled"}
+        </h3>
+        <p style={{ margin:"0 0 18px", fontSize:11, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>
+          Updated by your landlord on {fmtStatusDate(update.createdAt.slice(0,10))}
+        </p>
+
+        {!cleared && (
+          <div style={{ background:"#FEF3C7", borderRadius:14, padding:"12px 14px", marginBottom: update.note ? 12 : 18, textAlign:"center" as const }}>
+            <p style={{ margin:0, fontSize:10, color:"#92400E", fontFamily:QS, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Expected Move-Out</p>
+            <p style={{ margin:"3px 0 0", fontSize:15, fontWeight:800, color:"#92400E", fontFamily:QS }}>{fmtStatusDate(update.moveOut!)}</p>
+          </div>
+        )}
+        {cleared && (
+          <div style={{ background:"#DCFCE7", borderRadius:14, padding:"12px 14px", marginBottom: update.note ? 12 : 18, textAlign:"center" as const }}>
+            <p style={{ margin:0, fontSize:12, color:"#166534", fontFamily:IN, lineHeight:1.5 }}>Your scheduled move-out was cleared — you're active again.</p>
+          </div>
+        )}
+
+        {update.note && (
+          <div style={{ background:"#F9FAFB", borderRadius:14, padding:"12px 14px", marginBottom:18 }}>
+            <p style={{ margin:"0 0 4px", fontSize:10, color:"#9CA3AF", fontFamily:QS, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Note from your landlord</p>
+            <p style={{ margin:0, fontSize:12, color:"#374151", fontFamily:IN, lineHeight:1.6 }}>"{update.note}"</p>
+          </div>
+        )}
+
+        <button onClick={onClose} style={{ width:"100%", height:48, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", fontSize:14, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>
+          Got It
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab content ───────────────────────────────────────────────────────────────
 
 function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_DATA, studentName }: { go:(s:string)=>void; bhData: MyBoardingHouse; roomData: MyRoom; stayData: MyStay; studentName: string }) {
@@ -246,6 +422,11 @@ function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_
   const [pendingStayChange, setPendingStayChange] = useState<StayChangeRequest | null>(null);
   const refreshPendingStayChange = () => { getMyPendingStayChangeRequest().then(setPendingStayChange); };
   useEffect(() => { refreshPendingStayChange(); }, []);
+
+  const [showRoomTransferForm, setShowRoomTransferForm] = useState(false);
+  const [pendingRoomTransfer, setPendingRoomTransfer] = useState<RoomTransferRequest | null>(null);
+  const refreshPendingRoomTransfer = () => { getMyPendingRoomTransferRequest().then(setPendingRoomTransfer); };
+  useEffect(() => { refreshPendingRoomTransfer(); }, []);
   return (
     <div style={{ padding:"16px 16px 28px" }}>
 
@@ -347,11 +528,43 @@ function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_
             </div>
           ))}
         </div>
+
+        {/* Room / Bed transfer */}
+        <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #F3F4F6" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
+            <span style={{ fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Room / Bed</span>
+            {!pendingRoomTransfer && (
+              <button onClick={()=>setShowRoomTransferForm(true)} title="Request a Transfer" style={{ width:26, height:26, borderRadius:9, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Pencil size={12} color="#6B7280"/>
+              </button>
+            )}
+          </div>
+          {pendingRoomTransfer ? (
+            <div style={{ margin:"8px 0 0", padding:"10px 12px", borderRadius:12, background:"#FEF3C7", display:"flex", alignItems:"center", gap:8 }}>
+              <ArrowRightLeft size={13} color="#D97706" style={{ flexShrink:0 }}/>
+              <span style={{ fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.5 }}>
+                Requested move to {pendingRoomTransfer.requestedRoomName} — {pendingRoomTransfer.requestedBedLabel}, awaiting your landlord's confirmation.
+              </span>
+            </div>
+          ) : (
+            <p style={{ margin:"8px 0 0", fontSize:11, color:"#6B7280", fontFamily:IN, lineHeight:1.5 }}>
+              Want to move to a different room or bed? Request a transfer and your landlord will review it.
+            </p>
+          )}
+        </div>
       </div>
       {showStayChangeForm && (
         <StayChangeFormModal
           onClose={()=>setShowStayChangeForm(false)}
           onSubmitted={refreshPendingStayChange}
+          bhId={BH_DATA.id}
+          studentName={studentName}
+        />
+      )}
+      {showRoomTransferForm && (
+        <RoomTransferFormModal
+          onClose={()=>setShowRoomTransferForm(false)}
+          onSubmitted={refreshPendingRoomTransfer}
           bhId={BH_DATA.id}
           studentName={studentName}
         />
@@ -420,21 +633,21 @@ function OccupantsTab({ setSelOcc, roomData: ROOM_DATA, occupants: ROOM_OCCUPANT
         {ROOM_OCCUPANTS.map((occ,i)=>{
           const color = occ.isMe ? "#9772F6" : AVATAR_COLORS[i % AVATAR_COLORS.length];
           return (
-            <div key={occ.id} onClick={()=>setSelOcc({occ,idx:i})} style={{ padding:"14px 16px", borderBottom:i<ROOM_OCCUPANTS.length-1?"1px solid #F3F4F6":"none", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
-              <div style={{ width:46, height:46, borderRadius:"50%", backgroundImage:occ.isMe?GRAD:undefined, background:occ.isMe?undefined:color+"18", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:occ.isMe?undefined:`1.5px solid ${color}30`, overflow:"hidden" }}>
+            <div key={occ.id} onClick={()=>setSelOcc({occ,idx:i})} style={{ padding:"14px 16px", borderBottom:i<ROOM_OCCUPANTS.length-1?"1px solid #F3F4F6":"none", cursor:"pointer", display:"flex", alignItems:"center", gap:12, backgroundImage:occ.isMe?GRAD:undefined }}>
+              <div style={{ width:46, height:46, borderRadius:"50%", background:occ.isMe?"rgba(255,255,255,.22)":color+"18", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:occ.isMe?"1.5px solid rgba(255,255,255,.5)":`1.5px solid ${color}30`, overflow:"hidden" }}>
                 {occ.photo ? <img src={occ.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:16, fontWeight:800, color:occ.isMe?"white":color, fontFamily:QS }}>{initials(occ.name)}</span>}
               </div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
-                  <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{occ.name}</p>
-                  {occ.isMe && <span style={{ fontSize:8, fontWeight:800, padding:"2px 7px", borderRadius:20, backgroundImage:GRAD, color:"white", fontFamily:QS }}>You</span>}
+                  <p style={{ margin:0, fontSize:14, fontWeight:800, color:occ.isMe?"white":"#1F2937", fontFamily:QS }}>{occ.name}</p>
+                  {occ.isMe && <span style={{ fontSize:8, fontWeight:800, padding:"2px 7px", borderRadius:20, background:"rgba(255,255,255,.25)", color:"white", fontFamily:QS }}>You</span>}
                 </div>
-                <p style={{ margin:"0 0 3px", fontSize:11, color:"#6B7280", fontFamily:IN }}>{occ.bed} · {occ.program}</p>
+                <p style={{ margin:"0 0 3px", fontSize:11, color:occ.isMe?"rgba(255,255,255,.85)":"#6B7280", fontFamily:IN }}>{occ.bed} · {occ.program}</p>
                 <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:occ.status==="active"?"#DCFCE7":"#FEF3C7", color:occ.status==="active"?"#16A34A":"#D97706", fontFamily:QS }}>
                   {occ.status==="active"?"Currently Staying":"Check-in Pending"}
                 </span>
               </div>
-              <ChevronRight size={14} color="#D1D5DB"/>
+              <ChevronRight size={14} color={occ.isMe?"rgba(255,255,255,.7)":"#D1D5DB"}/>
             </div>
           );
         })}
@@ -506,9 +719,27 @@ function RulesTab({ bhData: BH_DATA }: { bhData: MyBoardingHouse }) {
 
 type Tab = "overview"|"occupants"|"amenities"|"rules";
 
-export function StudentRoomOccupantsScreen({ go }: { go:(s:string)=>void }) {
+export function StudentRoomOccupantsScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
+  go:(s:string)=>void;
+  pendingDeepLink?: { type: NotificationType; relatedId?: string } | null;
+  onDeepLinkConsumed?: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [selOcc, setSelOcc] = useState<{occ:Occupant;idx:number}|null>(null);
+
+  // Opened from a "status-update" notification tap — the landlord's own
+  // "Update Status" quick action (LandlordOccupants.tsx) logs a real
+  // occupant_status_updates row (0050); fetch that specific one by id and show
+  // its actual move-out date/note in a modal, rather than just landing here.
+  const [viewingStatusUpdate, setViewingStatusUpdate] = useState<OccupantStatusUpdate | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "status-update" || !pendingDeepLink.relatedId) return;
+    const id = pendingDeepLink.relatedId;
+    getOccupantStatusUpdate(id).then(row => {
+      if (row) setViewingStatusUpdate(row);
+      onDeepLinkConsumed?.();
+    });
+  }, [pendingDeepLink, onDeepLinkConsumed]);
 
   const [profile, setProfile] = useState<MyStudentProfile>(EMPTY_PROFILE);
   const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
@@ -603,6 +834,7 @@ export function StudentRoomOccupantsScreen({ go }: { go:(s:string)=>void }) {
       </div>
 
       {selOcc && <OccupantModal occ={selOcc.occ} idx={selOcc.idx} onClose={()=>setSelOcc(null)} roomName={ROOM_DATA.name} bhName={BH_DATA.name}/>}
+      {viewingStatusUpdate && <StatusUpdateDetailModal update={viewingStatusUpdate} onClose={()=>setViewingStatusUpdate(null)}/>}
     </div>
   );
 }

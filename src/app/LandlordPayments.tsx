@@ -147,10 +147,14 @@ function CreatePaymentPeriodModal({ boardingHouses, onClose, onCreated }: {
   const [err, setErr]     = useState("");
 
   const chosen = months[sel];
-  const canSubmit = !!bhId && !!dueDate;
+  const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  // A due date for a bill being created right now can't already be in the past.
+  const dueDateInvalid = !!dueDate && dueDate < todayISO;
+  const canSubmit = !!bhId && !!dueDate && !dueDateInvalid;
 
   const handleCreate = async () => {
-    if (!canSubmit) { setErr("Please choose a boarding house and due date."); return; }
+    if (!bhId || !dueDate) { setErr("Please choose a boarding house and due date."); return; }
+    if (dueDateInvalid) { setErr("Due date can't be in the past."); return; }
     setSubmitting(true);
     const res = await createPaymentPeriod({ boardingHouseId: bhId, year: chosen.year, month: chosen.month, dueDate, note });
     setSubmitting(false);
@@ -191,9 +195,10 @@ function CreatePaymentPeriodModal({ boardingHouses, onClose, onCreated }: {
           <p style={{ margin:"0 0 14px", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>Periods can be scheduled up to {CREATE_PERIOD_MAX_MONTHS_AHEAD} months ahead.</p>
 
           <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Due Date <span style={{ color:"#EF4444" }}>*</span></p>
-          <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
-            <input type="date" value={dueDate} onChange={e=>{ setDueDate(e.target.value); setErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", colorScheme:"light" as const, boxSizing:"border-box" as const }}/>
+          <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:`1.5px solid ${dueDateInvalid?"#EF4444":"#E5E7EB"}`, marginBottom:dueDateInvalid?6:14 }}>
+            <input type="date" min={todayISO} value={dueDate} onChange={e=>{ setDueDate(e.target.value); setErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937", colorScheme:"light" as const, boxSizing:"border-box" as const }}/>
           </div>
+          {dueDateInvalid && <p style={{ margin:"-2px 0 14px", fontSize:11, color:"#EF4444", fontFamily:IN }}>Due date can't be in the past.</p>}
 
           <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Note <span style={{ fontSize:10, color:"#9CA3AF", fontWeight:600 }}>(Optional — shown to students &amp; parents)</span></p>
           <div style={{ background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB", marginBottom:14 }}>
