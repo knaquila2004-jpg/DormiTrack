@@ -283,7 +283,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
     landlord: { viewDorms: true,  checkIn: false, chat: true,  fileReport: false, payments: true,  viewOccupants: true  },
     admin:    { viewDorms: true,  checkIn: true,  chat: true,  fileReport: true,  payments: true,  viewOccupants: true  },
   });
-  const PERM_LABELS = { viewDorms: "View Boarding Houses", checkIn: "GPS Check-In/Out", chat: "Messaging", fileReport: "File Reports", payments: "Payment Features", viewOccupants: "View Occupants" };
+  const PERM_LABELS = { viewDorms: "View Boarding Houses", checkIn: "GPS Enter/Exit", chat: "Messaging", fileReport: "File Reports", payments: "Payment Features", viewOccupants: "View Occupants" };
 
   // Logout
   const [showLogout, setShowLogout] = useState(false);
@@ -371,7 +371,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
 
       {/* ── App Bar ──────────────────────────────────────────────────────── */}
       <div style={{ flexShrink: 0, backgroundImage: GRAD_H, padding: "52px 20px 20px", position: "relative" as const, overflow: "hidden" }}>
-        <div style={{ position: "absolute" as const, top: -40, right: -40, width: 150, height: 150, borderRadius: "50%", background: "rgba(255,255,255,.05)", pointerEvents: "none" }} />
+        <div style={{ position: "absolute" as const, top: -40, right: -40, width: 150, height: 150, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.05)", filter: "blur(28px)", pointerEvents: "none" }} />
         <div style={{ marginBottom: 4 }}>
           <h1 style={{ margin: "0 0 2px", fontSize: 20, fontWeight: 800, color: "white", fontFamily: QS }}>System</h1>
           <p style={{ margin: 0, fontSize: 11, color: "rgba(255,255,255,.65)", fontFamily: IN }}>Administration & Configuration Center</p>

@@ -417,7 +417,10 @@ export function StudentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { g
 
   const doSubmit = async (info: { method:string; refNo:string; date:string; notes:string; proofFile:File|null }) => {
     setProofUploadWarning("");
-    const outstanding = (current?.bills ?? []).filter(b => b.status === "unpaid" || b.status === "overdue");
+    // Includes "partially-paid" — a bill the landlord (or a prior submission) has already put
+    // some money against still has a real remaining balance the student can pay off; excluding
+    // it here would make that bill a permanent dead end once any partial amount was recorded.
+    const outstanding = (current?.bills ?? []).filter(b => b.status === "unpaid" || b.status === "overdue" || b.status === "partially-paid");
     if (outstanding.length === 0) return;
     // One receipt covers the whole submission — uploaded once against the first bill, then the
     // same URL is attached to every payment_records row this submission creates, rather than
@@ -430,7 +433,9 @@ export function StudentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { g
     }
     let firstRecordId: string | undefined;
     for (const b of outstanding) {
-      const res = await submitPaymentRecord({ billId: b.id, amount: b.amount, role: "student", method: info.method, referenceNo: info.refNo, paymentDate: info.date, proofUrl });
+      // The real remaining balance, not the bill's full amount — a partially-paid bill (e.g. the
+      // landlord already recorded half of it) should only ever be submitted for what's left.
+      const res = await submitPaymentRecord({ billId: b.id, amount: b.amount - b.paidAmount, role: "student", method: info.method, referenceNo: info.refNo, paymentDate: info.date, proofUrl });
       if (res.ok === false) { console.error("submitPaymentRecord failed:", res.error); continue; }
       if (!firstRecordId) firstRecordId = res.id;
     }
@@ -451,7 +456,7 @@ export function StudentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { g
 
       {/* Header */}
       <div style={{ flexShrink:0, padding:"52px 20px 24px", backgroundImage:GRAD, position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.06)", filter:"blur(28px)" }}/>
         <p style={{ margin:"0 0 2px", fontSize:13, color:"rgba(255,255,255,.7)", fontFamily:IN }}>Billing Period</p>
         <h1 style={{ margin:"0 0 16px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>{periodLabel}</h1>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:14 }}>

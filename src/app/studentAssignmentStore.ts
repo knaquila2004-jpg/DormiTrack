@@ -71,13 +71,20 @@ export async function getAssignmentForStudent(studentId: string): Promise<MyAssi
     .eq("student_id", studentId).eq("is_current", true).maybeSingle();
   if (saErr || !sa) return null;
 
-  const [{ data: bh }, { data: room }, { data: bed }, { data: amenities }, { data: roomsCount }, { data: occBeds }, { data: reg }, { data: photos }] = await Promise.all([
+  const [{ data: bh }, { data: room }, { data: bed }, { data: amenities }, { count: roomsCount }, { count: roomOccupants }, { data: reg }, { data: photos }] = await Promise.all([
     supabase.from("boarding_houses").select("id, name, address, lat, lng, cover_url, contact_number, contact_email, status, rent_amount, checkin_radius_meters, landlords(display_name, users(photo_url))").eq("id", sa.boarding_house_id).single(),
     supabase.from("rooms").select("id, name, capacity, floor, room_type").eq("id", sa.room_id).single(),
     supabase.from("beds").select("label").eq("id", sa.bed_id).single(),
     supabase.from("boarding_house_amenities").select("label").eq("boarding_house_id", sa.boarding_house_id),
     supabase.from("rooms").select("id", { count: "exact", head: true }).eq("boarding_house_id", sa.boarding_house_id),
-    supabase.from("beds").select("id", { count: "exact", head: true }).eq("room_id", sa.room_id).eq("status", "occupied"),
+    // Real occupant count for this specific room — student_assignments (who is
+    // actually, currently assigned) rather than beds.status='occupied', which is a
+    // separate column a landlord can also set by hand (LandlordProfile.tsx's bed
+    // editor) without necessarily reflecting a real current assignment change.
+    // (Also fixes a real pre-existing bug: `head: true` queries return their count
+    // on the response's `count` field, not `data` — the old `{ data }` destructure
+    // here and on roomsCount above always read null/0 regardless of the real value.)
+    supabase.from("student_assignments").select("id", { count: "exact", head: true }).eq("room_id", sa.room_id).eq("is_current", true),
     sa.registration_id ? supabase.from("student_boarding_registrations").select("move_out, stay_unit, stay_count, rules:boarding_house_id").eq("id", sa.registration_id).maybeSingle() : Promise.resolve({ data: null }),
     supabase.from("boarding_house_photos").select("id, url, label").eq("boarding_house_id", sa.boarding_house_id).order("sort_order"),
   ]);
@@ -91,7 +98,19 @@ export async function getAssignmentForStudent(studentId: string): Promise<MyAssi
   const moveOut = (reg as any)?.move_out ?? null;
   const totalDays = moveOut ? daysBetween(moveInDate, new Date(moveOut)) : null;
   const daysRemaining = totalDays != null ? Math.max(0, totalDays - daysStayed) : null;
-  const stayLength = (reg as any)?.stay_count && (reg as any)?.stay_unit ? `${(reg as any).stay_count} ${(reg as any).stay_unit}` : "—";
+  // Always derived from the real Move-In/Move-Out dates (same as totalDays right
+  // above), never from the stored stay_count/stay_unit columns — those can go
+  // stale the moment either date changes through any of the paths that update
+  // one but not the other (a landlord's "Update Status" move-out edit, a stay-
+  // change request that only specifies new dates, a pre-fix registration whose
+  // typed-in count never matched its own dates to begin with). stay_unit is
+  // still honored as the student's real Weeks-vs-Months display preference —
+  // only the count is ever recomputed, so "Stay Duration" can never contradict
+  // the dates sitting right next to it.
+  const stayUnitPref = (reg as any)?.stay_unit === "Weeks" ? "Weeks" : "Months";
+  const stayLength = totalDays != null
+    ? `${Math.max(1, Math.round(totalDays / (stayUnitPref === "Weeks" ? 7 : 30.44)))} ${stayUnitPref}`
+    : "—";
 
   return {
     bh: {
@@ -104,13 +123,13 @@ export async function getAssignmentForStudent(studentId: string): Promise<MyAssi
       checkinRadiusMeters: (bh as any).checkin_radius_meters ?? 50,
       amenities: (amenities ?? []).map(a => a.label),
       rules: bhRules?.rules ?? [],
-      totalRooms: roomsCount?.length ?? 0,
+      totalRooms: roomsCount ?? 0,
       rentAmount: (bh as any).rent_amount != null ? Number((bh as any).rent_amount) : null,
       gallery: (photos ?? []).map(p => ({ id: p.id, url: p.url, label: p.label ?? "" })),
     },
     room: {
       id: room.id, name: room.name, bed: bed.label, capacity: room.capacity,
-      occupied: occBeds?.length ?? 0, available: Math.max(0, room.capacity - (occBeds?.length ?? 0)),
+      occupied: roomOccupants ?? 0, available: Math.max(0, room.capacity - (roomOccupants ?? 0)),
       floor: room.floor ?? "—", type: room.room_type ?? "Standard Room",
     },
     stay: {

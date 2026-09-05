@@ -22,7 +22,7 @@ const EMPTY_ASSIGNMENT: MyAssignment = {
   stay: { moveIn: "—", moveOut: "—", daysStayed: 0, daysRemaining: 0, totalDays: 0, stayLength: "—" },
 };
 
-type PayStatus = "paid" | "awaiting-verification" | "overdue" | "unpaid" | "parent-submitted";
+type PayStatus = "paid" | "awaiting-verification" | "partially-paid" | "overdue" | "unpaid" | "parent-submitted";
 
 interface Payment {
   id: string; period: string; amount: number; dueDate: string; note: string | null;
@@ -34,6 +34,7 @@ const EMPTY_PAYMENT: Payment = { id:"", period:"—", amount:0, dueDate:"—", n
 const STATUS_META: Record<PayStatus,{ label:string; color:string; bg:string }> = {
   "paid":                   { label:"Paid",                       color:"#16A34A", bg:"#DCFCE7" },
   "awaiting-verification":  { label:"Awaiting Verification",      color:"#D97706", bg:"#FEF3C7" },
+  "partially-paid":         { label:"Partially Paid",             color:"#F59E0B", bg:"#FFF7ED" },
   "overdue":                { label:"Overdue",                    color:"#DC2626", bg:"#FEE2E2" },
   "unpaid":                 { label:"Unpaid",                     color:"#6B7280", bg:"#F3F4F6" },
   "parent-submitted":       { label:"Waiting for Landlord",       color:"#7C3AED", bg:"#EDE9FE" },
@@ -67,6 +68,7 @@ function periodStatus(b: StudentBilling): PayStatus {
     .sort((a, c) => new Date(c.submittedAt).getTime() - new Date(a.submittedAt).getTime())[0];
   if (pending) return pending.submittedByRole === "parent" ? "parent-submitted" : "awaiting-verification";
   if (b.bills.some(x => x.status === "overdue")) return "overdue";
+  if (b.bills.some(x => x.status === "partially-paid")) return "partially-paid";
   return "unpaid";
 }
 
@@ -287,7 +289,9 @@ export function ParentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { go
   async function doSubmit(info: { method: string; refNo: string; date: string; proofFile: File | null }) {
     setProofUploadWarning("");
     if (!studentId || !currentPeriod) return;
-    const outstanding = currentPeriod.bills.filter(b => b.status === "unpaid" || b.status === "overdue");
+    // Includes "partially-paid" — a bill with some real remaining balance (e.g. the landlord
+    // already recorded part of it) still needs to stay payable, not become a dead end.
+    const outstanding = currentPeriod.bills.filter(b => b.status === "unpaid" || b.status === "overdue" || b.status === "partially-paid");
     if (outstanding.length === 0) return;
     // One receipt covers the whole submission — see StudentPayments.tsx's doSubmit for the same
     // "upload once, attach to every bill in this submission" reasoning.
@@ -298,13 +302,15 @@ export function ParentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { go
       else proofUrl = up.url;
     }
     for (const b of outstanding) {
-      const res = await submitPaymentRecord({ billId: b.id, amount: b.amount, role: "parent", method: info.method, referenceNo: info.refNo, paymentDate: info.date, proofUrl });
+      // The real remaining balance, not the bill's full amount — see the same fix in
+      // StudentPayments.tsx's doSubmit.
+      const res = await submitPaymentRecord({ billId: b.id, amount: b.amount - b.paidAmount, role: "parent", method: info.method, referenceNo: info.refNo, paymentDate: info.date, proofUrl });
       if (res.ok === false) console.error("submitPaymentRecord failed:", res.error);
     }
     await refresh(studentId);
   }
 
-  const canMarkPaid = payments.length > 0 && (current.status === "unpaid" || current.status === "overdue");
+  const canMarkPaid = payments.length > 0 && (current.status === "unpaid" || current.status === "overdue" || current.status === "partially-paid");
 
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F2F4F8", position:"relative" as const }}>
@@ -360,7 +366,7 @@ export function ParentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { go
 
         {/* Header */}
         <div style={{ backgroundImage:GRAD_H, padding:"52px 20px 22px", position:"relative" as const, overflow:"hidden" }}>
-          <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+          <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(24px)" }}/>
           <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
             <div>
               <h1 style={{ margin:"0 0 4px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Payments</h1>

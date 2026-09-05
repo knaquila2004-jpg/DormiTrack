@@ -1,13 +1,16 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
-  ChevronLeft, Search, Filter, CreditCard, CheckCircle, Clock,
-  AlertCircle, XCircle, User, Users, Receipt,
+  ChevronLeft, ChevronRight, Search, Filter, CreditCard, CheckCircle, Clock,
+  AlertCircle, XCircle, User, Users, Receipt, Edit3,
   ChevronDown, ChevronUp, X, Eye, Check, Banknote, TrendingUp,
   Calendar, FileText, ArrowRight, Circle, MoreVertical,
 } from "lucide-react";
 import { addNotification, notifyLinkedParents } from "./notificationStore";
 import { supabase } from "../lib/supabase";
-import { getBillingRosterForLandlord, verifyPaymentRecord, rejectPaymentRecord, createPaymentPeriod, CREATE_PERIOD_MAX_MONTHS_AHEAD, StudentBilling } from "./paymentStore";
+import {
+  getBillingRosterForLandlord, verifyPaymentRecord, rejectPaymentRecord, createPaymentPeriod, CREATE_PERIOD_MAX_MONTHS_AHEAD,
+  landlordEditBillAmount, landlordSetBillStatus, StudentBilling,
+} from "./paymentStore";
 import { getBoardingHousesForLandlord } from "./boardingHouseStore";
 import type { BoardingHouse } from "./shared";
 
@@ -23,7 +26,7 @@ export type PayStatus = "paid" | "awaiting-verification" | "partially-paid" | "o
 type BillStatus      = "paid" | "awaiting-verification" | "overdue" | "unpaid";
 
 type BillItem = {
-  key: string; label: string; amount: number;
+  id: string; key: string; label: string; amount: number;
   status: BillStatus; paidAmount: number;
 };
 type PayTx = {
@@ -58,7 +61,7 @@ function toLocalPayment(b: StudentBilling): StudentPayment {
   return {
     id: b.studentIdNo || b.studentId, studentUserId: b.studentId, name: b.studentName, room: b.room, bed: b.bed,
     dueDate: fmtDate(b.dueDate), lastUpdated: fmtDate(b.updatedAt), note: b.note,
-    bills: b.bills.map(bill => ({ key: bill.key, label: bill.label, amount: bill.amount, status: bill.status as BillStatus, paidAmount: bill.paidAmount })),
+    bills: b.bills.map(bill => ({ id: bill.id, key: bill.key, label: bill.label, amount: bill.amount, status: bill.status as BillStatus, paidAmount: bill.paidAmount })),
     transactions: b.transactions.map(tx => ({
       id: tx.id, billKey: tx.billKey, billLabel: tx.billLabel, amount: tx.amount,
       date: fmtDate(tx.submittedAt), time: fmtTime(tx.submittedAt),
@@ -220,16 +223,19 @@ function CreatePaymentPeriodModal({ boardingHouses, onClose, onCreated }: {
 
 type ModalTab = "overview" | "history" | "timeline";
 
-function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
+function PaymentDetailsModal({ p, onClose, onVerify, onReject, onEditAmount, onSetBillStatus }: {
   p: StudentPayment;
   onClose: ()=>void;
   onVerify: (studentId: string, studentUserId: string, txId: string) => void;
   onReject: (studentId: string, studentUserId: string, txId: string, reason: string) => void;
+  onEditAmount: (billId: string, billLabel: string, amount: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onSetBillStatus: (billId: string, status: "unpaid"|"overdue") => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const [tab, setTab]             = useState<ModalTab>("overview");
   const [rejectingTx, setRejTx]  = useState<PayTx|null>(null);
   const [rejectReason, setRejR]  = useState("");
   const [expandBill, setExpandB] = useState<string|null>(null);
+  const [editingBill, setEditingBill] = useState<BillItem|null>(null);
 
   const status = deriveStatus(p);
   const sm     = statusMeta(status);
@@ -372,6 +378,9 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
                             <span style={{ fontSize:11, color:"#6B7280", fontFamily:IN }}>Remaining</span>
                             <span style={{ fontSize:11, fontWeight:800, color: b.amount-b.paidAmount>0?"#EF4444":"#16A34A", fontFamily:QS }}>{php(b.amount-b.paidAmount)}</span>
                           </div>
+                          <button onClick={e=>{ e.stopPropagation(); setEditingBill(b); }} style={{ width:"100%", marginTop:8, padding:"8px 0", borderRadius:10, border:"1.5px solid #E5E7EB", background:"white", color:"#9772F6", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                            <Edit3 size={12}/> Edit Bill
+                          </button>
                         </div>
                       )}
                     </div>
@@ -512,6 +521,101 @@ function PaymentDetailsModal({ p, onClose, onVerify, onReject }: {
           </div>
         </div>
       )}
+
+      {/* Manual edit sheet */}
+      {editingBill && (
+        <EditBillModal
+          bill={editingBill}
+          studentName={p.name}
+          onClose={()=>setEditingBill(null)}
+          onSaveAmount={amount => onEditAmount(editingBill.id, editingBill.label, amount)}
+          onSetStatus={status => onSetBillStatus(editingBill.id, status)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Edit Bill Modal ────────────────────────────────────────────────────────────
+// Opened from a bill's expanded row in the Overview tab — lets the landlord
+// correct what the bill is supposed to be (the due amount), or manually flag
+// it Overdue/Unpaid. Both go through real RPCs (0058) that write to the same
+// payment_bills row the rest of this screen (and the student's/parent's own
+// Payments page) already reads, so nothing here is a shadow/local-only edit.
+// Recording that a payment was actually *made* is deliberately not here —
+// that stays the student's/parent's own action (0059), with the landlord
+// only ever verifying or rejecting it afterward.
+
+function EditBillModal({ bill, studentName, onClose, onSaveAmount, onSetStatus }: {
+  bill: BillItem;
+  studentName: string;
+  onClose: () => void;
+  onSaveAmount: (amount: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onSetStatus: (status: "unpaid" | "overdue") => Promise<{ ok: true } | { ok: false; error: string }>;
+}) {
+  const [amount, setAmount] = useState(String(bill.amount));
+  const [savingAmount, setSavingAmount] = useState(false);
+  const [amountErr, setAmountErr] = useState("");
+
+  const [settingStatus, setSettingStatus] = useState(false);
+
+  const handleSaveAmount = async () => {
+    const n = Number(amount);
+    if (!amount || Number.isNaN(n) || n < 0) { setAmountErr("Enter a valid amount."); return; }
+    setSavingAmount(true); setAmountErr("");
+    const res = await onSaveAmount(n);
+    setSavingAmount(false);
+    if (res.ok === false) setAmountErr(res.error); else onClose();
+  };
+
+  const handleStatus = async (status: "unpaid"|"overdue") => {
+    setSettingStatus(true);
+    const res = await onSetStatus(status);
+    setSettingStatus(false);
+    if (res.ok) onClose();
+  };
+
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:150, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
+      <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"92%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
+        <div style={{ background:"white", borderRadius:"24px 24px 0 0", padding:"12px 18px 14px", borderBottom:"1px solid #F3F4F6", display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:44, height:44, borderRadius:15, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Edit3 size={20} color="white"/>
+          </div>
+          <div style={{ flex:1 }}>
+            <p style={{ margin:0, fontSize:16, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Edit {bill.label}</p>
+            <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{studentName}</p>
+          </div>
+          <button onClick={onClose} style={{ width:32, height:32, borderRadius:10, background:"#F3F4F6", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <X size={15} color="#6B7280"/>
+          </button>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"16px 18px 36px" }}>
+
+          {/* Amount Due */}
+          <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Amount Due</p>
+          <div style={{ display:"flex", gap:8, marginBottom:amountErr?6:18 }}>
+            <div style={{ flex:1, background:"white", borderRadius:14, padding:"11px 14px", border:"1.5px solid #E5E7EB" }}>
+              <input type="number" min={0} step="0.01" value={amount} onChange={e=>{ setAmount(e.target.value); setAmountErr(""); }} style={{ width:"100%", background:"none", border:"none", outline:"none", fontSize:13, fontFamily:IN, color:"#1F2937" }}/>
+            </div>
+            <button onClick={handleSaveAmount} disabled={savingAmount} style={{ padding:"0 18px", borderRadius:14, border:"none", backgroundImage:GRAD, color:"white", fontSize:12, fontWeight:800, cursor:savingAmount?"default":"pointer", fontFamily:QS, opacity:savingAmount?0.7:1 }}>
+              {savingAmount?"Saving…":"Save"}
+            </button>
+          </div>
+          {amountErr && <p style={{ margin:"-10px 0 18px", fontSize:11, color:"#EF4444", fontFamily:IN }}>{amountErr}</p>}
+
+          {/* Status */}
+          <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>Status</p>
+          <div style={{ display:"flex", gap:8 }}>
+            <button disabled={settingStatus || bill.paidAmount>0} onClick={()=>handleStatus("unpaid")}
+              style={{ flex:1, padding:"11px 0", borderRadius:14, border:"1.5px solid #E5E7EB", background:"white", color: bill.paidAmount>0?"#D1D5DB":"#6B7280", fontSize:12, fontWeight:800, cursor: (settingStatus||bill.paidAmount>0)?"default":"pointer", fontFamily:QS }}>Mark Unpaid</button>
+            <button disabled={settingStatus} onClick={()=>handleStatus("overdue")}
+              style={{ flex:1, padding:"11px 0", borderRadius:14, border:"1.5px solid #FCA5A5", background:"#FEF2F2", color:"#EF4444", fontSize:12, fontWeight:800, cursor:settingStatus?"default":"pointer", fontFamily:QS }}>Mark Overdue</button>
+          </div>
+          {bill.paidAmount>0 && <p style={{ margin:"6px 0 0", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>Can't mark unpaid while a payment has been recorded.</p>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -533,7 +637,9 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
 
   const refresh = async (uid: string) => {
     const roster = await getBillingRosterForLandlord(uid);
-    setPayments(roster.map(toLocalPayment));
+    const mapped = roster.map(toLocalPayment);
+    setPayments(mapped);
+    return mapped;
   };
 
   useEffect(() => {
@@ -647,6 +753,39 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
     showToast("Payment rejected.");
   };
 
+  // ── Manual edit actions (0058) ─────────────────────────────────────────────
+  // Unlike verify/reject above (which patch local state optimistically), these
+  // just re-fetch the real roster and re-point detailP at the freshly-fetched
+  // row — simpler to keep correct across two different kinds of edits, and
+  // guarantees the open modal reflects exactly what the database now has.
+  // Recording that a payment was *made* deliberately stays student/parent-only
+  // (0059) — the landlord's own manual action is only ever "what is this bill
+  // supposed to be", never "mark this as paid on their behalf".
+  const handleEditBillAmount = async (studentId: string, studentUserId: string, billId: string, billLabel: string, amount: number) => {
+    const res = await landlordEditBillAmount(billId, amount);
+    if (res.ok === false) { showToast(`Could not update amount: ${res.error}`); return res; }
+    if (landlordId) {
+      const fresh = await refresh(landlordId);
+      const updated = fresh.find(p => p.id === studentId);
+      if (updated) setDetailP(updated);
+    }
+    addNotification({ userId: studentUserId, type: "payment", title: "Bill Amount Updated", description: `Your ${billLabel} amount was updated to ${php(amount)}.`, destination: "payments" });
+    notifyLinkedParents(studentUserId, { type: "payment", title: "Student's Bill Updated", description: `${billLabel} amount for your student was updated to ${php(amount)}.`, destination: "payments" });
+    showToast("Bill amount updated.");
+    return res;
+  };
+
+  const handleSetBillStatus = async (studentId: string, billId: string, status: "unpaid"|"overdue") => {
+    const res = await landlordSetBillStatus(billId, status);
+    if (res.ok === false) { showToast(`Could not update status: ${res.error}`); return res; }
+    if (landlordId) {
+      const fresh = await refresh(landlordId);
+      const updated = fresh.find(p => p.id === studentId);
+      if (updated) setDetailP(updated);
+    }
+    showToast(`Marked as ${status === "overdue" ? "Overdue" : "Unpaid"}.`);
+    return res;
+  };
 
   const STATUS_FILTERS: { key: PayStatus|"all"; label: string }[] = [
     { key:"all",                  label:"All" },
@@ -662,8 +801,8 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, padding:"52px 20px 20px", backgroundImage:GRAD_H, position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
-        <div style={{ position:"absolute" as const, bottom:-30, left:-20, width:120, height:120, borderRadius:"50%", background:"rgba(255,255,255,.04)" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:180, height:180, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.06)", filter:"blur(32px)" }}/>
+        <div style={{ position:"absolute" as const, bottom:-30, left:-20, width:120, height:120, borderRadius:"60% 40% 35% 65%/55% 65% 35% 45%", background:"rgba(255,255,255,.04)", filter:"blur(24px)" }}/>
         <button onClick={()=>go("dashboard")} style={{ background:"none", border:"none", color:"rgba(255,255,255,.8)", cursor:"pointer", padding:0, marginBottom:12, display:"flex", alignItems:"center" }}>
           <ChevronLeft size={24}/>
         </button>
@@ -682,7 +821,13 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
 
         {/* ── Summary cards ─────────────────────────────────────────────────── */}
         <div style={{ padding:"16px 16px 0" }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:10 }}>
+            <SummaryCard icon={CheckCircle} label="Students Paid"   value={stats.studentsPaid} color="#16A34A" bg="#DCFCE7"/>
+            <SummaryCard icon={Clock}       label="Pending"         value={stats.pending}      color="#D97706" bg="#FEF3C7"/>
+            <SummaryCard icon={AlertCircle} label="Overdue"         value={stats.overdue}      color="#EF4444" bg="#FEE2E2"/>
+            <SummaryCard icon={Users}       label="Total Students"  value={payments.length}    color="#9772F6" bg="#F5F0FF"/>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
             <div style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", gridColumn:"1/-1" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -703,12 +848,6 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
               </div>
               <p style={{ margin:"4px 0 0", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{(stats.totalExpected > 0 ? (stats.totalPaid/stats.totalExpected)*100 : 0).toFixed(0)}% collected · {php(stats.totalExpected-stats.totalPaid)} remaining</p>
             </div>
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:16 }}>
-            <SummaryCard icon={CheckCircle} label="Students Paid"   value={stats.studentsPaid} color="#16A34A" bg="#DCFCE7"/>
-            <SummaryCard icon={Clock}       label="Pending"         value={stats.pending}      color="#D97706" bg="#FEF3C7"/>
-            <SummaryCard icon={AlertCircle} label="Overdue"         value={stats.overdue}      color="#EF4444" bg="#FEE2E2"/>
-            <SummaryCard icon={Users}       label="Total Students"  value={payments.length}    color="#9772F6" bg="#F5F0FF"/>
           </div>
         </div>
 
@@ -753,7 +892,7 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
             const due = totalDue(p), paid = totalPaid(p);
             const pendingCount = p.transactions.filter(t=>t.status==="pending").length;
             return (
-              <div key={p.id} style={{ background:"white", borderRadius:20, padding:"14px 16px", marginBottom:10, boxShadow:"0 2px 10px rgba(0,0,0,.05)", borderLeft:`4px solid ${sm.dot}` }}>
+              <div key={p.id} onClick={()=>setDetailP(p)} style={{ background:"white", borderRadius:20, padding:"14px 16px", marginBottom:10, boxShadow:"0 2px 10px rgba(0,0,0,.05)", borderLeft:`4px solid ${sm.dot}`, cursor:"pointer" }}>
                 {/* Row 1: student info */}
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                   <div style={{ width:40, height:40, borderRadius:13, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -781,14 +920,12 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
                     </div>
                   ))}
                 </div>
-                {/* Row 3: due date + view */}
+                {/* Row 3: due date */}
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                   <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN, display:"flex", alignItems:"center", gap:4 }}>
                     <Calendar size={10} color="#C4C9D4"/> Due: {p.dueDate} · Updated {p.lastUpdated}
                   </p>
-                  <button onClick={()=>setDetailP(p)} style={{ display:"flex", alignItems:"center", gap:5, padding:"7px 14px", borderRadius:12, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS }}>
-                    <Eye size={12} color="white"/> View Details
-                  </button>
+                  <ChevronRight size={16} color="#D1D5DB"/>
                 </div>
               </div>
             );
@@ -803,6 +940,8 @@ export function LandlordPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { 
           onClose={()=>setDetailP(null)}
           onVerify={verifyTx}
           onReject={rejectTx}
+          onEditAmount={(billId, billLabel, amount) => handleEditBillAmount(detailP.id, detailP.studentUserId, billId, billLabel, amount)}
+          onSetBillStatus={(billId, status) => handleSetBillStatus(detailP.id, billId, status)}
         />
       )}
 

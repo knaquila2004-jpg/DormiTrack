@@ -133,3 +133,20 @@ export async function respondToRoomTransferRequest(id: string, approve: boolean,
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
+
+// ── Real transfer counts (room_transfer_history, 0056) ─────────────────────
+// transfer_student_room() itself logs a row here on every actual move, so
+// this counts real transfers regardless of which path triggered them: the
+// landlord's own direct "Transfer Room" quick action, or a student-requested
+// one the landlord approved. Keyed per student so LandlordOccupantsScreen can
+// attach a real count to each occupant's card/profile (previously hardcoded 0).
+export async function getRoomTransferCountsForLandlord(landlordId: string): Promise<Record<string, number>> {
+  const { data: bhs } = await supabase.from("boarding_houses").select("id").eq("landlord_id", landlordId);
+  const bhIds = (bhs ?? []).map(b => b.id);
+  if (!bhIds.length) return {};
+  const { data, error } = await supabase.from("room_transfer_history").select("student_id").in("boarding_house_id", bhIds);
+  if (error) { console.error("getRoomTransferCountsForLandlord:", error.message); return {}; }
+  const counts: Record<string, number> = {};
+  for (const row of data ?? []) counts[row.student_id] = (counts[row.student_id] ?? 0) + 1;
+  return counts;
+}

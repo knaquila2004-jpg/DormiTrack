@@ -102,6 +102,6 @@ export async function recordCheckInOut(input: RecordCheckInOutInput): Promise<{ 
     address_snapshot: input.address ?? null, lat: input.lat ?? null, lng: input.lng ?? null,
     result: input.result ?? "verified",
   }).select("id, type, occurred_at, address_snapshot, lat, lng, result").single();
-  if (error || !data) return { ok: false, error: error?.message ?? "Could not record check-in/out." };
+  if (error || !data) return { ok: false, error: error?.message ?? "Could not record entry/exit." };
   return { ok: true, record: mapRow(data) };
 }

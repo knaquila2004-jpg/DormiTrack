@@ -7,6 +7,7 @@ import {
 import { ImageWithFallback } from "./components/figma/ImageWithFallback";
 import { GRAD, GRAD_H, Screen, BoardingHouse, RoomData, RegRequest, roomStatus, BedStatus, DEFAULT_BED_PHOTO } from "./shared";
 import { getActiveBoardingHouses } from "./boardingHouseStore";
+import { PendingRegInfo } from "./registrationStore";
 import { FullScreenBHMap } from "./components/FullScreenBHMap";
 
 const TRAITS   = ["Friendly","Quiet","Respectful","Responsible","Organized","Independent","Studious","Outgoing","Calm","Clean","Helpful","Disciplined"];
@@ -34,7 +35,13 @@ export function ChipGroup({ options, selected, onToggle }: { options: string[]; 
   );
 }
 
-export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitError, submitErrorIsStaleSession, onLogOut }: { go: (s: Screen) => void; onSubmit: (r: RegRequest) => void; studentName: string; submitError?: string; submitErrorIsStaleSession?: boolean; onLogOut?: () => void }) {
+export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitError, submitErrorIsStaleSession, onLogOut, rejectionNotice, onDismissRejectionNotice }: {
+  go: (s: Screen) => void; onSubmit: (r: RegRequest) => void; studentName: string; submitError?: string; submitErrorIsStaleSession?: boolean; onLogOut?: () => void;
+  // Shown once, right when this screen first mounts, if the student's most recent
+  // registration turned out to have been rejected by the landlord — real info about
+  // the actual rejected request, not a generic "something happened" message.
+  rejectionNotice?: PendingRegInfo | null; onDismissRejectionNotice?: () => void;
+}) {
   const QS = "'Quicksand',sans-serif"; const IN = "'Inter',sans-serif";
   const [view, setView] = useState<"welcome" | "list" | "details" | "roomDetails" | "allRooms" | "map" | "allRules">("welcome");
   const [roomDetailsFrom, setRoomDetailsFrom] = useState<"details" | "allRooms">("details");
@@ -99,6 +106,21 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
   // the past — only "today" or later actually makes sense here.
   const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
   const moveInInvalid = !!moveIn && moveIn < todayISO;
+  // Stay Duration used to be a completely separate, manually-typed number (defaulting
+  // to "1") with zero connection to the actual Move-In/Move-Out dates right below it —
+  // a student could easily submit "6 Months" alongside dates that are really only 3
+  // weeks apart. Once both real dates are set, the exact day count between them is
+  // real and known, so the duration is derived from that instead of trusted to match
+  // by coincidence.
+  const stayDaysExact = (house?.allowMoveIn !== false && moveIn && moveOut && !dateInvalid)
+    ? Math.round((new Date(moveOut).getTime() - new Date(moveIn).getTime()) / 86400000)
+    : null;
+  useEffect(() => {
+    if (stayDaysExact == null) return;
+    const count = stayUnit === "Weeks" ? Math.max(1, Math.round(stayDaysExact / 7)) : Math.max(1, Math.round(stayDaysExact / 30.44));
+    setStayCount(String(count));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stayDaysExact, stayUnit]);
 
   const openHouse = (h: BoardingHouse) => {
     setHouse(h); setCarousel(0); setRoomId(null); setBedId(null); setView("details");
@@ -146,9 +168,10 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
   // ── WELCOME (non-dismissible gate) ──────────────────────────────────────────
   if (view === "welcome") {
     return (
+      <>
       <div style={{ height: "100%", backgroundImage: GRAD_H, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 28px" }}>
-        <div style={{ position: "absolute", top: -60, right: -60, width: 220, height: 220, borderRadius: "50%", background: "rgba(255,255,255,.07)" }} />
-        <div style={{ position: "absolute", bottom: -80, left: -50, width: 200, height: 200, borderRadius: "50%", background: "rgba(255,255,255,.05)" }} />
+        <div style={{ position: "absolute", top: -60, right: -60, width: 220, height: 220, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.07)", filter: "blur(38px)" }} />
+        <div style={{ position: "absolute", bottom: -80, left: -50, width: 200, height: 200, borderRadius: "60% 40% 35% 65%/55% 65% 35% 45%", background: "rgba(255,255,255,.05)", filter: "blur(38px)" }} />
         <div style={{ position: "relative", textAlign: "center" }}>
           <div style={{ width: 92, height: 92, borderRadius: 30, background: "rgba(255,255,255,.15)", border: "1px solid rgba(255,255,255,.25)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 24px" }}>
             <Building2 size={44} color="white" />
@@ -165,6 +188,24 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
           </button>
         </div>
       </div>
+
+      {rejectionNotice && (
+        <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div style={{ background: "white", borderRadius: 28, padding: "28px 24px 24px", width: "100%", maxWidth: 340, boxShadow: "0 24px 60px rgba(0,0,0,.25)" }}>
+            <div style={{ width: 56, height: 56, borderRadius: 20, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+              <AlertCircle size={24} color="#EF4444" />
+            </div>
+            <h3 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>Request Not Approved</h3>
+            <p style={{ margin: "0 0 18px", fontSize: 12, color: "#6B7280", fontFamily: IN, textAlign: "center" as const, lineHeight: 1.6 }}>
+              Your registration request for <strong>{rejectionNotice.roomName ? `${rejectionNotice.roomName}${rejectionNotice.bedLabel ? ` — ${rejectionNotice.bedLabel}` : ""} at ` : ""}{rejectionNotice.houseName}</strong> was not approved by the landlord. You can choose a different boarding house and submit a new request below.
+            </p>
+            <button onClick={onDismissRejectionNotice} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
+              Got It
+            </button>
+          </div>
+        </div>
+      )}
+      </>
     );
   }
 
@@ -379,7 +420,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
         <div style={{ flexShrink: 0, padding: "52px 20px 24px", backgroundImage: GRAD_H, position: "relative", overflow: "hidden" }}>
-          <div style={{ position: "absolute", top: -50, right: -50, width: 180, height: 180, borderRadius: "50%", background: "rgba(255,255,255,.06)" }} />
+          <div style={{ position: "absolute", top: -50, right: -50, width: 180, height: 180, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.06)", filter: "blur(32px)" }} />
           <h1 style={{ color: "white", fontSize: 22, fontWeight: 800, margin: "0 0 6px", fontFamily: QS }}>Choose Your Boarding House</h1>
           <p style={{ color: "rgba(255,255,255,.75)", fontSize: 13, margin: 0, fontFamily: IN, lineHeight: 1.5 }}>Select the boarding house where you will be staying.</p>
         </div>
@@ -494,6 +535,7 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
       <FullScreenBHMap
         bh={{ name: house.name, address: house.address, landlord: house.landlord, contact: house.contact, lat: house.lat, lng: house.lng }}
         onClose={() => setView("details")}
+        showDistanceInfo={false}
       />
     );
   }
@@ -883,11 +925,25 @@ export function BoardingRegistrationScreen({ go, onSubmit, studentName, submitEr
               ))}
             </div>
             <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", fontFamily: QS, display: "block", marginBottom: 8 }}>Number of {stayUnit}</label>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={() => setStayCount(String(Math.max(1, Number(stayCount) - 1)))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Minus size={18} color="#9772F6" /></button>
-              <input value={stayCount} onChange={e => setStayCount(e.target.value.replace(/\D/g, ""))} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 13, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS, outline: "none" }} />
-              <button onClick={() => setStayCount(String(Number(stayCount || "0") + 1))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Plus size={18} color="#9772F6" /></button>
-            </div>
+            {house.allowMoveIn !== false ? (
+              // Auto-calculated the same way Age is from Birthdate on signup — a plain
+              // read-only field, not a manually-editable stepper, since Move-In/Move-Out
+              // (right below) are the real source of truth for it here.
+              <input value={stayDaysExact != null ? stayCount : ""} readOnly placeholder="Auto" style={{ width: "100%", boxSizing: "border-box", textAlign: "center", padding: "12px 0", borderRadius: 13, border: "1.5px solid #E5E7EB", background: "#F3F4F6", fontSize: 16, fontWeight: 800, color: "#6B7280", fontFamily: QS, outline: "none", cursor: "default" }} />
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button onClick={() => setStayCount(String(Math.max(1, Number(stayCount) - 1)))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Minus size={18} color="#9772F6" /></button>
+                <input value={stayCount} onChange={e => setStayCount(e.target.value.replace(/\D/g, ""))} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 13, border: "1.5px solid #E5E7EB", background: "#F9FAFB", fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS, outline: "none" }} />
+                <button onClick={() => setStayCount(String(Number(stayCount || "0") + 1))} style={{ width: 44, height: 44, borderRadius: 13, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Plus size={18} color="#9772F6" /></button>
+              </div>
+            )}
+            {house.allowMoveIn !== false && (
+              <p style={{ fontSize: 11, color: "#9CA3AF", margin: "8px 0 0", fontFamily: IN }}>
+                {stayDaysExact != null
+                  ? `Calculated automatically from your Move-In and Move-Out dates below (${stayDaysExact} day${stayDaysExact === 1 ? "" : "s"}).`
+                  : "Fill in your Move-In and Move-Out dates below to calculate this automatically."}
+              </p>
+            )}
           </div>
         )}
 

@@ -1118,7 +1118,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
           {rvRow("Latitude", bhLat != null ? bhLat.toFixed(6) : "")}
           {rvRow("Longitude", bhLng != null ? bhLng.toFixed(6) : "")}
           {rvRow("Location Type", bhLocationType === "existing" ? "Existing Map Location" : bhLocationType === "custom" ? "Custom Boarding House Pin" : "")}
-          {rvRow("Check-In/Check-Out Radius", `${bhRadius}m`)}
+          {rvRow("Enter/Exit Radius", `${bhRadius}m`)}
           {bhComponents.street && rvRow("Street", bhComponents.street)}
           {bhComponents.purok && rvRow("Purok", bhComponents.purok)}
           {bhComponents.sitio && rvRow("Sitio", bhComponents.sitio)}

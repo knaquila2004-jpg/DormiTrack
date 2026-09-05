@@ -212,7 +212,7 @@ export async function getRecentPlatformActivity(limit = 8): Promise<PlatformActi
     const bhName = (c as any).boarding_houses?.name ?? "their boarding house";
     items.push({
       id: `ci-${c.id}`, type: c.type,
-      msg: `${studentName} checked ${c.type === "checkin" ? "IN at" : "OUT of"} ${bhName}.`,
+      msg: `${studentName} ${c.type === "checkin" ? "entered" : "exited"} ${bhName}.`,
       ts: new Date(c.occurred_at).getTime(),
     });
   }
@@ -253,7 +253,7 @@ export async function getAdminInsights(daily: DailyActivity[], monthly: MonthlyR
     const hourCounts = new Map<number, number>();
     for (const r of hourRows) { const h = new Date(r.occurred_at).getHours(); hourCounts.set(h, (hourCounts.get(h) ?? 0) + 1); }
     const [peakHour] = [...hourCounts.entries()].reduce((a, b) => (b[1] > a[1] ? b : a));
-    insights.push(`Peak check-in hour this month: ${peakHour % 12 === 0 ? 12 : peakHour % 12}:00 ${peakHour < 12 ? "AM" : "PM"}.`);
+    insights.push(`Peak entry hour this month: ${peakHour % 12 === 0 ? 12 : peakHour % 12}:00 ${peakHour < 12 ? "AM" : "PM"}.`);
   }
 
   const totalRegs = monthly.reduce((s, m) => s + m.val, 0);

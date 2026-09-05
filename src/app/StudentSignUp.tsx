@@ -42,6 +42,16 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [checkingStudentId, setCheckingStudentId] = useState(false);
+  // "Already have an account? Log In" is an easy accidental tap mid-signup — this
+  // confirms before actually navigating away, instead of silently discarding
+  // whatever's been filled in so far with no way back. Only prompts if the form
+  // actually has something in it — a genuinely blank form has nothing to lose,
+  // so tapping straight through to Log In there just works.
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const isDirty = !!(firstName || middleName || lastName || birthdate || sex || contact || address
+    || studentId || program || yearLevel || block || email || password || confirmPassword);
+  const handleLoginTap = () => { if (isDirty) setShowDiscardConfirm(true); else go("login"); };
 
   // ── Derived: auto-generated username ─────────────────────────────────────────
   const username = (() => {
@@ -105,17 +115,31 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
     return e;
   };
 
-  const nextStep = () => {
+  const nextStep = async () => {
     setSubmitted(true);
     const validators = [validate0, validate1, validate2];
     const e = validators[step]();
     setErrors(e);
-    if (Object.keys(e).length === 0) {
-      setSubmitted(false);
-      setErrors({});
-      if (step < 2) setStep(s => s + 1);
-      else createAccount();
+    if (Object.keys(e).length > 0) return;
+
+    // Every student has a different Student ID — checked here, before ever moving
+    // on (and before the account itself gets created), rather than only surfacing
+    // as a raw insert error afterward. students.student_id_no isn't publicly
+    // readable, so this goes through a SECURITY DEFINER RPC (0053) instead of a
+    // plain client-side select, which would always report "not taken" regardless
+    // of reality.
+    if (step === 1) {
+      setCheckingStudentId(true);
+      const { data: taken, error } = await supabase.rpc("is_student_id_taken", { p_student_id_no: studentId.trim() });
+      setCheckingStudentId(false);
+      if (error) { setErrors({ studentId: "Could not verify your Student ID right now. Please try again." }); return; }
+      if (taken) { setErrors({ studentId: "This Student ID is already registered to another account. Every student has a different Student ID." }); return; }
     }
+
+    setSubmitted(false);
+    setErrors({});
+    if (step < 2) setStep(s => s + 1);
+    else createAccount();
   };
 
   const createAccount = async () => {
@@ -163,7 +187,13 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
         block,
       });
       if (!profileError) { lastError = null; break; }
-      lastError = profileError.message;
+      // A duplicate Student ID should already have been caught by the step-1 check
+      // above (is_student_id_taken) — this is just defense against a same-second
+      // race (two people submitting the identical number between that check and
+      // this insert), so it still needs its own clean message rather than the raw
+      // Postgres unique-violation text.
+      const isStudentIdConflict = profileError.code === "23505" && profileError.message.toLowerCase().includes("student_id_no");
+      lastError = isStudentIdConflict ? "This Student ID is already registered to another account. Every student has a different Student ID." : profileError.message;
       const isUsernameConflict = profileError.code === "23505" && profileError.message.toLowerCase().includes("username");
       if (!isUsernameConflict) break; // a different failure (e.g. duplicate student ID) — don't mask it by retrying
       finalUsername = `${username}${attempt + 2}`;
@@ -441,16 +471,34 @@ export function StudentSignUpScreen({ go, onSignup }: { go: (s: Screen) => void;
           </div>
         )}
 
-        <button onClick={nextStep} disabled={creating}
-          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: creating ? "#C4B5FD" : GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: creating ? "default" : "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
-          {step < 2 ? "Next" : creating ? "Creating Account…" : "Create Account"}
+        <button onClick={nextStep} disabled={creating || checkingStudentId}
+          style={{ width: "100%", height: 52, borderRadius: 24, border: "none", background: (creating || checkingStudentId) ? "#C4B5FD" : GRAD, color: "white", fontSize: 15, fontWeight: 800, fontFamily: QS, cursor: (creating || checkingStudentId) ? "default" : "pointer", boxShadow: "0 8px 24px rgba(151,114,246,.35)" }}>
+          {step < 2 ? (checkingStudentId ? "Checking Student ID…" : "Next") : creating ? "Creating Account…" : "Create Account"}
         </button>
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#9CA3AF", marginTop: 16, fontFamily: IN }}>
           Already have an account?{" "}
-          <button onClick={() => go("login")} style={{ background: "none", border: "none", cursor: "pointer", color: "#9772F6", fontWeight: 700, fontSize: 12, fontFamily: QS }}>Log In</button>
+          <button onClick={handleLoginTap} style={{ background: "none", border: "none", cursor: "pointer", color: "#9772F6", fontWeight: 700, fontSize: 12, fontFamily: QS }}>Log In</button>
         </p>
       </div>
+
+      {showDiscardConfirm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 96, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 28px" }}>
+          <div style={{ background: "white", borderRadius: 24, padding: 24, width: "100%" }}>
+            <div style={{ width: 48, height: 48, borderRadius: 16, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+              <AlertCircle size={22} color="#D97706" />
+            </div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", margin: "0 0 6px", fontFamily: QS }}>Discard Account Creation?</p>
+            <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 18px", fontFamily: IN, lineHeight: 1.5 }}>
+              You're in the middle of creating your account. If you log in instead, everything you've entered here will be lost.
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowDiscardConfirm(false)} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "white", color: "#6B7280", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>Keep Creating</button>
+              <button onClick={() => go("login")} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "none", background: "#EF4444", color: "white", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>Discard & Log In</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

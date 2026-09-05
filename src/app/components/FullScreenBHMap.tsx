@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { X, Navigation, Clock, MapPin, Home, Layers, ZoomIn, ZoomOut, LocateFixed } from "lucide-react";
+import { X, Navigation, Clock, MapPin, Layers, ZoomIn, ZoomOut, LocateFixed } from "lucide-react";
 import { GoogleMapCanvas, GoogleMapHandle, MapInfoCard, MapMarker } from "./GoogleMapCanvas";
 import { computeWalkingRoute, RouteResult } from "./mapGeo";
 
@@ -63,16 +63,9 @@ export function FullScreenBHMap({ bh, userPosition, onClose, showDistanceInfo = 
       <div style={{ flex: 1, position: "relative" }}>
         <GoogleMapCanvas ref={mapRef} center={{ lat: bh.lat, lng: bh.lng }} zoom={zoom} mapType={mapType} markers={markers} />
 
-        <button onClick={onClose} style={{ position: "absolute", top: 50, right: 14, zIndex: 20, width: 38, height: 38, borderRadius: 12, background: "rgba(255,255,255,.75)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 12px rgba(0,0,0,.16)" }}>
-          <X size={17} color="#374151" />
+        <button onClick={onClose} style={{ position: "absolute", top: 50, right: 14, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(255,255,255,.75)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 12px rgba(0,0,0,.16)" }}>
+          <X size={14} color="#374151" />
         </button>
-
-        <div style={{ position: "absolute", top: 50, left: 14, right: 62, zIndex: 20 }}>
-          <div style={{ background: "white", borderRadius: 14, padding: "9px 13px", boxShadow: "0 3px 12px rgba(0,0,0,.14)", display: "flex", alignItems: "center", gap: 7 }}>
-            <Home size={13} color="#9772F6" style={{ flexShrink: 0 }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: "#1F2937", fontFamily: QS, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bh.name}</span>
-          </div>
-        </div>
 
         {/* Same one-stack, evenly-spaced right-side controls as the Map tab's embedded
             view (StudentMap.tsx) — satellite toggle, zoom in/out, recenter. */}

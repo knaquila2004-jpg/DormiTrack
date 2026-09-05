@@ -13,7 +13,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ComponentType } from "react";
 import {
   User, Building2, DoorOpen, CreditCard, LogIn, LogOut,
-  Flag, Megaphone, ShieldCheck, Settings, MessageCircle, UserCheck, Calendar,
+  Flag, Megaphone, ShieldCheck, Settings, MessageCircle, UserCheck, Calendar, AlertTriangle,
 } from "lucide-react";
 import type { Role, Screen } from "./shared";
 import { supabase } from "../lib/supabase";
@@ -21,7 +21,7 @@ import { supabase } from "../lib/supabase";
 export type NotificationType =
   | "account" | "boarding-house" | "room" | "payment"
   | "check-in" | "check-out" | "report" | "announcement"
-  | "verification" | "system" | "message" | "visitor" | "stay-change" | "status-update";
+  | "verification" | "system" | "message" | "visitor" | "stay-change" | "status-update" | "inactivity";
 
 export interface AppNotification {
   id: string;
@@ -46,8 +46,8 @@ export const NOTIF_META: Record<NotificationType, { label: string; Icon: Compone
   "boarding-house": { label: "Boarding House",  Icon: Building2,   color: "#9772F6", bg: "#F5F0FF" },
   "room":           { label: "Room",            Icon: DoorOpen,    color: "#3B82F6", bg: "#EFF6FF" },
   "payment":        { label: "Payment",         Icon: CreditCard,  color: "#EC4899", bg: "#FDF2F8" },
-  "check-in":       { label: "Check-In",        Icon: LogIn,       color: "#16A34A", bg: "#DCFCE7" },
-  "check-out":      { label: "Check-Out",       Icon: LogOut,      color: "#D97706", bg: "#FEF3C7" },
+  "check-in":       { label: "Enter",           Icon: LogIn,       color: "#16A34A", bg: "#DCFCE7" },
+  "check-out":      { label: "Exit",            Icon: LogOut,      color: "#D97706", bg: "#FEF3C7" },
   "report":         { label: "Report",          Icon: Flag,        color: "#EF4444", bg: "#FEE2E2" },
   "announcement":   { label: "Announcement",    Icon: Megaphone,   color: "#D97706", bg: "#FEF3C7" },
   "verification":   { label: "Verification",    Icon: ShieldCheck, color: "#0891B2", bg: "#ECFEFF" },
@@ -56,6 +56,7 @@ export const NOTIF_META: Record<NotificationType, { label: string; Icon: Compone
   "visitor":        { label: "Visitor",         Icon: UserCheck,   color: "#EC4899", bg: "#FCE7F3" },
   "stay-change":    { label: "Stay Change",     Icon: Calendar,    color: "#D97706", bg: "#FEF3C7" },
   "status-update":  { label: "Status Update",   Icon: UserCheck,   color: "#D97706", bg: "#FEF3C7" },
+  "inactivity":     { label: "Inactivity",      Icon: AlertTriangle, color: "#F87171", bg: "#FEF2F2" },
 };
 
 // ── Relative-time formatter ("2 hours ago", "Yesterday", "Aug 3, 2026") ────────

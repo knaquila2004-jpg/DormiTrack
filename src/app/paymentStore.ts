@@ -262,3 +262,21 @@ export async function createPaymentPeriod(input: {
   if (error) return { ok: false, error: error.message };
   return { ok: true, results: (data ?? []).map((r: any) => ({ studentId: r.student_id, isNew: r.is_new })) };
 }
+
+// ── Landlord manual bill edits (0058) ───────────────────────────────────────
+// Lets the owning landlord correct a bill's due amount — what the student is
+// actually supposed to owe — or manually flag it Overdue/Unpaid. Recording
+// that a payment was *made* deliberately stays student/parent-only (0059):
+// that's the whole point of the landlord then verifying/rejecting it.
+
+export async function landlordEditBillAmount(billId: string, amount: number): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.rpc("landlord_edit_bill_amount", { p_bill_id: billId, p_amount: amount });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function landlordSetBillStatus(billId: string, status: "unpaid" | "overdue"): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.rpc("landlord_set_bill_status", { p_bill_id: billId, p_status: status });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}

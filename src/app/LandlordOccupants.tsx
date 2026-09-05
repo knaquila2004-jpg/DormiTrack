@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Home, Users, CreditCard, User, Search, Filter, ChevronLeft,
   MessageCircle, MapPin, Calendar, Clock, ChevronRight,
@@ -16,11 +16,13 @@ import {
   getAvailableBedsForTransfer, AvailableBed, transferStudentRoom, updateOccupantMoveOut,
 } from "./registrationStore";
 import { getStayChangeRequestsForLandlord, respondToStayChangeRequest, LandlordStayChangeRequest, StayUnit } from "./stayChangeStore";
-import { getRoomTransferRequestsForLandlord, respondToRoomTransferRequest, LandlordRoomTransferRequest } from "./roomTransferStore";
+import { getRoomTransferRequestsForLandlord, respondToRoomTransferRequest, getRoomTransferCountsForLandlord, LandlordRoomTransferRequest } from "./roomTransferStore";
 import { getVisitorRecordsForLandlord, LandlordVisitorRecord, loggedLabel, toLocalISODate } from "./visitorStore";
 import { getCheckInOutActivityForLandlord, LandlordCheckInOutEvent } from "./checkInOutStore";
 import { getReportsForLandlord, STATUS_META as REPORT_STATUS_META, StudentReport } from "./reportStore";
 import { getPaymentActivityForLandlord, LandlordPaymentActivity } from "./paymentStore";
+import { checkAndNotifyInactiveOccupants, getInactivityNotice, InactivityCandidate, InactivityNotice, INACTIVITY_THRESHOLD_DAYS } from "./inactivityStore";
+import { getNotesForOccupant, addNoteForOccupant, OccupantNote } from "./occupantNotesStore";
 
 const QS = "'Quicksand',sans-serif";
 const IN = "'Inter',sans-serif";
@@ -39,23 +41,31 @@ type TimelineEntry = {
   event: string; date: string; color: string; ts: number;
 };
 
-type OccupantNote = { id: string; text: string; date: string };
-
 type Occupant = {
   id: string; name: string; studentId: string; program: string; year: string;
   boardingHouseId: string; roomId: string; bedId: string;
   room: string; bed: string; moveIn: string; expectedMoveOut: string;
   status: OccupantStatus; contact: string; emergencyContact: string;
   parentName: string; parentContact: string; initials: string; grad: string; photo: string | null;
-  visitors: VisitEntry[]; timeline: TimelineEntry[]; notes: OccupantNote[];
+  visitors: VisitEntry[]; timeline: TimelineEntry[];
   totalDays: number; totalTransfers: number;
+  // Non-exclusive with `status` — an occupant is still genuinely "Active" (still
+  // living there) right up until they actually leave, even with a move-out date
+  // just days away. This only adds a "Moving Out Soon" badge alongside Active,
+  // it never replaces it.
+  movingOutSoon: boolean;
+  // Real, computed from actual check-in/out history (or move-in date if the
+  // student has never once used it) — attached per occupant in
+  // LandlordOccupantsScreen (0 here until that merge runs).
+  inactiveDays: number;
 };
 
 // ── Live data mapping ────────────────────────────────────────────────────────
 // Visitor logs (visitor_records) and the Timeline feed (check-in/out, reports,
 // payments, visitor logs — merged in LandlordOccupantsScreen and attached per
-// occupant below) are both real now. Free-text notes still have no backing
-// table — they stay local-only/empty until that lands.
+// occupant below) are both real now. Free-text notes (occupant_notes, 0057)
+// are fetched on-demand inside OccupantProfileModal instead — they're only
+// ever needed once that specific occupant's profile is actually open.
 
 const AVATAR_GRADIENTS = [
   "linear-gradient(135deg,#9772F6,#7C3AED)", "linear-gradient(135deg,#3B82F6,#6366F1)",
@@ -92,23 +102,35 @@ function daysUntil(dateStr: string): number {
 }
 const MOVING_OUT_WINDOW_DAYS = 10;
 
+// Real "last activity" for a student — the most recent actual check-in/out, or
+// their move-in date if they've never once used that feature at all. Shared by
+// the card/profile's "Inactive" pill and the notify effect below, so both agree
+// on exactly the same real timestamp.
+function lastActivityInfo(studentId: string, moveIn: string, checkInOut: LandlordCheckInOutEvent[]): { lastActivityAt: string; daysInactive: number } {
+  const mine = checkInOut.filter(c => c.studentId === studentId);
+  const lastActivityAt = mine.length
+    ? mine.reduce((latest, c) => (new Date(c.occurredAt) > new Date(latest) ? c.occurredAt : latest), mine[0].occurredAt)
+    : moveIn;
+  return { lastActivityAt, daysInactive: daysSince(lastActivityAt) };
+}
+
 function mapRealOccupant(o: RealOccupant): Occupant {
   return {
     id: o.studentId, name: o.studentName, studentId: o.studentIdNo,
     program: o.program ?? "—", year: o.yearLevel ? `${o.yearLevel}${o.yearLevel === 1 ? "st" : o.yearLevel === 2 ? "nd" : o.yearLevel === 3 ? "rd" : "th"} Year` : "—",
     boardingHouseId: o.boardingHouseId ?? "", roomId: o.roomId, bedId: o.bedId,
     room: o.roomName, bed: o.bedLabel, moveIn: o.movedInAt, expectedMoveOut: o.movedOutAt ?? "—",
-    // Real, not fabricated: derived from whether a move-out date is actually
-    // scheduled (student_boarding_registrations.move_out) — the same field
-    // "Update Status" below edits. Only counts as "Moving Out" once that date is
-    // within MOVING_OUT_WINDOW_DAYS — a move-out scheduled months out shouldn't
-    // read as imminent on the roster; it flips to "movingOut" as the date nears
-    // (or has already passed, i.e. overdue).
-    status: o.movedOutAt && daysUntil(o.movedOutAt) <= MOVING_OUT_WINDOW_DAYS ? "movingOut" : "active",
+    // A current occupant is always "Active" — moving out soon doesn't change that
+    // until they're actually removed (Remove Occupant/endOccupancy). The distinct
+    // "reserved"/"pendingMoveIn"/"checkedOut" values genuinely don't apply to a row
+    // this query returns at all (only ever current, is_current=true occupants).
+    status: "active",
     contact: o.contact ?? "—", emergencyContact: "—",
     parentName: o.parentName ?? "Not linked", parentContact: o.parentContact ?? "—", initials: initialsFor(o.studentName), grad: gradientFor(o.studentId), photo: o.photo,
-    visitors: [], timeline: [], notes: [],
+    visitors: [], timeline: [],
     totalDays: daysSince(o.movedInAt), totalTransfers: 0,
+    movingOutSoon: !!o.movedOutAt && daysUntil(o.movedOutAt) <= MOVING_OUT_WINDOW_DAYS,
+    inactiveDays: 0,
   };
 }
 
@@ -142,6 +164,13 @@ function fmtWhen(ms: number): string {
   return new Date(ms).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// A note's real created_at (occupant_notes, 0057) — same "Aug 22, 10:02 AM"
+// shape as fmtWhen, but takes an ISO string directly since notes come from a
+// dedicated on-demand fetch rather than the merged Timeline's ms-based feed.
+function fmtNoteDate(iso: string): string {
+  return new Date(iso).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function toVisitEntry(v: LandlordVisitorRecord): VisitEntry {
   return {
     id: v.id, visitorName: v.visitorName ?? "Unnamed Visitor",
@@ -167,7 +196,7 @@ function buildTimeline(
   checkInOut.filter(c => c.studentId === studentId).forEach(c => {
     const ts = new Date(c.occurredAt).getTime();
     entries.push({
-      event: c.type === "checkin" ? "Checked In" : "Checked Out",
+      event: c.type === "checkin" ? "Entered" : "Exited",
       date: fmtWhen(ts), color: c.type === "checkin" ? "#16A34A" : "#3B82F6", ts,
     });
   });
@@ -239,19 +268,36 @@ function OccupantProfileModal({
   onUpdateStatus: (studentId: string, moveOut: string | null, note?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const [tab, setTab] = useState<"info"|"visitors"|"timeline"|"notes">("info");
-  const [notes, setNotes] = useState<OccupantNote[]>(occupant.notes);
+  const [notes, setNotes] = useState<OccupantNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(true);
   const [noteInput, setNoteInput] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [viewingNote, setViewingNote] = useState<OccupantNote | null>(null);
   const [decidingStay, setDecidingStay] = useState(false);
   const [decidingRoomTransfer, setDecidingRoomTransfer] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [showUpdateStatus, setShowUpdateStatus] = useState(false);
   const sm = statusMeta(occupant.status);
 
-  const addNote = () => {
-    if (!noteInput.trim()) return;
-    const n: OccupantNote = { id: Date.now().toString(), text: noteInput.trim(), date: "Dec 18, 2024" };
-    setNotes(prev => [n, ...prev]);
-    setNoteInput("");
+  // Real, persisted notes (occupant_notes, 0057) — fetched fresh whenever this
+  // specific occupant's profile is opened, rather than seeded from a field on
+  // Occupant that was always empty.
+  useEffect(() => {
+    let active = true;
+    setNotesLoading(true);
+    getNotesForOccupant(occupant.id).then(rows => {
+      if (active) { setNotes(rows); setNotesLoading(false); }
+    });
+    return () => { active = false; };
+  }, [occupant.id]);
+
+  const addNote = async () => {
+    const trimmed = noteInput.trim();
+    if (!trimmed || savingNote) return;
+    setSavingNote(true);
+    const res = await addNoteForOccupant(occupant.id, occupant.boardingHouseId, trimmed);
+    setSavingNote(false);
+    if (res.ok) { setNotes(prev => [res.note, ...prev]); setNoteInput(""); }
   };
 
   const TABS: { id: typeof tab; label: string }[] = [
@@ -272,9 +318,11 @@ function OccupantProfileModal({
               {occupant.photo ? <img src={occupant.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/> : <span style={{ color: "white", fontWeight: 800, fontSize: 16, fontFamily: QS }}>{occupant.initials}</span>}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, flexWrap: "wrap" as const }}>
                 <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{occupant.name}</p>
                 <Pill label={sm.label} color={sm.color} bg={sm.bg} />
+                {occupant.movingOutSoon && <Pill label="Moving Out Soon" color="#EF4444" bg="#FEE2E2" />}
+                {occupant.inactiveDays >= INACTIVITY_THRESHOLD_DAYS && <Pill label="Inactive" color="#F87171" bg="#FEF2F2" />}
               </div>
               <p style={{ margin: 0, fontSize: 11, color: "#9CA3AF", fontFamily: IN }}>{occupant.studentId} · {occupant.program}</p>
             </div>
@@ -378,6 +426,18 @@ function OccupantProfileModal({
                     <button disabled={decidingRoomTransfer} onClick={async () => { setDecidingRoomTransfer(true); await onDecideRoomTransfer?.(roomTransferRequest.id, false); setDecidingRoomTransfer(false); }} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: decidingRoomTransfer ? "default" : "pointer", opacity: decidingRoomTransfer ? 0.7 : 1 }}>Reject</button>
                     <button disabled={decidingRoomTransfer} onClick={async () => { setDecidingRoomTransfer(true); await onDecideRoomTransfer?.(roomTransferRequest.id, true); setDecidingRoomTransfer(false); }} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", backgroundImage: GRAD, color: "white", fontSize: 12, fontWeight: 800, fontFamily: QS, cursor: decidingRoomTransfer ? "default" : "pointer", opacity: decidingRoomTransfer ? 0.7 : 1 }}>Approve</button>
                   </div>
+                </div>
+              )}
+
+              {/* Real inactivity flag — no check-in/out (or none ever) for
+                  INACTIVITY_THRESHOLD_DAYS+ real days (24+ hours), the same real
+                  signal the landlord/student/parent notifications are built on. */}
+              {occupant.inactiveDays >= INACTIVITY_THRESHOLD_DAYS && (
+                <div style={{ background: "white", borderRadius: 18, padding: 16, marginBottom: 12, boxShadow: "0 2px 8px rgba(0,0,0,.04)", border: "1.5px solid #FECACA" }}>
+                  <SH title="Inactive" sub="Not using the app well" />
+                  <p style={{ margin: 0, fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.5 }}>
+                    No Enter/Exit activity in <strong style={{ color: "#EF4444" }}>{occupant.inactiveDays} day{occupant.inactiveDays === 1 ? "" : "s"}</strong>. The student and their linked parent have also been notified.
+                  </p>
                 </div>
               )}
 
@@ -536,26 +596,32 @@ function OccupantProfileModal({
                   onChange={e => setNoteInput(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && addNote()}
                   placeholder="Add a private note…"
+                  disabled={savingNote}
                   style={{ flex: 1, padding: "10px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", outline: "none", fontSize: 12, fontFamily: IN, color: "#1F2937" }}
                 />
-                <button onClick={addNote} style={{ width: 42, height: 42, borderRadius: 14, backgroundImage: GRAD, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <button onClick={addNote} disabled={savingNote} style={{ width: 42, height: 42, borderRadius: 14, backgroundImage: GRAD, border: "none", cursor: savingNote ? "default" : "pointer", opacity: savingNote ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Send size={16} color="white" />
                 </button>
               </div>
-              {notes.length === 0 ? (
+              {notesLoading ? (
+                <div style={{ background: "white", borderRadius: 18, padding: "28px 16px", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,.04)" }}>
+                  <p style={{ fontSize: 12, color: "#9CA3AF", margin: 0, fontFamily: IN }}>Loading notes…</p>
+                </div>
+              ) : notes.length === 0 ? (
                 <div style={{ background: "white", borderRadius: 18, padding: "28px 16px", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,.04)" }}>
                   <FileText size={28} color="#D1D5DB" style={{ marginBottom: 8 }} />
                   <p style={{ fontSize: 13, color: "#9CA3AF", margin: 0, fontFamily: IN }}>No notes yet. Add your first note above.</p>
                 </div>
               ) : notes.map(n => (
-                <div key={n.id} style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,.04)", display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <div key={n.id} onClick={() => setViewingNote(n)} style={{ background: "white", borderRadius: 16, padding: "12px 14px", marginBottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,.04)", display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
                   <div style={{ width: 32, height: 32, borderRadius: 10, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <FileText size={14} color="#9772F6" />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ margin: "0 0 3px", fontSize: 12, color: "#1F2937", fontFamily: IN, lineHeight: 1.5 }}>{n.text}</p>
-                    <p style={{ margin: 0, fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{n.date} · Landlord</p>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: "0 0 3px", fontSize: 12, color: "#1F2937", fontFamily: IN, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{n.text}</p>
+                    <p style={{ margin: 0, fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{fmtNoteDate(n.createdAt)} · Landlord</p>
                   </div>
+                  <ChevronRight size={14} color="#D1D5DB" style={{ flexShrink: 0, marginTop: 2 }} />
                 </div>
               ))}
             </>
@@ -587,6 +653,25 @@ function OccupantProfileModal({
             return res;
           }}
         />
+      )}
+      {viewingNote && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 120, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onClick={() => setViewingNote(null)}>
+          <div style={{ background: "white", borderRadius: 24, padding: "22px 20px 20px", width: "100%", maxWidth: 380, maxHeight: "75%", overflowY: "auto" as const, boxShadow: "0 24px 60px rgba(0,0,0,.25)" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 11, background: "#F5F0FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <FileText size={15} color="#9772F6" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Note</p>
+                <p style={{ margin: 0, fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{fmtNoteDate(viewingNote.createdAt)} · Landlord</p>
+              </div>
+              <button onClick={() => setViewingNote(null)} style={{ width: 28, height: 28, borderRadius: 9, border: "none", background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+                <X size={14} color="#6B7280" />
+              </button>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: "#374151", fontFamily: IN, lineHeight: 1.7, whiteSpace: "pre-wrap" as const }}>{viewingNote.text}</p>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -661,7 +746,7 @@ function UpdateStatusModal({ occupant, onClose, onConfirm }: {
   occupant: Occupant; onClose: () => void;
   onConfirm: (moveOut: string | null, note?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const [moveOutDate, setMoveOutDate] = useState(occupant.status === "movingOut" && occupant.expectedMoveOut !== "—" ? occupant.expectedMoveOut : "");
+  const [moveOutDate, setMoveOutDate] = useState(occupant.expectedMoveOut !== "—" ? occupant.expectedMoveOut : "");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
@@ -673,13 +758,6 @@ function UpdateStatusModal({ occupant, onClose, onConfirm }: {
     if (occupant.moveIn && moveOutDate < occupant.moveIn) { setErr("Move-out date can't be before the move-in date."); return; }
     setSubmitting(true);
     const res = await onConfirm(moveOutDate, note);
-    setSubmitting(false);
-    if (res.ok === false) setErr(res.error);
-  };
-
-  const clearMoveOut = async () => {
-    setSubmitting(true);
-    const res = await onConfirm(null);
     setSubmitting(false);
     if (res.ok === false) setErr(res.error);
   };
@@ -702,15 +780,6 @@ function UpdateStatusModal({ occupant, onClose, onConfirm }: {
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="e.g. Please move out by this date because…"
             style={{ width: "100%", padding: "10px 14px", borderRadius: 14, border: "1.5px solid #E5E7EB", outline: "none", fontSize: 12, fontFamily: IN, color: "#1F2937", resize: "none" as const, boxSizing: "border-box" as const }} />
         </div>
-
-        {/* Not one of the two primary options anymore — a de-emphasized way back for
-            an occupant who already has a move-out scheduled, so removing "Active" as
-            a toggle choice doesn't strand a landlord who made a mistake. */}
-        {occupant.status === "movingOut" && (
-          <button onClick={clearMoveOut} disabled={submitting} style={{ background: "none", border: "none", padding: 0, marginBottom: 14, fontSize: 11, fontWeight: 700, color: "#9772F6", cursor: submitting ? "default" : "pointer", fontFamily: QS }}>
-            Clear scheduled move-out (mark Active)
-          </button>
-        )}
 
         {err && <p style={{ fontSize: 11, color: "#EF4444", margin: "0 0 14px", fontFamily: IN }}>{err}</p>}
 
@@ -775,21 +844,32 @@ export function LandlordOccupantsScreen({
   const [checkInOutActivity, setCheckInOutActivity] = useState<LandlordCheckInOutEvent[]>([]);
   const [reportActivity, setReportActivity] = useState<StudentReport[]>([]);
   const [paymentActivity, setPaymentActivity] = useState<LandlordPaymentActivity[]>([]);
+  // Real per-student transfer counts (room_transfer_history, 0056) — logged by
+  // transfer_student_room() itself, so this covers a transfer regardless of
+  // whether the landlord's own "Transfer Room" quick action or an approved
+  // student request (room_transfer_requests) triggered it.
+  const [transferCounts, setTransferCounts] = useState<Record<string, number>>({});
+  // Distinct from "the arrays are still empty" (which could legitimately mean zero
+  // real rows) — needed so the inactivity check below never fires on incomplete
+  // data (e.g. occupants loaded but check-in/out activity hasn't resolved yet).
+  const [occupantsLoaded, setOccupantsLoaded] = useState(false);
+  const [checkInOutLoaded, setCheckInOutLoaded] = useState(false);
 
   // Independent fetches, so each sets its own state as soon as it resolves rather than
   // being batched behind Promise.all — a "check-in"/"check-out" notification deep-link
   // only needs `occupants`, and waiting on all three together meant it sat blocked on
   // whichever of the other two queries happened to be slowest.
   const refresh = (uid: string) => {
-    getCurrentOccupantsForLandlord(uid).then(realOccupants => setOccupants(realOccupants.map(mapRealOccupant)));
+    getCurrentOccupantsForLandlord(uid).then(realOccupants => { setOccupants(realOccupants.map(mapRealOccupant)); setOccupantsLoaded(true); });
     getBoardingHousesForLandlord(uid).then(bhs => setBhName(bhs[0]?.name ?? ""));
     getOccupancyStatsForLandlord(uid).then(stats => setAvailableBeds(stats.availableBeds));
     getStayChangeRequestsForLandlord(uid).then(setStayChangeRequests);
     getRoomTransferRequestsForLandlord(uid).then(setRoomTransferRequests);
     getVisitorRecordsForLandlord(uid).then(setVisitorRecords);
-    getCheckInOutActivityForLandlord(uid, 300).then(setCheckInOutActivity);
+    getCheckInOutActivityForLandlord(uid, 300).then(activity => { setCheckInOutActivity(activity); setCheckInOutLoaded(true); });
     getReportsForLandlord(uid).then(setReportActivity);
     getPaymentActivityForLandlord(uid, 300).then(setPaymentActivity);
+    getRoomTransferCountsForLandlord(uid).then(setTransferCounts);
   };
 
   // Visitor logs + a merged Timeline (check-in/out, reports, payments, visitor
@@ -802,7 +882,22 @@ export function LandlordOccupantsScreen({
     ...o,
     visitors: visitorRecords.filter(v => v.studentId === o.id).map(toVisitEntry),
     timeline: buildTimeline(o.id, checkInOutActivity, reportActivity, paymentActivity, visitorRecords),
-  })), [occupants, visitorRecords, checkInOutActivity, reportActivity, paymentActivity]);
+    inactiveDays: lastActivityInfo(o.id, o.moveIn, checkInOutActivity).daysInactive,
+    totalTransfers: transferCounts[o.id] ?? 0,
+  })), [occupants, visitorRecords, checkInOutActivity, reportActivity, paymentActivity, transferCounts]);
+
+  // Real, idempotent inactivity detection (inactivityStore.ts/0052) — only runs
+  // once both the roster and check-in/out activity have actually finished
+  // loading, so a student with real activity that just hasn't arrived yet is
+  // never mistakenly flagged as inactive.
+  React.useEffect(() => {
+    if (!landlordId || !occupantsLoaded || !checkInOutLoaded) return;
+    const candidates: InactivityCandidate[] = occupants.map(o => {
+      const info = lastActivityInfo(o.id, o.moveIn, checkInOutActivity);
+      return { studentId: o.id, studentName: o.name, boardingHouseId: o.boardingHouseId, lastActivityAt: info.lastActivityAt, daysInactive: info.daysInactive };
+    });
+    checkAndNotifyInactiveOccupants(landlordId, candidates);
+  }, [landlordId, occupantsLoaded, checkInOutLoaded, occupants, checkInOutActivity]);
 
   React.useEffect(() => {
     let active = true;
@@ -825,6 +920,20 @@ export function LandlordOccupantsScreen({
     const match = occupantsWithActivity.find(o => o.id === pendingDeepLink.relatedId);
     if (match) { setProfileOccupant(match); onDeepLinkConsumed?.(); }
   }, [pendingDeepLink, occupantsWithActivity, onDeepLinkConsumed]);
+
+  // Opened from an "Inactive Occupant"/"Student Responded" notification tap —
+  // unlike the types above, relatedId here is the real inactivity_notices row
+  // id (same convention the student's and parent's own detail modals use), not
+  // the student's user id, so it needs its own lookup before it can show anything.
+  const [viewingInactivityNotice, setViewingInactivityNotice] = useState<InactivityNotice | null>(null);
+  React.useEffect(() => {
+    if (pendingDeepLink?.type !== "inactivity" || !pendingDeepLink.relatedId) return;
+    const id = pendingDeepLink.relatedId;
+    getInactivityNotice(id).then(row => {
+      if (row) setViewingInactivityNotice(row);
+      onDeepLinkConsumed?.();
+    });
+  }, [pendingDeepLink, onDeepLinkConsumed]);
 
   // A separate notification from "New Visitor Logged"-style events, going landlord →
   // student once the decision is actually made real (see stayChangeStore.ts).
@@ -915,7 +1024,8 @@ export function LandlordOccupantsScreen({
   const total     = occupants.length;
   const active    = occupants.filter(o => o.status === "active").length;
   const available = availableBeds;
-  const movingOut = occupants.filter(o => o.status === "movingOut").length;
+  const movingOut = occupants.filter(o => o.movingOutSoon).length;
+  const inactiveCount = occupantsWithActivity.filter(o => o.inactiveDays >= INACTIVITY_THRESHOLD_DAYS).length;
   const withVis   = occupantsWithActivity.filter(o => o.visitors.length > 0).length;
 
   const filtered = occupantsWithActivity.filter(o => {
@@ -925,6 +1035,7 @@ export function LandlordOccupantsScreen({
       filter === "all"          ? true :
       filter === "withVisitors" ? o.visitors.length > 0 :
       filter === "noVisitors"   ? o.visitors.length === 0 :
+      filter === "movingOut"    ? o.movingOutSoon :
       o.status === filter;
     return matchQ && matchF;
   }).sort((a, b) => {
@@ -947,7 +1058,6 @@ export function LandlordOccupantsScreen({
   const FILTERS: { id: FilterType; label: string }[] = [
     { id: "all",          label: "All" },
     { id: "active",       label: "Active" },
-    { id: "pendingMoveIn",label: "Move-In" },
     { id: "movingOut",    label: "Moving Out" },
     { id: "withVisitors", label: "With Visitors" },
     { id: "noVisitors",   label: "No Visitors" },
@@ -958,7 +1068,7 @@ export function LandlordOccupantsScreen({
 
       {/* ── HEADER ── */}
       <div style={{ flexShrink: 0, backgroundImage: GRAD_H, paddingTop: 52, paddingBottom: 20, position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.06)" }} />
+        <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.06)", filter: "blur(28px)" }} />
         <div style={{ padding: "0 16px" }}>
           <p style={{ color: "rgba(255,255,255,.65)", fontSize: 11, margin: "0 0 2px", fontFamily: IN }}>{bhName || "—"}</p>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 16px", fontFamily: QS }}>Occupants</h1>
@@ -970,7 +1080,7 @@ export function LandlordOccupantsScreen({
               { label: "Active",        value: active,          color: "#4ADE80",  bg: "rgba(74,222,128,.18)"  },
               { label: "Avail. Beds",   value: available,       color: "#60A5FA",  bg: "rgba(96,165,250,.18)"  },
               { label: "Moving Out",    value: movingOut,       color: "#FCA5A5",  bg: "rgba(252,165,165,.18)" },
-              { label: "Vacated/Mo.",   value: 0,               color: "#D1D5DB",  bg: "rgba(255,255,255,.1)"  },
+              { label: "Inactive",      value: inactiveCount,   color: "#F87171",  bg: "rgba(248,113,113,.18)" },
               { label: "w/ Visitors",   value: withVis,         color: "#F9A8D4",  bg: "rgba(249,168,212,.18)" },
             ].map(({ label, value, color, bg }) => (
               <div key={label} style={{ borderRadius: 14, padding: "10px 0", textAlign: "center", background: bg }}>
@@ -1038,6 +1148,8 @@ export function LandlordOccupantsScreen({
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" as const }}>
                     <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{o.name}</p>
                     <Pill label={sm.label} color={sm.color} bg={sm.bg} />
+                    {o.movingOutSoon && <Pill label="Moving Out Soon" color="#EF4444" bg="#FEE2E2" />}
+                    {o.inactiveDays >= INACTIVITY_THRESHOLD_DAYS && <Pill label="Inactive" color="#F87171" bg="#FEF2F2" />}
                     {hasPendingStayChange && <Pill label="Stay Change Requested" color="#D97706" bg="#FEF3C7" />}
                     {hasPendingRoomTransfer && <Pill label="Room Transfer Requested" color="#D97706" bg="#FEF3C7" />}
                   </div>
@@ -1085,6 +1197,20 @@ export function LandlordOccupantsScreen({
         />
       )}
 
+      {/* ── INACTIVITY NOTICE MODAL ── */}
+      {viewingInactivityNotice && (
+        <InactivityDetailModal
+          notice={viewingInactivityNotice}
+          studentName={occupantsWithActivity.find(o => o.id === viewingInactivityNotice.studentId)?.name ?? "This student"}
+          onClose={() => setViewingInactivityNotice(null)}
+          onViewOccupant={() => {
+            const match = occupantsWithActivity.find(o => o.id === viewingInactivityNotice.studentId);
+            setViewingInactivityNotice(null);
+            if (match) setProfileOccupant(match);
+          }}
+        />
+      )}
+
       {/* ── REMOVE DIALOG ── */}
       {removeOccupant && (
         <RemoveDialog
@@ -1093,6 +1219,51 @@ export function LandlordOccupantsScreen({
           onCancel={() => setRemoveOccupant(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ── Inactivity Notice Detail Modal ───────────────────────────────────────────
+// What an "Inactive Occupant"/"Student Responded" notification tap opens for
+// the landlord — the actual real inactivity_notices row (0052/0055), showing
+// the student's response once they've sent one instead of just a generic
+// landing on the Occupants list.
+function InactivityDetailModal({ notice, studentName, onClose, onViewOccupant }: {
+  notice: InactivityNotice; studentName: string; onClose: () => void; onViewOccupant: () => void;
+}) {
+  const lastActivityLabel = new Date(notice.lastActivityAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const dayWord = `${notice.daysInactive} day${notice.daysInactive === 1 ? "" : "s"}`;
+  return (
+    <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 28, padding: "28px 24px 24px", width: "100%", maxWidth: 340, boxShadow: "0 24px 60px rgba(0,0,0,.25)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 56, height: 56, borderRadius: 20, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+          <AlertCircle size={24} color="#F87171" />
+        </div>
+        <h3 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>{studentName} Has Gone Quiet</h3>
+        <p style={{ margin: "0 0 18px", fontSize: 11, color: "#9CA3AF", fontFamily: IN, textAlign: "center" as const }}>Their parent was notified too</p>
+
+        <div style={{ background: "#FEF2F2", borderRadius: 14, padding: "12px 14px", marginBottom: 18, textAlign: "center" as const }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#7F1D1D", fontFamily: IN, lineHeight: 1.6 }}>
+            No Enter/Exit activity in <strong>{dayWord}</strong> — since {lastActivityLabel}.
+          </p>
+        </div>
+
+        {notice.response ? (
+          <div style={{ background: "#F0FDF4", borderRadius: 14, padding: "12px 14px", marginBottom: 18 }}>
+            <p style={{ margin: "0 0 4px", fontSize: 10, fontWeight: 800, color: "#15803D", fontFamily: QS, textTransform: "uppercase" as const }}>{studentName}'s Response</p>
+            <p style={{ margin: 0, fontSize: 12, color: "#166534", fontFamily: IN, lineHeight: 1.6 }}>"{notice.response}"</p>
+          </div>
+        ) : (
+          <p style={{ margin: "0 0 18px", fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.6, textAlign: "center" as const }}>
+            Waiting for {studentName} to respond.
+          </p>
+        )}
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "12px 0", borderRadius: 16, border: "1.5px solid #E5E7EB", background: "white", color: "#6B7280", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>Close</button>
+          <button onClick={onViewOccupant} style={{ flex: 1, padding: "12px 0", borderRadius: 16, border: "none", backgroundImage: GRAD, color: "white", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>View Occupant</button>
+        </div>
+      </div>
     </div>
   );
 }

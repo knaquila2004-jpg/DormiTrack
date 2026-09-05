@@ -67,8 +67,8 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
     },
     ...(latest && latestHasPos ? [{
       id: "student", variant: "student" as const, position: { lat: latest.lat as number, lng: latest.lng as number },
-      title: latest.type === "checkin" ? "Last checked in" : "Last checked out", zIndex: 5,
-      infoContent: <MapInfoCard title={latest.type === "checkin" ? "Last Checked In" : "Last Checked Out"} rows={[["When", timeAgo(new Date(latest.occurredAt).getTime())]]} />,
+      title: latest.type === "checkin" ? "Last entered" : "Last exited", zIndex: 5,
+      infoContent: <MapInfoCard title={latest.type === "checkin" ? "Last Entered" : "Last Exited"} rows={[["When", timeAgo(new Date(latest.occurredAt).getTime())]]} />,
     }] : []),
   ];
 
@@ -77,7 +77,7 @@ export function ParentMapScreen({ go }: { go:(s:string)=>void }) {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 16px", position:"relative" as const, overflow:"hidden", zIndex:10 }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(24px)" }}/>
         <div>
           <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
           <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN }}>

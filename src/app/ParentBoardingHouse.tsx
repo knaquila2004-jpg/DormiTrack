@@ -307,7 +307,7 @@ export function ParentBoardingHouseScreen({ go }: { go:(s:string)=>void }) {
 
       {/* Header */}
       <div style={{ flexShrink:0, backgroundImage:GRAD, overflow:"hidden", position:"relative" as const }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(28px)" }}/>
         <div style={{ padding:"52px 20px 0", position:"relative" as const }}>
           <p style={{ margin:"0 0 3px", fontSize:11, color:"rgba(255,255,255,.6)", fontFamily:IN, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:1 }}>Boarding House</p>
           <h1 style={{ margin:"0 0 4px", fontSize:21, fontWeight:800, color:"white", fontFamily:QS, lineHeight:1.2 }}>{BH_DATA.name}</h1>

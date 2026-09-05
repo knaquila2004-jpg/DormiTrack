@@ -2,20 +2,20 @@ import { supabase } from "../lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import { getBoardingHousesForLandlord, getMyBHFeatureConfig, updateBHFeatureConfig } from "./boardingHouseStore";
 import { getMyHighlights, createHighlight, updateHighlight, deleteHighlight } from "./highlightsStore";
-import { getPendingRegistrationsForLandlord, approveRegistration, rejectRegistration, getOccupancyStatsForLandlord, getMyStudentGateStatus, PendingRegistration, OccupancyStats, PendingRegInfo } from "./registrationStore";
+import { getPendingRegistrationsForLandlord, approveRegistration, rejectRegistration, getOccupancyStatsForLandlord, getMyStudentGateStatus, PendingRegistration, OccupancyStats, PendingRegInfo, cancelRegistration, getRegistrationBoardingHouseId, getRegistrationStatusForLandlord, RegistrationStatusInfo } from "./registrationStore";
 import { getMyLandlordAccount } from "./landlordProfileStore";
 import { getCheckInOutActivityForLandlord } from "./checkInOutStore";
 import { getPaymentActivityForLandlord } from "./paymentStore";
 import { getVisitorRecordsForLandlord, markVisitorLeft as markVisitorLeftApi, toLocalISODate, loggedLabel } from "./visitorStore";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Home, Map, Bell, User, Eye, EyeOff, Search, Shield, CreditCard,
   MapPin, Users, Building2, CheckCircle, AlertCircle, Clock, Phone,
   Mail, LogOut, Camera, GraduationCap, Lock, Settings, Info,
   HelpCircle, FileText, Megaphone, Calendar, ChevronRight, ChevronLeft,
-  Navigation, Signal, Wifi, Battery, RefreshCcw, Filter,
+  Navigation, RefreshCcw, Filter,
   Globe, MessageCircle, Layers, Smartphone, Heart, Check, Star,
-  BarChart2, UserCheck, Wallet, Flag, LogIn,
+  BarChart2, UserCheck, Wallet, Flag, LogIn, ChevronDown,
   Droplet, Zap, Utensils, Car, BookOpen, Video, Shirt, Plus, Minus, X,
   Sparkles, DoorOpen, Hourglass,
 } from "lucide-react";
@@ -82,23 +82,51 @@ function DormiLogo({ size = 72, white = false }: { size?: number; white?: boolea
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
+// Three real device tiers, per DormiTrack's responsive spec:
+//  - "mobile" (a genuinely narrow browser, real phone or shrunk window): the
+//    app fills the viewport edge-to-edge, same as a native app.
+//  - "tablet" / "desktop" for every role except admin: the SAME mobile-first
+//    screens, just shown as a clean centered panel (no fake device chrome) —
+//    Student/Parent/Landlord never get a separate desktop UI, but they must
+//    never be stuck with a literal toy phone-mockup either when opening the
+//    app in a regular browser window.
+//  - "desktop" for the admin role only: a real desktop shell (sidebar + top
+//    header, see AdminShellFrame below) that fills the window.
+const MOBILE_BREAKPOINT = 500;
+const DESKTOP_BREAKPOINT = 1024;
 
-function useIsRealMobile() {
-  const [isMobile, setIsMobile] = useState(
-    typeof window !== "undefined" ? window.innerWidth <= 500 : false,
-  );
+type DeviceType = "mobile" | "tablet" | "desktop";
+
+function computeDeviceType(): DeviceType {
+  const w = typeof window !== "undefined" ? window.innerWidth : 0;
+  return w <= MOBILE_BREAKPOINT ? "mobile" : w >= DESKTOP_BREAKPOINT ? "desktop" : "tablet";
+}
+
+function useDeviceType(): DeviceType {
+  const [deviceType, setDeviceType] = useState<DeviceType>(computeDeviceType);
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth <= 500);
+    const check = () => setDeviceType(computeDeviceType());
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
-  return isMobile;
+  return deviceType;
 }
 
-function MobileShell({ children, visible }: { children: React.ReactNode; visible: boolean }) {
-  const isRealMobile = useIsRealMobile();
+function MobileShell({ children, visible, role }: { children: React.ReactNode; visible: boolean; role: Role }) {
+  const deviceType = useDeviceType();
 
-  if (isRealMobile) {
+  if (role === "admin" && deviceType === "desktop") {
+    // No phone framing at all — AdminShellFrame (rendered inside `children`
+    // for every admin screen) provides its own sidebar+header chrome and
+    // fills this container itself.
+    return (
+      <div style={{ width: "100vw", height: "100vh", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#F3F4F8", opacity: visible ? 1 : 0, transition: "opacity 0.18s ease" }}>
+        {children}
+      </div>
+    );
+  }
+
+  if (deviceType === "mobile") {
     // Real phone browser: fill the actual viewport edge-to-edge instead of
     // drawing a fake device frame — the OS/browser already provides the
     // status bar and notch, so we just respect safe-area insets.
@@ -127,30 +155,23 @@ function MobileShell({ children, visible }: { children: React.ReactNode; visible
     );
   }
 
+  // Tablet width for any role, or desktop width for a non-admin role: the
+  // same mobile-first screens, presented as a clean centered panel — not a
+  // full-bleed stretch, and not the old decorative fake-phone mockup.
   return (
     <div className="min-h-screen flex items-center justify-center"
-      style={{ background: "linear-gradient(135deg,#DCDCE6,#C4C4D4)" }}>
+      style={{ background: "#E5E7EB" }}>
       <div style={{
-        width: 390, height: 844, borderRadius: 52, overflow: "hidden", position: "relative",
+        width: 430, height: "min(844px, 96vh)", borderRadius: 28, overflow: "hidden", position: "relative",
         // `transform` makes this the containing block for `position:fixed`
         // descendants, so full-screen sheet modals stay confined to the
-        // phone frame — including the bottom nav bar — instead of
-        // escaping to the full browser viewport.
+        // panel — including the bottom nav bar — instead of escaping to
+        // the full browser viewport.
         transform: "translateZ(0)",
-        boxShadow: "0 50px 100px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.15) inset, 0 0 0 2px rgba(0,0,0,0.15)",
+        boxShadow: "0 20px 60px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.04)",
         fontFamily: "'Inter',sans-serif", background: "#F7F8FC",
         display: "flex", flexDirection: "column",
       }}>
-        {/* Dynamic Island */}
-        <div style={{ position: "absolute", top: 13, left: "50%", transform: "translateX(-50%)", width: 118, height: 30, background: "black", borderRadius: 15, zIndex: 70 }} />
-        {/* Status bar */}
-        <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 50, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 30px", zIndex: 60, pointerEvents: "none", color: "white", textShadow: "0 1px 4px rgba(0,0,0,0.5)" }}>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>9:41</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <Signal size={11} /><Wifi size={11} /><Battery size={13} />
-          </div>
-        </div>
-        {/* Screen */}
         <div style={{ flex: 1, overflow: "hidden", opacity: visible ? 1 : 0, transition: "opacity 0.18s ease", display: "flex", flexDirection: "column" }}>
           {children}
         </div>
@@ -258,6 +279,71 @@ const ADMIN_RIGHT: NavTab[] = [
   { id: "adminReports", Icon: BarChart2, label: "Reports" },
   { id: "adminSystem",  Icon: Settings,  label: "System"  },
 ];
+// The bottom nav's center FAB (see BottomNav below) always opens "map"
+// regardless of role, and admin's own profile is reached via a header
+// avatar button inside AdminDashboardScreen — neither is a labeled BottomNav
+// tab today. A real desktop sidebar needs every admin destination spelled
+// out explicitly, so this lists all six rather than just the four tabs.
+const ADMIN_NAV: NavTab[] = [
+  ...ADMIN_LEFT, ...ADMIN_RIGHT,
+  { id: "map",          Icon: MapPin, label: "Map"     },
+  { id: "adminProfile", Icon: User,   label: "Profile" },
+];
+
+// ── Admin Desktop Shell ────────────────────────────────────────────────────────
+// Real desktop chrome for the Housing Director/Admin only (MobileShell above
+// decides *when* this applies). Wraps every admin destination so switching
+// between Dashboard/Users/Reports/System/Map/Profile keeps the same nav
+// available. At mobile/tablet widths this renders byte-for-byte the same
+// markup every admin screen already used (BottomNav + content), so nothing
+// changes there — the sidebar only appears at the desktop breakpoint.
+function AdminShellFrame({ active, go, children }: { active: Screen; go: (s: Screen) => void; children: React.ReactNode }) {
+  const deviceType = useDeviceType();
+
+  if (deviceType !== "desktop") {
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" as const }}>
+        <div style={{ flex: 1, overflow: "hidden" }}>{children}</div>
+        <BottomNav active={active} go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ height: "100%", width: "100%", display: "flex", fontFamily: "'Inter',sans-serif" }}>
+      {/* Sidebar */}
+      <div style={{ width: 240, flexShrink: 0, background: "white", borderRight: "1px solid #E5E7EB", display: "flex", flexDirection: "column" as const }}>
+        <div style={{ padding: "22px 20px", display: "flex", alignItems: "center", gap: 10 }}>
+          <DormiLogo size={28} />
+          <span style={{ fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: "'Quicksand',sans-serif" }}>DormiTrack</span>
+        </div>
+        <div style={{ flex: 1, padding: "8px 12px", overflowY: "auto" as const }}>
+          {ADMIN_NAV.map(tab => {
+            const on = active === tab.id;
+            return (
+              <button key={tab.id} onClick={() => go(tab.id)} style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", marginBottom: 4,
+                borderRadius: 12, border: "none", cursor: "pointer", textAlign: "left" as const,
+                background: on ? "#F5F0FF" : "transparent", color: on ? "#7549F6" : "#6B7280",
+                fontSize: 13.5, fontWeight: on ? 800 : 600, fontFamily: "'Quicksand',sans-serif",
+              }}>
+                <tab.Icon size={18} color={on ? "#7549F6" : "#9CA3AF"} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid #F3F4F6" }}>
+          <p style={{ margin: 0, fontSize: 10.5, color: "#9CA3AF", fontFamily: "'Inter',sans-serif" }}>Housing Director/Admin</p>
+        </div>
+      </div>
+      {/* Content */}
+      <div style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 const STUDENT_LEFT:  NavTab[] = [
   { id: "dashboard", Icon: Home,   label: "Home"      },
@@ -950,8 +1036,9 @@ function TermsConditionsContent() {
 // straight into a page that both introduces DormiTrack and lets you sign in,
 // so returning users never have to tap through an intermediate splash choice.
 // "Create Account" is the only path onward to role selection / registration.
-function WelcomeLoginScreen({ go, onPendingRegistration, onPendingParentLink, onParentJustLinked, email, setEmail, pass, setPass }: {
+function WelcomeLoginScreen({ go, onPendingRegistration, onRejectedRegistration, onPendingParentLink, onParentJustLinked, email, setEmail, pass, setPass }: {
   go: (s: Screen) => void; onPendingRegistration: (info: PendingRegInfo, registrationId: string) => void;
+  onRejectedRegistration: (info: PendingRegInfo) => void;
   onPendingParentLink: (resume: { kind: "pending" | "rejected" | "none"; linkId: string | null; studentIdNo: string }) => void;
   onParentJustLinked: () => void;
   // Controlled from App() so navigating to "Forgot Password?" and back doesn't lose what was typed.
@@ -997,6 +1084,19 @@ function WelcomeLoginScreen({ go, onPendingRegistration, onPendingParentLink, on
       const status = await getMyStudentGateStatus();
       setBusy(false);
       if (status.kind === "pending") { onPendingRegistration(status.info, status.registrationId); go("pendingVerify"); return; }
+      if (status.kind === "rejected") {
+        // Shown exactly once per registration — a purely local "have I told them
+        // about this one yet" marker, not a fact about the registration itself,
+        // so it doesn't need a schema change; without it, every future login
+        // would show the same rejection again since the row itself never changes.
+        const seenKey = `dt_seen_rejection_${status.registrationId}`;
+        if (!localStorage.getItem(seenKey)) {
+          localStorage.setItem(seenKey, "1");
+          onRejectedRegistration(status.info);
+        }
+        go("boardingReg");
+        return;
+      }
       if (status.kind === "none") { go("boardingReg"); return; }
       go("dashboard");
       return;
@@ -1033,9 +1133,9 @@ function WelcomeLoginScreen({ go, onPendingRegistration, onPendingParentLink, on
 
       {/* ── Animated lava-lamp background: slow, blurred, layered blobs ── */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
-        <div style={{ position: "absolute", top: "-8%", left: "-14%", width: 300, height: 300, background: "radial-gradient(circle at 35% 35%,rgba(196,181,253,.55),rgba(109,40,217,.05) 70%)", filter: "blur(50px)", animation: "dtBlobA 22s ease-in-out infinite" }} />
+        <div style={{ position: "absolute", top: "-8%", left: "-14%", width: 300, height: 300, background: "radial-gradient(circle at 35% 35%,rgba(139,92,246,.55),rgba(76,29,149,.05) 70%)", filter: "blur(50px)", animation: "dtBlobA 22s ease-in-out infinite" }} />
         <div style={{ position: "absolute", top: "6%", right: "-18%", width: 260, height: 260, background: "radial-gradient(circle at 60% 40%,rgba(139,92,246,.55),rgba(76,29,149,.05) 70%)", filter: "blur(46px)", animation: "dtBlobB 26s ease-in-out infinite", animationDelay: "-4s" }} />
-        <div style={{ position: "absolute", bottom: "10%", left: "-12%", width: 280, height: 280, background: "radial-gradient(circle at 40% 60%,rgba(79,70,229,.5),rgba(30,27,61,.05) 70%)", filter: "blur(52px)", animation: "dtBlobC 30s ease-in-out infinite", animationDelay: "-10s" }} />
+        <div style={{ position: "absolute", bottom: "10%", left: "-12%", width: 280, height: 280, background: "radial-gradient(circle at 40% 60%,rgba(167,139,250,.4),rgba(91,33,182,.05) 70%)", filter: "blur(52px)", animation: "dtBlobC 30s ease-in-out infinite", animationDelay: "-10s" }} />
         <div style={{ position: "absolute", bottom: "-16%", right: "-16%", width: 320, height: 320, background: "radial-gradient(circle at 50% 50%,rgba(167,139,250,.4),rgba(91,33,182,.05) 70%)", filter: "blur(56px)", animation: "dtBlobD 24s ease-in-out infinite", animationDelay: "-6s" }} />
       </div>
 
@@ -1386,7 +1486,13 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
       // StudentHome.tsx's "Add Comment" box never prefills from the student's last note.
       if (match) { setSelectedStudentReport(match); setReportResponseText(""); setPendingStatusChoice(null); onDeepLinkConsumed?.(); }
     }
-    if (pendingDeepLink?.type === "verification" && pendingDeepLink.relatedId) {
+    // "boarding-house" here is specifically "Registration Cancelled" (the only
+    // landlord-facing, destination:"dashboard" use of that type — "Registration
+    // Approved" reuses the same type but goes to the student/parent with
+    // destination:"occupants", so there's no collision) — same Reservation
+    // Requests display either way, whether the request is still around to review
+    // or has since been cancelled (see the modal-opening effect below).
+    if ((pendingDeepLink?.type === "verification" || pendingDeepLink?.type === "boarding-house") && pendingDeepLink.relatedId) {
       setHighlightedRequestId(pendingDeepLink.relatedId);
       requestAnimationFrame(() => reservationRequestsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     }
@@ -1416,7 +1522,11 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
   const [reportStatusFilter, setReportStatusFilter] = useState<"all"|ReportStatus>("all");
   const [showResolvedConcerns, setShowResolvedConcerns] = useState(false);
   const [showAllActiveConcerns, setShowAllActiveConcerns] = useState(false);
-  const [activityDateFilter, setActivityDateFilter] = useState<"all"|"today"|"week"|"month">("all");
+  // "all" | "today" | "week" | a specific "YYYY-MM" month key (real, chosen from the
+  // month picker below — lets the landlord look back at any previous month's
+  // activity, not just the current one).
+  const [activityDateFilter, setActivityDateFilter] = useState<string>("all");
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
   // ── Real pending registrations + occupancy stats (landlord only) ────────────
   const [landlordId, setLandlordId] = useState<string | null>(null);
   const [pendingRegs, setPendingRegs] = useState<PendingRegistration[]>([]);
@@ -1461,12 +1571,27 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
     if (landlordId) refreshLandlordData(landlordId);
   };
   const handleReject = async (regId: string) => {
+    // Captured before rejectRegistration resolves — once it succeeds and
+    // refreshLandlordData re-fetches, this request drops out of pendingRegs
+    // entirely (no longer 'pending'), so studentId/houseName wouldn't be
+    // findable there afterward.
+    const reg = pendingRegs.find(r => r.id === regId);
     setReqBusy(regId); setReqError("");
     const res = await rejectRegistration(regId);
     setReqBusy(null);
     if (res.ok === false) { setReqError(res.error); return; }
     setReqStates(s => ({ ...s, [regId]: "rejected" }));
     if (landlordId) refreshLandlordData(landlordId);
+    // Real notification the moment the landlord acts — the student isn't stuck
+    // relying only on their next login's gate-check to find out (PendingVerificationScreen's
+    // own poll also catches it live if they happen to still be on that screen).
+    if (reg) {
+      addNotification({
+        userId: reg.studentId, type: "boarding-house", title: "Registration Not Approved",
+        description: `Your boarding house registration for ${reg.boardingHouseName} was not approved. You can choose a different boarding house.`,
+        destination: "boardingReg",
+      });
+    }
   };
 
   const now = new Date();
@@ -1488,15 +1613,76 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
   const yearLabel = (y: number | null) => y ? `${y}${y === 1 ? "st" : y === 2 ? "nd" : y === 3 ? "rd" : "th"} Year` : "—";
   const [reviewingRequest, setReviewingRequest] = useState<PendingRegistration | null>(null);
-  // Opened from a "New Registration Request" notification tap — the actual functional fix:
-  // this opens the full review modal (not just a scroll+highlight) the moment the matching
-  // request shows up in pendingRegs. That data loads asynchronously (a separate effect, after
-  // the session resolves), so this re-checks every time pendingRegs changes rather than once.
+  // What a "Registration Cancelled" notification tap opens, since the request itself
+  // is no longer in pendingRegs (it's not 'pending' anymore) — a real, honest reason
+  // instead of the tap silently landing on Reservation Requests with nothing to show.
+  const [cancelledNotice, setCancelledNotice] = useState<RegistrationStatusInfo | null>(null);
+  // Opened from a "New Registration Request"/"Registration Cancelled" notification
+  // tap — the actual functional fix: this opens the full review modal (not just a
+  // scroll+highlight) the moment the matching request shows up in pendingRegs. That
+  // data loads asynchronously (a separate effect, after the session resolves), so
+  // this re-checks every time pendingRegs changes rather than once. If the request
+  // isn't (or is no longer) pending, it looks the real registration up directly by
+  // id — still 'pending' just means pendingRegs hasn't loaded yet (try again next
+  // time this re-runs); 'cancelled' means it genuinely was, and gets its own modal.
   useEffect(() => {
-    if (pendingDeepLink?.type !== "verification" || !pendingDeepLink.relatedId) return;
-    const match = pendingRegs.find(r => r.id === pendingDeepLink.relatedId);
-    if (match) { setReviewingRequest(match); onDeepLinkConsumed?.(); }
+    const isRegType = pendingDeepLink?.type === "verification" || pendingDeepLink?.type === "boarding-house";
+    if (!isRegType || !pendingDeepLink.relatedId) return;
+    const relatedId = pendingDeepLink.relatedId;
+    const match = pendingRegs.find(r => r.id === relatedId);
+    if (match) { setReviewingRequest(match); onDeepLinkConsumed?.(); return; }
+    getRegistrationStatusForLandlord(relatedId).then(info => {
+      if (!info || info.status === "pending") return; // still loading pendingRegs, or not this landlord's
+      if (info.status === "cancelled") { setCancelledNotice(info); onDeepLinkConsumed?.(); }
+    });
   }, [pendingDeepLink, pendingRegs, onDeepLinkConsumed]);
+
+  // Home page only ever shows the 3 most recent — "View All" (only shown once there
+  // actually are more than 3) opens every pending request in its own modal instead.
+  const [showAllRequests, setShowAllRequests] = useState(false);
+  const sortedRegs = [...pendingRegs].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+  const topRegs = sortedRegs.slice(0, 3);
+
+  // Shared by the home page's capped list and the "View All" modal's full list, so
+  // the exact same card (avatar/name/status pill/room chip, Accept/Reject) never
+  // has to be maintained in two places.
+  const renderRequestCard = (r: PendingRegistration, isLast: boolean) => {
+    const st = reqStates[r.id] ?? "pending";
+    const busy = reqBusy === r.id;
+    const isHighlighted = r.id === highlightedRequestId;
+    return (
+      <div key={r.id} style={{
+        padding: "14px 16px", borderBottom: isLast ? "none" : "1px solid #F3F4F6",
+        background: isHighlighted ? "#F5F0FF" : "transparent",
+        boxShadow: isHighlighted ? "inset 3px 0 0 #9772F6" : "none",
+        transition: "background .5s ease",
+      }}>
+        {/* Tapping the request itself opens the full review — everything the student
+            actually submitted (dates, personality, hobbies, lifestyle, notes), not just
+            this name/room summary — so accepting/rejecting is an informed decision. */}
+        <button onClick={() => setReviewingRequest(r)} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" as const }}>
+          <div style={{ width: 38, height: 38, borderRadius: 13, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <User size={17} color="white" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>{r.studentName}</p>
+              {st !== "pending" && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 20, background: st === "accepted" ? "#DCFCE7" : "#FEE2E2", color: st === "accepted" ? "#16A34A" : "#EF4444", fontFamily: QS }}>{st === "accepted" ? "Accepted" : "Rejected"}</span>}
+            </div>
+            <p style={{ fontSize: 10, color: "#9CA3AF", margin: 0, fontFamily: IN }}>{r.studentIdNo} · {r.program ?? "—"} · {yearLabel(r.yearLevel)}</p>
+          </div>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 10, background: "#F5F0FF", color: "#9772F6", fontFamily: QS, flexShrink: 0 }}>{r.roomName}</span>
+          <ChevronRight size={16} color="#D1D5DB" style={{ flexShrink: 0 }} />
+        </button>
+        {st === "pending" && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => handleAccept(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS }}>{busy ? "Working…" : "Accept"}</button>
+            <button onClick={() => handleReject(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS }}>Reject</button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Friendly day label for an activity's timestamp — "Today"/"Yesterday" for the near
   // term, an actual date beyond that, so the modal's date-grouping headers stay real
@@ -1538,7 +1724,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
         const ts = new Date(c.occurredAt).getTime();
         return {
           role: "student",
-          msg: `${c.studentName} checked ${c.type === "checkin" ? "in" : "out"}.`,
+          msg: `${c.studentName} ${c.type === "checkin" ? "entered" : "exited"}.`,
           time: new Date(ts).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
           date: dayLabel(ts), ts,
           Icon: c.type === "checkin" ? LogIn : LogOut,
@@ -1561,7 +1747,21 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
     });
     return () => { active = false; };
   }, [role, landlordId]);
-  const combinedActivities = [...allActivities, ...remoteActivities].sort((a, b) => b.ts - a.ts);
+  // Real visitor logs — reuses the same `visitors` state already fetched for the
+  // Visitor Records section (refreshLandlordData above) instead of a second
+  // duplicate query. Every real log is one activity item; nothing fabricated
+  // ("was logged"/"has since left" both come straight from the row's own status).
+  const visitorActivities: ActivityItem[] = useMemo(() => visitors.map(v => {
+    const who = v.visitorName || "A visitor";
+    return {
+      role: "visitor",
+      msg: `${who} was logged at ${v.room} (visiting ${v.studentName})${v.status === "left" ? " and has since left." : "."}`,
+      time: v.timeIn ?? "",
+      date: dayLabel(v.ts), ts: v.ts,
+      Icon: UserCheck, color: "#EC4899", bar: "#EC4899",
+    };
+  }), [visitors]);
+  const combinedActivities = [...allActivities, ...remoteActivities, ...visitorActivities].sort((a, b) => b.ts - a.ts);
   const [hlItems, setHlItems] = useState<Highlight[]>([]);
   const refreshHighlights = () => { getMyHighlights().then(setHlItems); };
   useEffect(() => {
@@ -1660,7 +1860,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
         <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const }}>
           {/* Header with notif + chat */}
           <div style={{ backgroundImage: GRAD_H, paddingTop: 48, position: "relative", overflow: "hidden" }}>
-            <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.06)" }} />
+            <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.06)", filter: "blur(28px)" }} />
             {/* Icon row */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 10px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1702,8 +1902,8 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
       {/* ── TOP NAV ─────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink: 0, backgroundImage: GRAD_H, paddingTop: 48, position: "relative", overflow: "hidden" }}>
         {/* Decorative orbs */}
-        <div style={{ position: "absolute", top: -50, right: -50, width: 180, height: 180, borderRadius: "50%", background: "rgba(255,255,255,.06)" }} />
-        <div style={{ position: "absolute", bottom: -60, left: -30, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.04)" }} />
+        <div style={{ position: "absolute", top: -50, right: -50, width: 180, height: 180, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.06)", filter: "blur(32px)" }} />
+        <div style={{ position: "absolute", bottom: -60, left: -30, width: 160, height: 160, borderRadius: "60% 40% 35% 65%/55% 65% 35% 45%", background: "rgba(255,255,255,.04)", filter: "blur(28px)" }} />
 
         {/* Icon row */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px 10px" }}>
@@ -1785,7 +1985,7 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
         {/* ── RESERVATION REQUESTS ─────────────────────────────────────────── */}
         <div ref={reservationRequestsRef} style={{ padding: "0 16px 0" }}>
-          <SH title="Reservation Requests" action={`View All (${pendingRegs.length})`} onAction={() => go("occupants")} />
+          <SH title="Reservation Requests" action={pendingRegs.length > 3 ? `View All (${pendingRegs.length})` : undefined} onAction={() => setShowAllRequests(true)} />
           {reqError && (
             <div style={{ background: "#FEF2F2", borderRadius: 14, padding: "10px 14px", marginBottom: 10, border: "1px solid #FECACA" }}>
               <span style={{ fontSize: 11, color: "#DC2626", fontFamily: IN }}>{reqError}</span>
@@ -1797,48 +1997,29 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                 <span style={{ fontSize: 12, color: "#9CA3AF", fontFamily: IN }}>No pending reservation requests.</span>
               </div>
             )}
-            {pendingRegs.map((r, i) => {
-              const st = reqStates[r.id] ?? "pending";
-              const busy = reqBusy === r.id;
-              const isHighlighted = r.id === highlightedRequestId;
-              return (
-                <div key={r.id} style={{
-                  padding: "14px 16px", borderBottom: i < pendingRegs.length - 1 ? "1px solid #F3F4F6" : "none",
-                  background: isHighlighted ? "#F5F0FF" : "transparent",
-                  boxShadow: isHighlighted ? "inset 3px 0 0 #9772F6" : "none",
-                  transition: "background .5s ease",
-                }}>
-                  {/* Tapping the request itself opens the full review — everything the student
-                      actually submitted (dates, personality, hobbies, lifestyle, notes), not just
-                      this name/room summary — so accepting/rejecting is an informed decision. */}
-                  <button onClick={() => setReviewingRequest(r)} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" as const }}>
-                    <div style={{ width: 38, height: 38, borderRadius: 13, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <User size={17} color="white" />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: 0, fontFamily: QS }}>{r.studentName}</p>
-                        {st !== "pending" && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 20, background: st === "accepted" ? "#DCFCE7" : "#FEE2E2", color: st === "accepted" ? "#16A34A" : "#EF4444", fontFamily: QS }}>{st === "accepted" ? "Accepted" : "Rejected"}</span>}
-                      </div>
-                      <p style={{ fontSize: 10, color: "#9CA3AF", margin: 0, fontFamily: IN }}>{r.studentIdNo} · {r.program ?? "—"} · {yearLabel(r.yearLevel)}</p>
-                    </div>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 10, background: "#F5F0FF", color: "#9772F6", fontFamily: QS, flexShrink: 0 }}>{r.roomName}</span>
-                    <ChevronRight size={16} color="#D1D5DB" style={{ flexShrink: 0 }} />
-                  </button>
-                  {st === "pending" && (
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => handleAccept(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#DCFCE7", color: "#16A34A", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Check size={13}/> {busy ? "Working…" : "Accept"}</button>
-                      <button onClick={() => handleReject(r.id)} disabled={busy} style={{ flex: 1, padding: "9px 0", borderRadius: 12, background: "#FEE2E2", color: "#EF4444", fontSize: 12, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><X size={13}/> Reject</button>
-                      <button onClick={() => setReviewingRequest(r)} style={{ width: 38, padding: "9px 0", borderRadius: 12, background: "#EFF6FF", color: "#3B82F6", fontSize: 12, fontWeight: 800, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Review full request">
-                        <Eye size={14} color="#3B82F6" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {topRegs.map((r, i) => renderRequestCard(r, i === topRegs.length - 1))}
           </div>
         </div>
+
+        {/* ── ALL RESERVATION REQUESTS MODAL ───────────────────────────────── */}
+        {showAllRequests && (
+          <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onClick={() => setShowAllRequests(false)}>
+            <div style={{ background: "#F3F4F8", borderRadius: 24, width: "100%", maxWidth: 420, maxHeight: "85%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
+              <div style={{ padding: "18px 20px 14px", background: "white", borderRadius: "24px 24px 0 0", borderBottom: "1px solid #F3F4F6", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>Reservation Requests</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 11, color: "#9CA3AF", fontFamily: IN }}>{sortedRegs.length} total</p>
+                </div>
+                <button onClick={() => setShowAllRequests(false)} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={15} color="#6B7280" />
+                </button>
+              </div>
+              <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, background: "white", borderRadius: "0 0 24px 24px" }}>
+                {sortedRegs.map((r, i) => renderRequestCard(r, i === sortedRegs.length - 1))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── REVIEW REQUEST MODAL ─────────────────────────────────────────── */}
         {reviewingRequest && (() => {
@@ -1848,10 +2029,9 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
           const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
           const tagGroups: [string, string[]][] = [["Personality Traits", r.traits], ["Hobbies & Interests", r.hobbies], ["Lifestyle", r.lifestyle]];
           return (
-            <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 500, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={() => setReviewingRequest(null)}>
-              <div style={{ background: "#F7F8FC", borderRadius: "28px 28px 0 0", maxHeight: "88%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
-                <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 2px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "#E5E7EB" }} /></div>
-                <div style={{ background: "white", borderRadius: "28px 28px 0 0", padding: "12px 18px 14px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onClick={() => setReviewingRequest(null)}>
+              <div style={{ background: "#F7F8FC", borderRadius: 24, overflow: "hidden", maxWidth: 420, width: "100%", maxHeight: "85%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
+                <div style={{ background: "white", borderRadius: "24px 24px 0 0", padding: "18px 18px 14px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ width: 44, height: 44, borderRadius: 15, backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <User size={20} color="white" />
                   </div>
@@ -1922,8 +2102,8 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
 
                   {st === "pending" && (
                     <div style={{ display: "flex", gap: 10 }}>
-                      <button onClick={async () => { await handleAccept(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#DCFCE7", color: "#16A34A", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Check size={15} /> {busy ? "Working…" : "Accept"}</button>
-                      <button onClick={async () => { await handleReject(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#FEE2E2", color: "#EF4444", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><X size={15} /> Reject</button>
+                      <button onClick={async () => { await handleAccept(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#DCFCE7", color: "#16A34A", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS }}>{busy ? "Working…" : "Accept"}</button>
+                      <button onClick={async () => { await handleReject(r.id); setReviewingRequest(null); }} disabled={busy} style={{ flex: 1, height: 48, borderRadius: 16, background: "#FEE2E2", color: "#EF4444", fontSize: 13, fontWeight: 800, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1, fontFamily: QS }}>Reject</button>
                     </div>
                   )}
                 </div>
@@ -1931,6 +2111,28 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
             </div>
           );
         })()}
+
+        {/* ── CANCELLED REQUEST NOTICE ──────────────────────────────────────── */}
+        {/* What a "Registration Cancelled" notification tap opens — the request
+            itself no longer shows up above (it's not 'pending' anymore), so this is
+            the real, honest reason instead of the tap landing here with nothing to
+            show. */}
+        {cancelledNotice && (
+          <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }} onClick={() => setCancelledNotice(null)}>
+            <div style={{ background: "white", borderRadius: 28, padding: "28px 24px 24px", width: "100%", maxWidth: 340, boxShadow: "0 24px 60px rgba(0,0,0,.25)" }} onClick={e => e.stopPropagation()}>
+              <div style={{ width: 56, height: 56, borderRadius: 20, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+                <AlertCircle size={24} color="#6B7280" />
+              </div>
+              <h3 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>Request Cancelled</h3>
+              <p style={{ margin: "0 0 18px", fontSize: 12, color: "#6B7280", fontFamily: IN, textAlign: "center" as const, lineHeight: 1.6 }}>
+                <strong>{cancelledNotice.studentName}</strong> cancelled their registration request for {cancelledNotice.roomName ? `${cancelledNotice.roomName}${cancelledNotice.bedLabel ? ` — ${cancelledNotice.bedLabel}` : ""}` : "this room"} at {cancelledNotice.houseName}. There's nothing left to review.
+              </p>
+              <button onClick={() => setCancelledNotice(null)} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
+                Got It
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── VISITOR RECORDS (compact logbook card) ───────────────────────── */}
         {visitorEnabled && (
@@ -2274,13 +2476,27 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
         // remoteActivities carries real, differently-dated history (payments/check-ins/
         // outs from any day), so this filters on the actual timestamp rather than the
         // old literal-"Today"-string check that only ever matched addActivity's own rows.
+        // Anything other than "all"/"today"/"week" is a real "YYYY-MM" month key picked
+        // from the month picker below — this is what makes browsing a previous month
+        // (not just "the last 31 days") possible.
+        const monthKeyOf = (ts: number) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
         const dateOk = (ts: number) => {
           if (activityDateFilter === "all") return true;
           const diffDays = (Date.now() - ts) / 86400000;
           if (activityDateFilter === "today") return dayLabel(ts) === "Today";
           if (activityDateFilter === "week") return diffDays <= 7;
-          return diffDays <= 31; // month
+          return monthKeyOf(ts) === activityDateFilter;
         };
+        const curMonthKey = monthKeyOf(Date.now());
+        // Real months only — every distinct month an activity actually happened in,
+        // plus the current month even if it's still empty (so there's always
+        // something to land on) — sorted most-recent first.
+        const monthOptions = [...new Set([curMonthKey, ...combinedActivities.map(a => monthKeyOf(a.ts))])].sort((a, b) => b.localeCompare(a));
+        const monthLabel = (key: string) => {
+          const [y, m] = key.split("-").map(Number);
+          return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+        };
+        const isMonthFilter = !["all", "today", "week"].includes(activityDateFilter);
         const modalFiltered = combinedActivities.filter(a =>
           (activityFilter === "all" || a.role === activityFilter) && dateOk(a.ts)
         );
@@ -2309,22 +2525,48 @@ function DashboardScreen({ go, role = "landlord", visitorEnabled = false, visito
                   </button>
                 </div>
 
-                {/* Date filter */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                {/* Date filter — the 4th chip opens a real month picker instead of only
+                    ever meaning "the last 31 days", so a previous month is reachable. */}
+                <div style={{ display: "flex", gap: 6, marginBottom: showMonthPicker ? 8 : 12, position: "relative" as const }}>
                   {([
                     { id: "all",   label: "All Time" },
                     { id: "today", label: "Today"    },
                     { id: "week",  label: "This Week" },
-                    { id: "month", label: "This Month"},
                   ] as const).map(d => (
-                    <button key={d.id} onClick={() => setActivityDateFilter(d.id)} style={{ flex: 1, height: 30, padding: "0 6px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: QS,
+                    <button key={d.id} onClick={() => { setActivityDateFilter(d.id); setShowMonthPicker(false); }} style={{ flex: 1, height: 30, padding: "0 6px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: QS,
                       display: "flex", alignItems: "center", justifyContent: "center",
                       background: activityDateFilter === d.id ? "#BF5DC7" : "#F3F4F6",
                       color: activityDateFilter === d.id ? "white" : "#6B7280",
                       boxShadow: activityDateFilter === d.id ? "0 2px 8px rgba(191,93,199,.25)" : "none",
                     }}>{d.label}</button>
                   ))}
+                  <button onClick={() => setShowMonthPicker(v => !v)} style={{ flex: 1, height: 30, padding: "0 6px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: QS,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                    background: isMonthFilter || showMonthPicker ? "#BF5DC7" : "#F3F4F6",
+                    color: isMonthFilter || showMonthPicker ? "white" : "#6B7280",
+                    boxShadow: isMonthFilter || showMonthPicker ? "0 2px 8px rgba(191,93,199,.25)" : "none",
+                  }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                      {isMonthFilter ? monthLabel(activityDateFilter) : "Month"}
+                    </span>
+                    <ChevronDown size={11} />
+                  </button>
                 </div>
+
+                {/* Month picker — every real month with activity, plus the current one,
+                    newest first; picking one filters to that whole calendar month. */}
+                {showMonthPicker && (
+                  <div style={{ marginBottom: 12, background: "#F9FAFB", borderRadius: 14, padding: 8, display: "flex", flexDirection: "column" as const, gap: 4, maxHeight: 160, overflowY: "auto" as const }}>
+                    {monthOptions.map(key => (
+                      <button key={key} onClick={() => { setActivityDateFilter(key); setShowMonthPicker(false); }} style={{ textAlign: "left" as const, padding: "8px 10px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: QS,
+                        background: activityDateFilter === key ? "#F5F0FF" : "transparent",
+                        color: activityDateFilter === key ? "#9772F6" : "#374151",
+                      }}>
+                        {key === curMonthKey ? `${monthLabel(key)} (This Month)` : monthLabel(key)}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {/* Role filter */}
                 <div style={{ display: "flex", gap: 6, paddingBottom: 12, overflowX: "auto", scrollbarWidth: "none" as const }}>
@@ -2530,7 +2772,7 @@ function RoomsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; role?
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
       <div style={{ flexShrink: 0, padding: "52px 20px 20px", backgroundImage: GRAD_H, position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,.07)" }} />
+        <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.07)", filter: "blur(28px)" }} />
         <button onClick={() => go("dashboard")} style={{ background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", padding: 0, marginBottom: 12, display: "flex", alignItems: "center" }}><ChevronLeft size={24} /></button>
         <h1 style={{ color: "white", fontSize: 22, fontWeight: 800, margin: "0 0 4px", fontFamily: QS }}>Room Management</h1>
         <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>{bhName || "—"} · {rooms.length} room{rooms.length === 1 ? "" : "s"}</p>
@@ -2713,17 +2955,17 @@ function PaymentsScreen({ go, role = "landlord" }: { go: (s: Screen) => void; ro
 function HomeVisitScreen({ go }: { go: (s: Screen) => void }) {
   const [checked, setChecked] = useState(false);
   const history = [
-    { action: "Check In", date: "Nov 28, 2024", time: "08:15 AM" },
-    { action: "Check Out", date: "Nov 25, 2024", time: "06:30 PM" },
-    { action: "Check In", date: "Nov 22, 2024", time: "09:00 AM" },
-    { action: "Check Out", date: "Nov 18, 2024", time: "04:45 PM" },
+    { action: "Enter", date: "Nov 28, 2024", time: "08:15 AM" },
+    { action: "Exit", date: "Nov 25, 2024", time: "06:30 PM" },
+    { action: "Enter", date: "Nov 22, 2024", time: "09:00 AM" },
+    { action: "Exit", date: "Nov 18, 2024", time: "04:45 PM" },
   ];
   return (
     <div style={{ height: "100%", overflowY: "auto", scrollbarWidth: "none" as const, background: "#F7F8FC" }}>
       <div style={{ padding: "56px 20px 40px", background: "linear-gradient(160deg,#EC4899 0%,#9772F6 55%,#7549F6 100%)" }}>
         <button onClick={() => go("dashboard")} style={{ background: "none", border: "none", color: "rgba(255,255,255,.8)", cursor: "pointer", marginBottom: 16, padding: 0 }}><ChevronLeft size={24} /></button>
         <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 4px", fontFamily: "'Quicksand',sans-serif" }}>Home Visit Verification</h1>
-        <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>Track your check-ins and check-outs</p>
+        <p style={{ color: "rgba(255,255,255,.7)", fontSize: 13, margin: 0 }}>Track your entries and exits</p>
       </div>
       <div style={{ padding: "0 20px 32px", marginTop: -20 }}>
         <div style={{ background: "white", borderRadius: 24, padding: 20, marginBottom: 16, boxShadow: "0 8px 32px rgba(117,73,246,.12)" }}>
@@ -2732,8 +2974,8 @@ function HomeVisitScreen({ go }: { go: (s: Screen) => void }) {
               {checked ? <CheckCircle size={24} color="#16A34A" /> : <Clock size={24} color="#D97706" />}
             </div>
             <div>
-              <p style={{ fontWeight: 800, color: "#1F2937", fontSize: 15, margin: "0 0 2px", fontFamily: "'Quicksand',sans-serif" }}>{checked ? "Checked In" : "Not Checked In"}</p>
-              <p style={{ fontSize: 12, color: "#6B7280", margin: 0 }}>{checked ? "Currently at the boarding house" : "Tap Check In when you arrive"}</p>
+              <p style={{ fontWeight: 800, color: "#1F2937", fontSize: 15, margin: "0 0 2px", fontFamily: "'Quicksand',sans-serif" }}>{checked ? "Entered" : "Not Entered"}</p>
+              <p style={{ fontSize: 12, color: "#6B7280", margin: 0 }}>{checked ? "Currently at the boarding house" : "Tap Enter when you arrive"}</p>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, borderRadius: 16, background: "#F7F8FC", border: "1px solid #E5E7EB", marginBottom: 16 }}>
@@ -2745,16 +2987,16 @@ function HomeVisitScreen({ go }: { go: (s: Screen) => void }) {
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22C55E" }} />
           </div>
           <div style={{ display: "flex", gap: 12 }}>
-            <button onClick={() => setChecked(true)} style={{ flex: 1, padding: "14px 0", borderRadius: 18, background: !checked ? "linear-gradient(135deg,#22C55E,#16A34A)" : "#F3F4F6", color: !checked ? "white" : "#9CA3AF", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: !checked ? "0 4px 16px rgba(34,197,94,.3)" : "none", fontFamily: "'Quicksand',sans-serif" }}>Check In</button>
-            <button onClick={() => setChecked(false)} style={{ flex: 1, padding: "14px 0", borderRadius: 18, background: checked ? "linear-gradient(135deg,#EF4444,#B91C1C)" : "#F3F4F6", color: checked ? "white" : "#9CA3AF", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: checked ? "0 4px 16px rgba(239,68,68,.3)" : "none", fontFamily: "'Quicksand',sans-serif" }}>Check Out</button>
+            <button onClick={() => setChecked(true)} style={{ flex: 1, padding: "14px 0", borderRadius: 18, background: !checked ? "linear-gradient(135deg,#22C55E,#16A34A)" : "#F3F4F6", color: !checked ? "white" : "#9CA3AF", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: !checked ? "0 4px 16px rgba(34,197,94,.3)" : "none", fontFamily: "'Quicksand',sans-serif" }}>Enter</button>
+            <button onClick={() => setChecked(false)} style={{ flex: 1, padding: "14px 0", borderRadius: 18, background: checked ? "linear-gradient(135deg,#EF4444,#B91C1C)" : "#F3F4F6", color: checked ? "white" : "#9CA3AF", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: checked ? "0 4px 16px rgba(239,68,68,.3)" : "none", fontFamily: "'Quicksand',sans-serif" }}>Exit</button>
           </div>
         </div>
         <h2 style={{ color: "#1F2937", fontSize: 14, fontWeight: 800, margin: "0 0 12px", fontFamily: "'Quicksand',sans-serif" }}>Verification History</h2>
         <div style={{ background: "white", borderRadius: 24, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,.05)" }}>
           {history.map((h, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", borderBottom: i < history.length - 1 ? "1px solid #F9FAFB" : "none" }}>
-              <div style={{ width: 36, height: 36, borderRadius: 12, background: h.action === "Check In" ? "#DCFCE7" : "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {h.action === "Check In" ? <CheckCircle size={15} color="#16A34A" /> : <AlertCircle size={15} color="#DC2626" />}
+              <div style={{ width: 36, height: 36, borderRadius: 12, background: h.action === "Enter" ? "#DCFCE7" : "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {h.action === "Enter" ? <CheckCircle size={15} color="#16A34A" /> : <AlertCircle size={15} color="#DC2626" />}
               </div>
               <div style={{ flex: 1 }}>
                 <p style={{ fontSize: 13, fontWeight: 800, color: "#1F2937", margin: "0 0 2px" }}>{h.action}</p>
@@ -3123,18 +3365,24 @@ type LRoom = {
 
 type LPaymentExtra = { name: string; amount: string; type: "fixed" | "metered"; enabled: boolean; confirmed: boolean };
 
-function PendingVerificationScreen({ req, registrationId, onApproved }: { req: PendingRegInfo; registrationId: string | null; onApproved: () => void }) {
+function PendingVerificationScreen({ req, registrationId, onApproved, onCancelled }: { req: PendingRegInfo; registrationId: string | null; onApproved: () => void; onCancelled: () => void }) {
   const QS = "'Quicksand',sans-serif"; const IN = "'Inter',sans-serif";
   const [checking, setChecking] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [rejected, setRejected] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState("");
 
-  // Poll the real registration row — approval happens for real once a
-  // landlord acts on it (a later phase's UI); this just reflects that state
-  // honestly instead of faking a timer-based approval.
+  // Poll the real registration row — approval/rejection both happen for real once
+  // a landlord acts on it; this just reflects that state honestly instead of the
+  // student being stuck here forever with no way to find out a landlord actually
+  // said no.
   const checkStatus = async () => {
     if (!registrationId) return;
     const { data } = await supabase.from("student_boarding_registrations").select("status").eq("id", registrationId).single();
     if (data?.status === "approved") setApproved(true);
+    if (data?.status === "rejected") setRejected(true);
   };
 
   useEffect(() => {
@@ -3161,10 +3409,37 @@ function PendingVerificationScreen({ req, registrationId, onApproved }: { req: P
     checkStatus().finally(() => setChecking(false));
   };
 
+  // Real cancel (cancel_registration, 0054) — only works while still pending, and
+  // releases a reserved bed back to 'available' exactly like a landlord rejection
+  // already does. The landlord gets notified for real too, same as every other
+  // real notification in this app: a real relatedId (the now-cancelled
+  // registration itself) and a destination that actually lands them somewhere
+  // relevant (their Dashboard, where Reservation Requests already live).
+  const handleCancel = async () => {
+    if (!registrationId) return;
+    setCancelling(true);
+    const res = await cancelRegistration(registrationId);
+    if (res.ok === false) {
+      setCancelling(false);
+      setCancelError(res.error);
+      return;
+    }
+    const bhId = await getRegistrationBoardingHouseId(registrationId);
+    if (bhId) {
+      notifyLandlordOfBoardingHouse(bhId, {
+        type: "boarding-house", title: "Registration Cancelled",
+        description: `${req.studentName} cancelled their boarding house registration request for ${req.houseName}.`,
+        destination: "dashboard", relatedId: registrationId,
+      });
+    }
+    setCancelling(false);
+    onCancelled();
+  };
+
   if (approved) {
     return (
       <div style={{ height: "100%", backgroundImage: GRAD_H, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 28px" }}>
-        <div style={{ position: "absolute", top: -60, right: -60, width: 220, height: 220, borderRadius: "50%", background: "rgba(255,255,255,.07)" }} />
+        <div style={{ position: "absolute", top: -60, right: -60, width: 220, height: 220, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.07)", filter: "blur(38px)" }} />
         <div style={{ position: "relative", textAlign: "center" }}>
           <div style={{ width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,.15)", border: "1px solid rgba(255,255,255,.3)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 26px" }}>
             <CheckCircle size={54} color="white" />
@@ -3175,6 +3450,29 @@ function PendingVerificationScreen({ req, registrationId, onApproved }: { req: P
           </p>
           <button onClick={onApproved} style={{ width: "100%", padding: "16px 0", borderRadius: 24, background: "white", color: "#9772F6", fontSize: 15, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
             Enter DormiTrack
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // The landlord decided while the student was actually sitting here waiting —
+  // fires as soon as the poll picks it up, not only the next time they log in
+  // (that's what the gate-check "Request Not Approved" notice in BoardingReg.tsx
+  // covers instead).
+  if (rejected) {
+    return (
+      <div style={{ height: "100%", background: "#F7F8FC", position: "relative", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 28px" }}>
+        <div style={{ position: "relative", textAlign: "center" }}>
+          <div style={{ width: 100, height: 100, borderRadius: "50%", background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 26px" }}>
+            <AlertCircle size={48} color="#EF4444" />
+          </div>
+          <h1 style={{ color: "#1F2937", fontSize: 22, fontWeight: 800, margin: "0 0 12px", fontFamily: QS }}>Request Not Approved</h1>
+          <p style={{ color: "#6B7280", fontSize: 13, lineHeight: 1.6, margin: "0 0 32px", fontFamily: IN }}>
+            Your registration request for {req.houseName} was not approved by the landlord. You can choose a different boarding house and submit a new request.
+          </p>
+          <button onClick={onCancelled} style={{ width: "100%", padding: "16px 0", borderRadius: 24, backgroundImage: GRAD, color: "white", fontSize: 15, fontWeight: 800, border: "none", cursor: "pointer", fontFamily: QS, boxShadow: "0 8px 24px rgba(151,114,246,.28)" }}>
+            Choose a Boarding House
           </button>
         </div>
       </div>
@@ -3194,10 +3492,6 @@ function PendingVerificationScreen({ req, registrationId, onApproved }: { req: P
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#F7F8FC" }}>
       <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, display: "flex", flexDirection: "column", justifyContent: "center", padding: "70px 24px 32px" }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <div style={{ width: 120, height: 120, borderRadius: "50%", backgroundImage: GRAD, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 22px", boxShadow: "0 12px 32px rgba(151,114,246,.3)", position: "relative" }}>
-            <Hourglass size={52} color="white" />
-            <div style={{ position: "absolute", inset: -6, borderRadius: "50%", border: "3px solid rgba(151,114,246,.2)" }} />
-          </div>
           <h1 style={{ color: "#1F2937", fontSize: 22, fontWeight: 800, margin: "0 0 10px", fontFamily: QS }}>Waiting for Landlord Verification</h1>
           <p style={{ color: "#6B7280", fontSize: 13, lineHeight: 1.6, margin: 0, fontFamily: IN }}>
             Your boarding house registration request has been successfully submitted and is currently awaiting approval from the landlord. You will gain full access to DormiTrack once your registration has been approved.
@@ -3222,11 +3516,35 @@ function PendingVerificationScreen({ req, registrationId, onApproved }: { req: P
           <RefreshCcw size={16} style={{ animation: checking ? "spin 1s linear infinite" : "none" }} />
           {checking ? "Checking status..." : "Refresh Status"}
         </button>
+        <button onClick={() => setShowCancelConfirm(true)} style={{ width: "100%", padding: "15px 0", borderRadius: 20, background: "none", color: "#EF4444", fontSize: 14, fontWeight: 800, border: "1.5px solid #FECACA", cursor: "pointer", fontFamily: QS, marginTop: 10 }}>
+          Cancel Request
+        </button>
+        {cancelError && <p style={{ textAlign: "center", fontSize: 11, color: "#EF4444", marginTop: 10, fontFamily: IN }}>{cancelError}</p>}
         <p style={{ textAlign: "center", fontSize: 11, color: "#9CA3AF", marginTop: 14, fontFamily: IN }}>
           We'll automatically notify you once the landlord responds.
         </p>
       </div>
       <style>{`@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
+
+      {showCancelConfirm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 96, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 28px" }}>
+          <div style={{ background: "white", borderRadius: 24, padding: 24, width: "100%" }}>
+            <div style={{ width: 48, height: 48, borderRadius: 16, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+              <AlertCircle size={22} color="#EF4444" />
+            </div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", margin: "0 0 6px", fontFamily: QS }}>Cancel This Request?</p>
+            <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 18px", fontFamily: IN, lineHeight: 1.5 }}>
+              Are you sure you want to cancel your registration request for <strong>{req.houseName}</strong>? The landlord will be notified, and you'll need to submit a new request to move in there (or anywhere else).
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowCancelConfirm(false)} disabled={cancelling} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "white", color: "#6B7280", fontSize: 13, fontWeight: 800, cursor: cancelling ? "default" : "pointer", fontFamily: QS }}>Keep Waiting</button>
+              <button onClick={handleCancel} disabled={cancelling} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "none", background: "#EF4444", color: "white", fontSize: 13, fontWeight: 800, cursor: cancelling ? "default" : "pointer", opacity: cancelling ? 0.7 : 1, fontFamily: QS }}>
+                {cancelling ? "Cancelling…" : "Yes, Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3253,6 +3571,10 @@ export default function App() {
   // a fresh submission (submitRegistration, below) or rehydrated from the
   // real DB on login/session-restore (see the role-resolution effect below).
   const [pendingInfo, setPendingInfo] = useState<PendingRegInfo | null>(null);
+  // What the boarding-house-selection screen shows once, right after login, when
+  // the student's most recent registration turned out to have been rejected —
+  // set by the gate check in WelcomeLoginScreen, cleared once acknowledged.
+  const [rejectedRegInfo, setRejectedRegInfo] = useState<PendingRegInfo | null>(null);
   // Lifted out of WelcomeLoginScreen so a stray tap on "Forgot Password?" (then Back) doesn't wipe
   // out whatever the user already typed — that screen unmounts/remounts WelcomeLoginScreen, which
   // would otherwise reset any local useState back to empty.
@@ -3427,10 +3749,18 @@ export default function App() {
     go("pendingVerify");
   };
 
+  // Clears the now-cancelled request's state and sends the student straight back
+  // into choosing a boarding house, since they no longer have one at all.
+  const handlePendingCancelled = () => {
+    setPendingInfo(null);
+    setRegistrationId(null);
+    go("boardingReg");
+  };
+
   const render = () => {
     // Access gate: a student with a submitted request cannot use the app until approved
     if (screen === "pendingVerify" && pendingInfo) {
-      return <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} />;
+      return <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} onCancelled={handlePendingCancelled} />;
     }
     switch (screen) {
       case "splash":         return <SplashScreen done={() => go("landing")} />;
@@ -3439,21 +3769,18 @@ export default function App() {
       // (sign-up "already have an account" links, forgot-password's back
       // button, logout from any role's profile) now lands here directly.
       case "landing":
-      case "login":          return <WelcomeLoginScreen go={go} onPendingRegistration={(info, id) => { setPendingInfo(info); setRegistrationId(id); }} onPendingParentLink={resume => setParentLinkResume(resume)} onParentJustLinked={() => setParentJustLinked(true)} email={loginEmail} setEmail={setLoginEmail} pass={loginPass} setPass={setLoginPass} />;
+      case "login":          return <WelcomeLoginScreen go={go} onPendingRegistration={(info, id) => { setPendingInfo(info); setRegistrationId(id); }} onRejectedRegistration={info => setRejectedRegInfo(info)} onPendingParentLink={resume => setParentLinkResume(resume)} onParentJustLinked={() => setParentJustLinked(true)} email={loginEmail} setEmail={setLoginEmail} pass={loginPass} setPass={setLoginPass} />;
       case "roleSelect":     return <RoleSelectScreen go={go} onRole={setRole} />;
       case "signup":         return <SignUpScreen go={go} />;
       case "studentSignup":  return <StudentSignUpScreen go={go} onSignup={p => setStudentProfile(p)} />;
       case "landlordSignup": return <LandlordSignUpScreen go={go} />;
       case "parentSignup":   return <ParentSignUpScreen go={go} onComplete={id => { setParentLinkResume(null); setParentLinkingId(id); go("parentLinking"); }} />;
       case "parentLinking":  return <ParentLinkingScreen go={go} studentId={parentLinkingId} resume={parentLinkResume ?? undefined} />;
-      case "boardingReg":    return <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} />;
-      case "pendingVerify":  return pendingInfo ? <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} /> : <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} />;
+      case "boardingReg":    return <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} rejectionNotice={rejectedRegInfo} onDismissRejectionNotice={() => setRejectedRegInfo(null)} />;
+      case "pendingVerify":  return pendingInfo ? <PendingVerificationScreen req={pendingInfo} registrationId={registrationId} onApproved={() => go("dashboard")} onCancelled={handlePendingCancelled} /> : <BoardingRegistrationScreen go={go} onSubmit={submitRegistration} studentName={studentProfile ? [studentProfile.firstName, studentProfile.middleName ? studentProfile.middleName.charAt(0) + "." : "", studentProfile.lastName].filter(Boolean).join(" ") : ""} submitError={registrationSubmitError} submitErrorIsStaleSession={registrationSessionStale} onLogOut={() => { supabase.auth.signOut(); go("landing"); }} rejectionNotice={rejectedRegInfo} onDismissRejectionNotice={() => setRejectedRegInfo(null)} />;
       case "forgotPassword": return <ForgotPasswordScreen go={go} />;
       case "dashboard":      return role === "admin" ? (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminDashboardScreen go={go} /></div>
-          <BottomNav active="dashboard" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="dashboard" go={go}><AdminDashboardScreen go={go} /></AdminShellFrame>
       ) : role === "landlord" ? <DashboardScreen go={go} role={role} visitorEnabled={visitorEnabled} visitorFields={visitorFields} highlightsEnabled={highlightsEnabled} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /> : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
           <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} pendingDeepLink={pendingDeepLink} onDeepLinkConsumed={() => setPendingDeepLink(null)} /></div>
@@ -3501,10 +3828,7 @@ export default function App() {
         ) : <OccupantsScreen go={go} role={role} />;
       case "rooms":          return <RoomsScreen go={go} role={role} />;
       case "map":            return role === "admin" ? (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminMapScreen go={go} /></div>
-          <BottomNav active="map" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="map" go={go}><AdminMapScreen go={go} /></AdminShellFrame>
       ) : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
           <div style={{ flex:1, overflow:"hidden" }}><StudentMapScreen go={go} /></div>
@@ -3533,32 +3857,24 @@ export default function App() {
             <div style={{ flex:1, overflow:"hidden" }}><ParentProfileScreen go={go} /></div>
             <BottomNav active="profile" go={go} leftTabs={PARENT_LEFT} rightTabs={PARENT_RIGHT} />
           </div>
-        ) : <AdminProfileScreenFull go={go} />;
+        ) : (
+          <AdminShellFrame active="adminProfile" go={go}><AdminProfileScreenFull go={go} /></AdminShellFrame>
+        );
       case "settings":       return <SettingsScreen go={go} />;
       case "adminUsers":     return (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminUsersScreenFull go={go} /></div>
-          <BottomNav active="adminUsers" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="adminUsers" go={go}><AdminUsersScreenFull go={go} /></AdminShellFrame>
       );
       case "adminReports":   return (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminReportsScreenFull go={go} /></div>
-          <BottomNav active="adminReports" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="adminReports" go={go}><AdminReportsScreenFull go={go} /></AdminShellFrame>
       );
       case "adminSystem":    return (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminSystemScreen go={go} /></div>
-          <BottomNav active="adminSystem" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="adminSystem" go={go}><AdminSystemScreen go={go} /></AdminShellFrame>
       );
-      case "adminProfile":   return <AdminProfileScreenFull go={go} />;
+      case "adminProfile":   return (
+        <AdminShellFrame active="adminProfile" go={go}><AdminProfileScreenFull go={go} /></AdminShellFrame>
+      );
       default:               return role === "admin" ? (
-        <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
-          <div style={{ flex:1, overflow:"hidden" }}><AdminDashboardScreen go={go} /></div>
-          <BottomNav active="dashboard" go={go} leftTabs={ADMIN_LEFT} rightTabs={ADMIN_RIGHT} />
-        </div>
+        <AdminShellFrame active="dashboard" go={go}><AdminDashboardScreen go={go} /></AdminShellFrame>
       ) : role === "student" ? (
         <div style={{ height:"100%", display:"flex", flexDirection:"column" as const }}>
           <div style={{ flex:1, overflow:"hidden" }}><StudentHomeScreen go={go} /></div>

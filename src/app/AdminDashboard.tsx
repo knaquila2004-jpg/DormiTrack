@@ -57,8 +57,8 @@ const QUICK_ACTIONS = [
 function buildTodayWidgets(w: AdminTodayWidgets) {
   return [
     { label:"New Users",       val:String(w.newUsers),       color:"#9772F6" },
-    { label:"Check-ins",       val:String(w.checkIns),       color:"#16A34A" },
-    { label:"Check-outs",      val:String(w.checkOuts),      color:"#D97706" },
+    { label:"Entries",         val:String(w.checkIns),       color:"#16A34A" },
+    { label:"Exits",           val:String(w.checkOuts),      color:"#D97706" },
     { label:"Pending Reports", val:String(w.pendingReports), color:"#EF4444" },
     { label:"BH Approvals",    val:String(w.bhApprovals),    color:"#3B82F6" },
   ];
@@ -94,7 +94,7 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
 
       {/* ── App Bar ─────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 20px", position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.05)", pointerEvents:"none" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(28px)", pointerEvents:"none" }}/>
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
             <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:1 }}>Welcome,</p>

@@ -20,8 +20,8 @@ const EMPTY_ANALYTICS: AdminAnalyticsStats = { monthlyCheckins: 0, monthlyChecko
 
 function buildTopStats(s: AdminAnalyticsStats) {
   return [
-    { label:"Monthly Check-ins",  val:String(s.monthlyCheckins),        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn      },
-    { label:"Monthly Check-outs", val:String(s.monthlyCheckouts),       color:"#D97706", bg:"#FEF3C7", Icon:LogOut     },
+    { label:"Monthly Entries",    val:String(s.monthlyCheckins),        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn      },
+    { label:"Monthly Exits",      val:String(s.monthlyCheckouts),       color:"#D97706", bg:"#FEF3C7", Icon:LogOut     },
     { label:"Active Users",       val:String(s.activeUsers),            color:"#9772F6", bg:"#F5F0FF", Icon:Users      },
     { label:"Dorm Occupancy",     val:`${s.dormOccupancyPct}%`,         color:"#3B82F6", bg:"#EFF6FF", Icon:Building2  },
     { label:"Payment Completion", val:`${s.paymentCompletionPct}%`,     color:"#6366F1", bg:"#EEF2FF", Icon:CreditCard },
@@ -161,7 +161,7 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
 
         {/* Header */}
         <div style={{ backgroundImage:GRAD_H, padding:"52px 20px 18px", position:"relative" as const, overflow:"hidden" }}>
-          <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+          <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(24px)" }}/>
           <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
             <div>
               <h1 style={{ margin:"0 0 3px", fontSize:20, fontWeight:800, color:"white", fontFamily:QS }}>Reports & Analytics</h1>
@@ -212,12 +212,12 @@ export function AdminReportsScreen({ go }: { go:(s:string)=>void }) {
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
               <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Daily Student Activity</p>
               <div style={{ display:"flex", gap:12 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:4 }}><div style={{ width:8, height:8, borderRadius:2, backgroundImage:GRAD }}/><span style={{ fontSize:9, color:"#6B7280", fontFamily:IN }}>Check-in</span></div>
-                <div style={{ display:"flex", alignItems:"center", gap:4 }}><div style={{ width:8, height:8, borderRadius:2, background:"#D97706" }}/><span style={{ fontSize:9, color:"#6B7280", fontFamily:IN }}>Check-out</span></div>
+                <div style={{ display:"flex", alignItems:"center", gap:4 }}><div style={{ width:8, height:8, borderRadius:2, backgroundImage:GRAD }}/><span style={{ fontSize:9, color:"#6B7280", fontFamily:IN }}>Entry</span></div>
+                <div style={{ display:"flex", alignItems:"center", gap:4 }}><div style={{ width:8, height:8, borderRadius:2, background:"#D97706" }}/><span style={{ fontSize:9, color:"#6B7280", fontFamily:IN }}>Exit</span></div>
               </div>
             </div>
             {daily.length === 0 ? (
-              <p style={{ textAlign:"center" as const, fontSize:11, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>No check-in/out activity in this range yet.</p>
+              <p style={{ textAlign:"center" as const, fontSize:11, color:"#9CA3AF", fontFamily:IN, padding:"20px 0" }}>No Enter/Exit activity in this range yet.</p>
             ) : (<>
               <BarChart data={daily} maxVal={MAX_VAL}/>
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>

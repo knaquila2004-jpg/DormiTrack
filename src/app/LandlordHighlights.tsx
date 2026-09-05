@@ -286,24 +286,29 @@ function DeleteConfirm({ title, onConfirm, onCancel }: { title:string; onConfirm
 
 // ── Highlight Card ────────────────────────────────────────────────────────────
 
-function HighlightCard({ h, onEdit, onDelete, showDesc=true }: { h:Highlight; onEdit:()=>void; onDelete:()=>void; showDesc?:boolean }) {
+function HighlightCard({ h, onEdit, onDelete, showDesc=true, overdue=false }: { h:Highlight; onEdit:()=>void; onDelete:()=>void; showDesc?:boolean; overdue?:boolean }) {
   return (
     // Whole card opens the edit form — same tap-anywhere-to-open pattern every other
     // list card in the app uses (reports, requests, payments). The small icon buttons
     // still work as shortcuts; each stops propagation so tapping Delete doesn't also
     // fire this and pop the edit form open behind/alongside the delete confirm.
-    <div onClick={onEdit} style={{ background:"white", borderRadius:18, padding:"13px 14px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", borderLeft:"4px solid #9772F6", cursor:"pointer" }}>
+    // Once an announcement's date has passed it's locked — greyed out and no longer
+    // editable (tap and the Edit icon both do nothing); Delete still works, since
+    // clearing out a stale one is still a reasonable thing to do.
+    <div onClick={overdue ? undefined : onEdit} style={{ background: overdue ? "#F3F4F6" : "white", borderRadius:18, padding:"13px 14px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", borderLeft: overdue ? "4px solid #D1D5DB" : "4px solid #9772F6", cursor: overdue ? "default" : "pointer" }}>
       <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
-        <div style={{ width:38, height:38, borderRadius:13, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-          <Megaphone size={17} color="#9772F6"/>
+        <div style={{ width:38, height:38, borderRadius:13, background: overdue ? "#E5E7EB" : "#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+          <Megaphone size={17} color={overdue ? "#9CA3AF" : "#9772F6"}/>
         </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:6, marginBottom:3 }}>
-            <p style={{ fontSize:13, fontWeight:800, color:"#1F2937", margin:0, fontFamily:QS, lineHeight:1.3 }}>{h.title}</p>
+            <p style={{ fontSize:13, fontWeight:800, color: overdue ? "#9CA3AF" : "#1F2937", margin:0, fontFamily:QS, lineHeight:1.3 }}>{h.title}</p>
             <div style={{ display:"flex", gap:4, flexShrink:0 }}>
-              <button onClick={e=>{e.stopPropagation();onEdit();}} style={{ width:27, height:27, borderRadius:8, background:"#F5F0FF", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Edit2 size={11} color="#9772F6"/>
-              </button>
+              {!overdue && (
+                <button onClick={e=>{e.stopPropagation();onEdit();}} style={{ width:27, height:27, borderRadius:8, background:"#F5F0FF", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <Edit2 size={11} color="#9772F6"/>
+                </button>
+              )}
               <button onClick={e=>{e.stopPropagation();onDelete();}} style={{ width:27, height:27, borderRadius:8, background:"#FEE2E2", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <Trash2 size={11} color="#EF4444"/>
               </button>
@@ -456,16 +461,19 @@ export function HighlightsFullModal({ highlights, today, onClose, onAdd, onEdit,
               </div>
             )
           ) : groups ? (
-            Object.entries(groups).map(([d, items])=>(
+            Object.entries(groups).map(([d, items])=>{
+              const isOverdue = d < today;
+              return (
               <div key={d} style={{ marginBottom:16 }}>
-                <p style={{ fontSize:11, fontWeight:800, color:"#9772F6", fontFamily:QS, margin:"0 0 8px", letterSpacing:0.3 }}>
+                <p style={{ fontSize:11, fontWeight:800, color: isOverdue ? "#9CA3AF" : "#9772F6", fontFamily:QS, margin:"0 0 8px", letterSpacing:0.3 }}>
                   {d===today ? "Today" : fmtDayName(d)} — {fmtDate(d)}
                 </p>
                 <div style={{ display:"flex", flexDirection:"column" as const, gap:8 }}>
-                  {items.map(h=><HighlightCard key={h.id} h={h} onEdit={()=>{setEditing(h);setShowForm(true);}} onDelete={()=>setDeleting(h)}/>)}
+                  {items.map(h=><HighlightCard key={h.id} h={h} overdue={isOverdue} onEdit={()=>{setEditing(h);setShowForm(true);}} onDelete={()=>setDeleting(h)}/>)}
                 </div>
               </div>
-            ))
+              );
+            })
           ) : (
             <div style={{ display:"flex", flexDirection:"column" as const, gap:8 }}>
               {list.map(h=><HighlightCard key={h.id} h={h} onEdit={()=>{setEditing(h);setShowForm(true);}} onDelete={()=>setDeleting(h)}/>)}
@@ -495,7 +503,6 @@ export function HighlightsDashboardSection({ highlights, today, onAdd, onEdit, o
   const [deleting, setDeleting] = useState<Highlight|null>(null);
 
   const todayList = useMemo(()=>[...highlights.filter(h=>h.date===today)].sort((a,b)=>(a.time??"").localeCompare(b.time??"")), [highlights, today]);
-  const overdue   = useMemo(()=>highlights.filter(h=>h.date && h.date<today).sort((a,b)=>b.date!.localeCompare(a.date!)), [highlights, today]);
   const upcomingList = useMemo(()=>highlights.filter(h=>h.date && h.date>today).sort((a,b)=>a.date!.localeCompare(b.date!)||(a.time??"").localeCompare(b.time??"")), [highlights, today]);
   // General (undated) announcements — never caught by todayList/overdue/upcoming
   // above (all date-based), so without this they'd be invisible on the dashboard.
@@ -528,18 +535,6 @@ export function HighlightsDashboardSection({ highlights, today, onAdd, onEdit, o
           </div>
           <button onClick={()=>setShowFull(true)} style={{ fontSize:11, fontWeight:700, color:"#9772F6", background:"none", border:"none", cursor:"pointer", fontFamily:QS, padding:0, marginTop:3 }}>View All</button>
         </div>
-
-        {/* Overdue banner */}
-        {overdue.length > 0 && (
-          <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:"#FEF2F2", borderRadius:14, border:"1px solid #FEE2E2", marginBottom:10 }}>
-            <AlertCircle size={15} color="#EF4444"/>
-            <div style={{ flex:1 }}>
-              <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#EF4444", fontFamily:QS }}>Overdue: {overdue.length} announcement{overdue.length>1?"s":""}</p>
-              <p style={{ margin:0, fontSize:10, color:"#EF4444", fontFamily:IN, opacity:.75 }}>{overdue[0].title}{overdue.length>1?` +${overdue.length-1} more`:""}</p>
-            </div>
-            <button onClick={()=>setShowFull(true)} style={{ fontSize:10, color:"#EF4444", fontWeight:700, background:"none", border:"none", cursor:"pointer", fontFamily:QS }}>View →</button>
-          </div>
-        )}
 
         {/* Today's announcements — each one is its own separate white card (not rows
             inside one shared card), wide/rectangular rather than square, in a

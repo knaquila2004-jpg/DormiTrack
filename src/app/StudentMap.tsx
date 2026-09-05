@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Navigation, Home, Building2, Layers,
+  Navigation, Home, Layers,
   LocateFixed, ZoomIn, ZoomOut, CheckCircle, XCircle, AlertCircle,
   LogIn, LogOut, Wifi, Shield, ChevronDown, ChevronUp,
   Radio, Check, X, Crosshair, RefreshCw, Eye, Maximize2,
@@ -125,7 +125,7 @@ function toActivityLog(rec: CheckInOutRecord): ActivityLog {
   const isIn = rec.type === "checkin";
   return {
     id: rec.id,
-    msg: `${isIn ? "Checked In" : "Checked Out"} — ${fmtDate(new Date(rec.occurredAt))}, ${fmtTime(new Date(rec.occurredAt))}`,
+    msg: `${isIn ? "Entered" : "Exited"} — ${fmtDate(new Date(rec.occurredAt))}, ${fmtTime(new Date(rec.occurredAt))}`,
     time: timeAgoLabel(rec.occurredAt),
     color: isIn ? "#16A34A" : "#D97706", bg: isIn ? "#DCFCE7" : "#FEF3C7",
     Icon: isIn ? LogIn : LogOut,
@@ -144,12 +144,8 @@ function SuccessModal({ type, time, onClose, studentData: STUDENT_DATA, bhData: 
          onClick={onClose}>
       <div style={{ background:"white", borderRadius:28, padding:"32px 24px", width:"100%", maxWidth:340, textAlign:"center" as const, boxShadow:"0 24px 80px rgba(0,0,0,.3)" }}
            onClick={e=>e.stopPropagation()}>
-        {/* Animated check circle */}
-        <div style={{ width:80, height:80, borderRadius:"50%", backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 20px", boxShadow:"0 8px 32px rgba(151,114,246,.4)" }}>
-          {isIn ? <LogIn size={36} color="white"/> : <LogOut size={36} color="white"/>}
-        </div>
         <h2 style={{ margin:"0 0 8px", fontSize:20, fontWeight:800, color:"#1F2937", fontFamily:QS }}>
-          {isIn ? "Successfully Checked In!" : "Successfully Checked Out!"}
+          {isIn ? "Successfully Entered!" : "Successfully Exited!"}
         </h2>
         <p style={{ margin:"0 0 20px", fontSize:13, color:"#6B7280", fontFamily:IN, lineHeight:1.6 }}>
           {isIn
@@ -289,7 +285,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
   // check-in/check-out decision in doAction always takes its own brand-new fix rather than
   // trusting this potentially-stale one.
   const [myPos,     setMyPos]     = useState<GeoFix | null>(null);
-  const [myAddress, setMyAddress] = useState<string | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError,  setGeoError]  = useState<string | null>(null);
   // Set only in response to an actual Check In/Check Out tap — the reason that specific
@@ -303,8 +298,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
     setGeoLoading(false);
     if (!pos) { setGeoError("Location access is off or unavailable. Enable it in your browser/device settings."); setMyPos(null); return; }
     setMyPos(pos);
-    // Fire-and-forget — the address is a nice-to-have for the status card, never a blocker.
-    reverseGeocode(pos).then(r => setMyAddress(r.address || null)).catch(() => {});
   };
   useEffect(() => {
     refreshLocation();
@@ -364,8 +357,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
 
   const bhStatusColor  = attendanceStatus === "checked-in"  ? "#16A34A"
     : attendanceStatus === "checked-out" ? "#6B7280" : "#D97706";
-  const bhStatusBg     = attendanceStatus === "checked-in"  ? "#DCFCE7"
-    : attendanceStatus === "checked-out" ? "#F3F4F6" : "#FEF3C7";
 
   async function doAction(type: "checkin"|"checkout") {
     if (!BH_DATA.id || isLoading) return;
@@ -397,7 +388,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
     // real position (dist - accuracy) would still fall outside it.
     if (dist > radiusMeters + accuracy) {
       setIsLoading(false);
-      setCheckInError(`You are not within the boarding house vicinity — you're ${dist}m away (±${accuracy}m accuracy), but must be within ${radiusMeters}m to check ${type === "checkin" ? "in" : "out"}.`);
+      setCheckInError(`You are not within the boarding house vicinity — you're ${dist}m away (±${accuracy}m accuracy), but must be within ${radiusMeters}m to ${type === "checkin" ? "enter" : "exit"}.`);
       return;
     }
     if (!hasApprovedBH) { setIsLoading(false); return; }
@@ -405,7 +396,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
     // Best-effort human-readable address for the record — never blocks the check-in/out
     // itself if the reverse-geocode lookup fails or is slow.
     const geocoded = await reverseGeocode(pos).catch(() => null);
-    if (geocoded?.address) setMyAddress(geocoded.address);
 
     const res = await recordCheckInOut({
       type, boardingHouseId: BH_DATA.id,
@@ -419,7 +409,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
     setSuccessModal(type);
     refreshHistory();
 
-    const label = type === "checkin" ? "Check-In" : "Check-Out";
+    const label = type === "checkin" ? "Entry" : "Exit";
     const notifType = type === "checkin" ? "check-in" : "check-out" as const;
     if (myUserId) {
       addNotification({
@@ -432,7 +422,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
     // keys its occupant list by student id, which is what it needs to open the right profile.
     notifyLandlordOfBoardingHouse(BH_DATA.id, {
       type: notifType, title: `Student ${label}`,
-      description: `${STUDENT_DATA.name} ${type === "checkin" ? "checked in" : "checked out"} at ${t}.`,
+      description: `${STUDENT_DATA.name} ${type === "checkin" ? "entered" : "exited"} at ${t}.`,
       destination: "occupants", relatedId: myUserId ?? undefined,
     });
   }
@@ -460,7 +450,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 18px", position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(28px)" }}/>
         <div>
           <h1 style={{ margin:"0 0 3px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Map</h1>
           <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, maxWidth:260, lineHeight:1.5 }}>
@@ -503,39 +493,6 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
             </button>
           </div>
 
-          {/* ── Current Location Status ────────────────────────────────────── */}
-          <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 20px rgba(0,0,0,.07)", marginBottom:14 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-              <div style={{ width:36, height:36, borderRadius:12, backgroundImage:GRAD, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Crosshair size={17} color="white"/>
-              </div>
-              <div>
-                <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Current Location</p>
-                <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>Real-time GPS tracking</p>
-              </div>
-              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:5, background:gpsActive?"#DCFCE7":"#FEE2E2", borderRadius:20, padding:"4px 10px" }}>
-                <div style={{ width:6, height:6, borderRadius:"50%", background:gpsActive?"#16A34A":"#EF4444" }}/>
-                <span style={{ fontSize:10, fontWeight:800, color:gpsActive?"#16A34A":"#EF4444", fontFamily:QS }}>{gpsActive?"GPS Active":"GPS Off"}</span>
-              </div>
-            </div>
-            {[
-              { label:"Current Address",       val: myAddress ?? (geoLoading ? "Locating…" : gpsActive ? "Address unavailable" : "—") },
-              { label:"GPS Accuracy",          val: gpsActive && myPos ? `±${Math.round(myPos.accuracyMeters)} meters` : "—" },
-              { label:"Distance to BH",        val: distanceMeters != null ? `${distanceMeters} meters` : "—" },
-              { label:"Verification Radius",   val: distanceMeters == null ? "—" : withinRadius ? `Within Allowed Area (${radiusMeters}m)` : `Outside Area (${radiusMeters}m)` },
-            ].map(({ label, val }, i, arr)=>(
-              <div key={label} style={{ padding:"9px 0", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
-                <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{label}</p>
-                <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, fontFamily:IN, color:
-                  label==="Verification Radius" ? (withinRadius?"#16A34A":"#EF4444")
-                  : label==="GPS Accuracy" && !gpsActive ? "#9CA3AF"
-                  : label==="GPS Accuracy" && myPos && myPos.accuracyMeters > radiusMeters ? "#D97706"
-                  : "#1F2937"
-                }}>{val}</p>
-              </div>
-            ))}
-          </div>
-
           {/* ── Low-accuracy notice ──────────────────────────────────────────
               Shown whenever the device's own reported error margin is wider than the whole
               geofence — the exact situation that makes an honestly-placed pin look "wrong"
@@ -550,45 +507,18 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               <p style={{ margin:0, fontSize:11, color:"#92400E", fontFamily:IN, lineHeight:1.55 }}>
                 {tooImprecise ? (
                   <>Your device currently reports a location accuracy of only ±{accuracyMeters}m — too wide to reliably
-                  verify against the {radiusMeters}m check-in area, so check-in/out is disabled for now. This is a
+                  verify against the {radiusMeters}m entry area, so Enter/Exit is disabled for now. This is a
                   device/GPS limitation, not a map error. Try moving outdoors or near a window, tapping Refresh
                   again, or using a phone instead of a desktop browser.</>
                 ) : (
                   <>Your device reports a location accuracy of ±{accuracyMeters}m — wider than the {radiusMeters}m
-                  check-in area, which is why your pin can look off (even landing near a nearby road) even while
-                  you're actually inside. Check-in still works — it allows for this margin — but a tighter fix
+                  entry area, which is why your pin can look off (even landing near a nearby road) even while
+                  you're actually inside. Entering and exiting still work — it allows for this margin — but a tighter fix
                   (move outdoors/near a window, or tap Refresh) will make the map itself more accurate.</>
                 )}
               </p>
             </div>
           )}
-
-          {/* ── Boarding House Status ──────────────────────────────────────── */}
-          <div style={{ background:"white", borderRadius:22, padding:"18px", boxShadow:"0 4px 20px rgba(0,0,0,.07)", marginBottom:14 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-              <div style={{ width:36, height:36, borderRadius:12, background:"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Building2 size={17} color="#9772F6"/>
-              </div>
-              <div style={{ flex:1 }}>
-                <p style={{ margin:0, fontSize:14, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Boarding House Status</p>
-                <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{BH_DATA.name}</p>
-              </div>
-              <span style={{ fontSize:10, fontWeight:800, padding:"4px 12px", borderRadius:20, background:bhStatusBg, color:bhStatusColor, fontFamily:QS }}>{
-                attendanceStatus === "checked-in" ? "Inside" : attendanceStatus === "checked-out" ? "Outside" : "Pending"
-              }</span>
-            </div>
-            {[
-              { label:"Boarding House", val:BH_DATA.name           },
-              { label:"Assigned Room",  val:ROOM_DATA.name         },
-              { label:"Assigned Bed",   val:ROOM_DATA.bed          },
-              { label:"Current Status", val:bhStatusLabel          },
-            ].map(({ label, val }, i, arr)=>(
-              <div key={label} style={{ padding:"9px 0", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
-                <p style={{ margin:0, fontSize:9, color:"#9CA3AF", fontWeight:700, fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>{label}</p>
-                <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, fontFamily:IN, color:label==="Current Status"?bhStatusColor:"#1F2937" }}>{val}</p>
-              </div>
-            ))}
-          </div>
 
           {/* ── CHECK-IN / CHECK-OUT CARD (PRIMARY FEATURE) ───────────────── */}
           <div style={{ background:"white", borderRadius:24, boxShadow:"0 8px 36px rgba(151,114,246,.18)", marginBottom:14, overflow:"hidden", border:"1.5px solid rgba(151,114,246,.1)" }}>
@@ -624,9 +554,7 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
               <p style={{ margin:"0 0 6px", fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS }}>Verification Requirements</p>
               <div style={{ marginBottom:16 }}>
                 <ReqRow label="GPS is enabled"                              ok={gpsActive}       />
-                <ReqRow label="Location accurate enough to verify"         ok={!tooImprecise}   />
                 <ReqRow label={`Within verification radius (${radiusMeters}m)`} ok={withinRadius}  />
-                <ReqRow label="Approved boarding house"                     ok={hasApprovedBH} />
                 <ReqRow label="Internet connection"                         ok={hasInternet}   />
               </div>
 
@@ -643,45 +571,29 @@ export function StudentMapScreen({ go }: { go:(s:string)=>void }) {
                       {checkInError
                         ?? (!gpsActive    ? "GPS is turned off. Please enable location services."
                           : tooImprecise  ? `Your location isn't accurate enough to verify (±${accuracyMeters}m). Move outdoors or near a window, or try a phone instead of a desktop browser.`
-                          : !withinRadius ? "You are not within the boarding house vicinity. Move closer to check in."
+                          : !withinRadius ? "You are not within the boarding house vicinity. Move closer to enter."
                           : "One or more requirements are not met.")}
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* Action button */}
-              {attendanceStatus === "not-checked-in" && (
+              {/* Action button — a student can enter/exit multiple times a day (errands,
+                  class schedules, etc.), so "checked-out" is treated the same as
+                  "not-checked-in": the Enter button reappears rather than a one-time
+                  "done for today" state. */}
+              {attendanceStatus !== "checked-in" && (
                 <button onClick={()=>doAction("checkin")} disabled={!allReqsMet}
-                  style={{ width:"100%", height:56, borderRadius:24, background:allReqsMet?"linear-gradient(135deg,#16A34A,#15803D)":"#F3F4F6", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", gap:10, boxShadow:allReqsMet?"0 8px 28px rgba(22,163,74,.38)":"none", transition:"all .2s" }}>
-                  <div style={{ width:28, height:28, borderRadius:10, background:allReqsMet?"rgba(255,255,255,.2)":"rgba(0,0,0,.08)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <LogIn size={15} color={allReqsMet?"white":"#9CA3AF"}/>
-                  </div>
-                  <div style={{ textAlign:"left" as const }}>
-                    <p style={{ margin:0, fontSize:15, fontWeight:800, color:allReqsMet?"white":"#9CA3AF", fontFamily:QS, lineHeight:1 }}>Check In</p>
-                    <p style={{ margin:"2px 0 0", fontSize:10, color:allReqsMet?"rgba(255,255,255,.75)":"#9CA3AF", fontFamily:IN }}>I have arrived at my boarding house.</p>
-                  </div>
+                  style={{ width:"100%", height:44, borderRadius:16, background:allReqsMet?"linear-gradient(135deg,#16A34A,#15803D)":"#F3F4F6", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:allReqsMet?"0 8px 28px rgba(22,163,74,.38)":"none", transition:"all .2s" }}>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:allReqsMet?"white":"#9CA3AF", fontFamily:QS, lineHeight:1 }}>Enter</p>
                 </button>
               )}
 
               {attendanceStatus === "checked-in" && (
                 <button onClick={()=>doAction("checkout")} disabled={!allReqsMet}
-                  style={{ width:"100%", height:56, borderRadius:24, background:allReqsMet?"none":"#F3F4F6", backgroundImage:allReqsMet?"linear-gradient(135deg,#D97706,#B45309)":"none", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", gap:10, boxShadow:allReqsMet?"0 8px 28px rgba(217,119,6,.35)":"none", transition:"all .2s" }}>
-                  <div style={{ width:28, height:28, borderRadius:10, background:allReqsMet?"rgba(255,255,255,.2)":"rgba(0,0,0,.08)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <LogOut size={15} color={allReqsMet?"white":"#9CA3AF"}/>
-                  </div>
-                  <div style={{ textAlign:"left" as const }}>
-                    <p style={{ margin:0, fontSize:15, fontWeight:800, color:allReqsMet?"white":"#9CA3AF", fontFamily:QS, lineHeight:1 }}>Check Out</p>
-                    <p style={{ margin:"2px 0 0", fontSize:10, color:allReqsMet?"rgba(255,255,255,.75)":"#9CA3AF", fontFamily:IN }}>I am leaving the boarding house.</p>
-                  </div>
+                  style={{ width:"100%", height:44, borderRadius:16, background:allReqsMet?"none":"#F3F4F6", backgroundImage:allReqsMet?"linear-gradient(135deg,#D97706,#B45309)":"none", border:"none", cursor:allReqsMet?"pointer":"not-allowed", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:allReqsMet?"0 8px 28px rgba(217,119,6,.35)":"none", transition:"all .2s" }}>
+                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:allReqsMet?"white":"#9CA3AF", fontFamily:QS, lineHeight:1 }}>Exit</p>
                 </button>
-              )}
-
-              {attendanceStatus === "checked-out" && (
-                <div style={{ width:"100%", height:56, borderRadius:24, background:"#F9FAFB", border:"2px dashed #E5E7EB", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-                  <CheckCircle size={18} color="#16A34A"/>
-                  <p style={{ margin:0, fontSize:13, fontWeight:800, color:"#16A34A", fontFamily:QS }}>Attendance Complete for Today</p>
-                </div>
               )}
             </div>
           </div>

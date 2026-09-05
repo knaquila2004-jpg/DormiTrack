@@ -12,6 +12,7 @@ import { useUnreadChatCount } from "./chatStore";
 import { getMyParentProfile, getMyLinkedStudentData, MyParentProfile, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
 import { getCheckInOutHistoryForStudent, CheckInOutRecord } from "./checkInOutStore";
 import { getLinkedStudentBills, StudentBilling } from "./paymentStore";
+import { getInactivityNotice, InactivityNotice } from "./inactivityStore";
 
 const EMPTY_PARENT: MyParentProfile = { name: "—", firstName: "—", relationship: "—", contact: "—", email: "—", address: "—", photo: null };
 const EMPTY_STUDENT: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
@@ -36,8 +37,8 @@ function buildRecentActivity(checkins: CheckInOutRecord[], periods: StudentBilli
   const items: ActivityItem[] = [];
   for (const c of checkins) {
     items.push(c.type === "checkin"
-      ? { id:`ci-${c.id}`, Icon:LogIn,  color:"#16A34A", bg:"#DCFCE7", msg:"Student checked into the boarding house.",  ts:new Date(c.occurredAt).getTime() }
-      : { id:`co-${c.id}`, Icon:LogOut, color:"#6B7280", bg:"#F3F4F6", msg:"Student checked out of the boarding house.", ts:new Date(c.occurredAt).getTime() });
+      ? { id:`ci-${c.id}`, Icon:LogIn,  color:"#16A34A", bg:"#DCFCE7", msg:"Student entered the boarding house.",  ts:new Date(c.occurredAt).getTime() }
+      : { id:`co-${c.id}`, Icon:LogOut, color:"#6B7280", bg:"#F3F4F6", msg:"Student exited the boarding house.", ts:new Date(c.occurredAt).getTime() });
   }
   for (const p of periods) for (const tx of p.transactions) {
     const who = tx.submittedByRole === "parent" ? "You" : "Student";
@@ -132,6 +133,19 @@ export function ParentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
     return () => clearTimeout(t);
   }, [highlightedAnnouncementId]);
 
+  // Opened from an "inactivity" notification tap — the landlord's Occupants page
+  // detected no real check-in/out from the linked student for 24+ hours and logged
+  // a real inactivity_notices row (0052); fetch that specific one and show it.
+  const [viewingInactivityNotice, setViewingInactivityNotice] = useState<InactivityNotice | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "inactivity" || !pendingDeepLink.relatedId) return;
+    const id = pendingDeepLink.relatedId;
+    getInactivityNotice(id).then(row => {
+      if (row) setViewingInactivityNotice(row);
+      onDeepLinkConsumed?.();
+    });
+  }, [pendingDeepLink, onDeepLinkConsumed]);
+
   const PARENT_DATA = parentProfile;
   const STUDENT_DATA = studentProfile;
   const BH_DATA = assignment.bh;
@@ -146,7 +160,7 @@ export function ParentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 24px", position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.05)" }}/>
+        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(32px)" }}/>
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
             <p style={{ margin:"0 0 2px", fontSize:12, color:"rgba(255,255,255,.65)", fontFamily:IN }}>{getGreeting()},</p>
@@ -412,6 +426,50 @@ export function ParentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
           </div>
         </div>
       )}
+
+      {viewingInactivityNotice && <InactivityDetailModal notice={viewingInactivityNotice} studentName={studentProfile.firstName} onClose={()=>setViewingInactivityNotice(null)}/>}
+    </div>
+  );
+}
+
+// ── Inactivity Notice Detail Modal ───────────────────────────────────────────
+// What an "inactivity" notification tap opens for a linked parent — the actual
+// real inactivity_notices row (LandlordOccupants.tsx detects this from real
+// check-in/out history, 0052), not just a generic landing on the dashboard.
+
+function InactivityDetailModal({ notice, studentName, onClose }: { notice: InactivityNotice; studentName: string; onClose: () => void }) {
+  const lastActivityLabel = new Date(notice.lastActivityAt).toLocaleDateString("en-US", { month:"long", day:"numeric", year:"numeric" });
+  const dayWord = `${notice.daysInactive} day${notice.daysInactive === 1 ? "" : "s"}`;
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }} onClick={onClose}>
+      <div style={{ background:"white", borderRadius:28, padding:"28px 24px 24px", width:"100%", maxWidth:340, boxShadow:"0 24px 60px rgba(0,0,0,.25)" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ width:56, height:56, borderRadius:20, background:"#FEF2F2", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <AlertCircle size={24} color="#F87171"/>
+        </div>
+        <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"center" as const }}>{studentName} Has Gone Quiet</h3>
+        <p style={{ margin:"0 0 18px", fontSize:11, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>Their landlord was notified too</p>
+
+        <div style={{ background:"#FEF2F2", borderRadius:14, padding:"12px 14px", marginBottom:18, textAlign:"center" as const }}>
+          <p style={{ margin:0, fontSize:12, color:"#7F1D1D", fontFamily:IN, lineHeight:1.6 }}>
+            No Enter/Exit activity in <strong>{dayWord}</strong> — since {lastActivityLabel}.
+          </p>
+        </div>
+
+        {notice.response ? (
+          <div style={{ background:"#F0FDF4", borderRadius:14, padding:"12px 14px", marginBottom:18 }}>
+            <p style={{ margin:"0 0 4px", fontSize:10, fontWeight:800, color:"#15803D", fontFamily:QS, textTransform:"uppercase" as const }}>{studentName}'s Response</p>
+            <p style={{ margin:0, fontSize:12, color:"#166534", fontFamily:IN, lineHeight:1.6 }}>"{notice.response}"</p>
+          </div>
+        ) : (
+          <p style={{ margin:"0 0 18px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.6, textAlign:"center" as const }}>
+            Waiting for {studentName} to respond. You may want to check in with them directly.
+          </p>
+        )}
+
+        <button onClick={onClose} style={{ width:"100%", height:48, borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", fontSize:14, fontWeight:800, color:"white", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>
+          Got It
+        </button>
+      </div>
     </div>
   );
 }

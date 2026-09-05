@@ -491,7 +491,7 @@ export function BoardingHouseLocationPicker({
         <div style={{ marginTop: 10, borderRadius: 16, background: "#F9FAFB", padding: "12px 14px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
             <p style={{ fontSize: 11.5, fontWeight: 800, color: "#374151", fontFamily: QS, margin: 0, display: "flex", alignItems: "center", gap: 5 }}>
-              <MapPin size={12} /> Check-In/Check-Out Radius
+              <MapPin size={12} /> Enter/Exit Radius
             </p>
             <span style={{ fontSize: 12, fontWeight: 800, color: "#9772F6", fontFamily: QS }}>{radiusMeters}m</span>
           </div>
@@ -505,7 +505,7 @@ export function BoardingHouseLocationPicker({
             style={{ width: "100%", accentColor: "#9772F6", cursor: "pointer" }}
           />
           <p style={{ fontSize: 10.5, color: "#9CA3AF", fontFamily: IN, margin: "6px 0 0", lineHeight: 1.5 }}>
-            Students can only check in or check out while within this distance of the pin — shown
+            Students can only enter or exit while within this distance of the pin — shown
             as the circle on the map above. Keep it tight enough to confirm they're actually on-site,
             but wide enough to allow for normal GPS drift.
           </p>

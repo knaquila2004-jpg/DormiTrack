@@ -23,6 +23,10 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [creating, setCreating] = useState(false);
+  // "Already have an account? Sign In" is an easy accidental tap mid-signup — this
+  // confirms before actually navigating away, instead of silently discarding
+  // whatever's been filled in so far with no way back.
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   // Separate from per-field `errors` — a signup failure (network issue, duplicate account, a
   // transient Supabase error, etc.) isn't tied to any single visible field, and can happen while
   // the user is sitting on the Student step, which never rendered an `errors.email`-style message
@@ -58,6 +62,13 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
   const [confirmPassword, setConfirmPw] = useState("");
   const [showPass, setShowPass]         = useState(false);
   const [showConfirm, setShowConfirm]   = useState(false);
+
+  // Only prompts to discard if the form actually has something in it — a
+  // genuinely blank form has nothing to lose, so tapping straight through to
+  // Sign In there just works.
+  const isDirty = !!(firstName || middleName || lastName || relation || specifyRelation || sex || contact || address
+    || studentId || email || password || confirmPassword);
+  const handleLoginTap = () => { if (isDirty) setShowDiscardConfirm(true); else go("login"); };
 
   // ── Styles (match StudentSignUpScreen exactly) ────────────────────────────
   const inputStyle = (hasErr: boolean): React.CSSProperties => ({
@@ -466,10 +477,28 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
 
         <p style={{ textAlign: "center", fontSize: 12, color: "#9CA3AF", marginTop: 16, fontFamily: IN }}>
           Already have an account?{" "}
-          <button onClick={() => go("login")} style={{ background: "none", border: "none", cursor: "pointer", color: "#9772F6", fontWeight: 700, fontSize: 12, fontFamily: QS }}>Sign In</button>
+          <button onClick={handleLoginTap} style={{ background: "none", border: "none", cursor: "pointer", color: "#9772F6", fontWeight: 700, fontSize: 12, fontFamily: QS }}>Sign In</button>
         </p>
 
       </div>
+
+      {showDiscardConfirm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 96, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 28px" }}>
+          <div style={{ background: "white", borderRadius: 24, padding: 24, width: "100%" }}>
+            <div style={{ width: 48, height: 48, borderRadius: 16, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+              <AlertCircle size={22} color="#D97706" />
+            </div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", margin: "0 0 6px", fontFamily: QS }}>Discard Account Creation?</p>
+            <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 18px", fontFamily: IN, lineHeight: 1.5 }}>
+              You're in the middle of creating your account. If you sign in instead, everything you've entered here will be lost.
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowDiscardConfirm(false)} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "1.5px solid #E5E7EB", background: "white", color: "#6B7280", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>Keep Creating</button>
+              <button onClick={() => go("login")} style={{ flex: 1, padding: "12px 0", borderRadius: 14, border: "none", background: "#EF4444", color: "white", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: QS }}>Discard & Sign In</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

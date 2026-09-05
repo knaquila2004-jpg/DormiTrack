@@ -4,7 +4,7 @@ import { AppInfoSection } from "./AppInfo";
 import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
 import {
   User, Mail, Lock, Phone, Building2, ChevronDown, ChevronUp,
-  ChevronRight, Edit3, Save, X, Camera, LogOut, Wifi, Droplet, Zap,
+  ChevronRight, Edit3, Save, X, LogOut, Wifi, Droplet, Zap,
   BookOpen, Utensils, Shirt, Video, Car, Clock, Shield, Plus, Trash2,
   Eye, EyeOff, Check, ToggleLeft, ToggleRight, AlertCircle, Image,
   GripVertical, RefreshCw, Home, Layers, CreditCard,
@@ -13,6 +13,7 @@ import {
 import { GRAD, GRAD_H, Screen } from "./shared";
 import { GoogleMapCanvas } from "./components/GoogleMapCanvas";
 import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationPicker";
+import { ProfileAvatar } from "./components/ProfileAvatar";
 import { AddressComponents } from "./components/mapGeo";
 import {
   getMyLandlordAccount, updateMyPersonalInfo, changeMyPassword,
@@ -521,25 +522,21 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
         {/* Header */}
         <div style={{ padding: "52px 20px 24px", backgroundImage: GRAD_H, textAlign: "center" }}>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 20px", fontFamily: QS, textAlign: "left" }}>My Profile</h1>
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-              {photo ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <User size={38} color="white" />}
-            </div>
-            <label style={{ position: "absolute", bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
-              <Camera size={13} color="#9772F6" />
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
-                const res = await uploadProfilePhoto(f);
-                if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
-                else setPhoto(res.url);
-              }} />
-            </label>
-          </div>
-          {photo && (
-            <button onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
-          )}
+          <ProfileAvatar
+            photo={photo}
+            fallback={<User size={46} color="white" />}
+            onSelectFile={async f => {
+              setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+              const res = await uploadProfilePhoto(f);
+              if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+              else setPhoto(res.url);
+            }}
+            onRemove={async () => {
+              setPhoto(null);
+              const res = await removeProfilePhoto();
+              if (res.ok === false) showToast(res.error || "Couldn't remove photo.");
+            }}
+          />
           <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{fullName}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
             <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>@{username}</span>
@@ -619,7 +616,7 @@ export function LandlordProfileScreen({ go, visitorEnabled = false, setVisitorEn
                 <InfoRow label="Latitude"             value={bhLat != null ? bhLat.toFixed(6) : ""} />
                 <InfoRow label="Longitude"            value={bhLng != null ? bhLng.toFixed(6) : ""} />
                 {bhLocationType && <InfoRow label="Location Type" value={bhLocationType === "existing" ? "Existing Map Location" : "Custom Boarding House Pin"} />}
-                <InfoRow label="Check-In/Check-Out Radius" value={`${bhRadius}m`} />
+                <InfoRow label="Enter/Exit Radius" value={`${bhRadius}m`} />
                 <InfoRow label="Contact Number"      value={bhContact} />
                 <InfoRow label="Description"         value={bhDesc} last />
                 {/* Real Google Map of the boarding house's saved, pinned location — the shaded

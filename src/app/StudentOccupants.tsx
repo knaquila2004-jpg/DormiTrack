@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Users, Home, ChevronRight, X, Phone, BookOpen,
   GraduationCap, Calendar, Building2, MapPin, User, Bed,
@@ -20,6 +20,7 @@ import {
   getMyCurrentRoomBed, getMyPendingRoomTransferRequest, submitRoomTransferRequest,
   RoomTransferRequest,
 } from "./roomTransferStore";
+import { getInactivityNotice, submitInactivityResponse, InactivityNotice } from "./inactivityStore";
 
 const EMPTY_PROFILE: MyStudentProfile = { name: "—", firstName: "—", id: "—", program: "—", year: "—", block: "—", email: "—", contact: "—", address: "—", photo: null };
 const EMPTY_ASSIGNMENT: MyAssignment = {
@@ -72,7 +73,7 @@ function OccupantModal({ occ, idx, onClose, roomName, bhName }: { occ:Occupant; 
           <div style={{ display:"flex", gap:6 }}>
             {occ.isMe && <span style={{ fontSize:9, fontWeight:800, padding:"3px 10px", borderRadius:20, background:"rgba(255,255,255,.25)", color:"white", fontFamily:QS }}>You</span>}
             <span style={{ fontSize:9, fontWeight:800, padding:"3px 10px", borderRadius:20, background:occ.status==="active"?"#DCFCE7":"#FEF3C7", color:occ.status==="active"?"#16A34A":"#D97706", fontFamily:QS }}>
-              {occ.status==="active" ? "Currently Staying" : "Check-in Pending"}
+              {occ.status==="active" ? "Currently Staying" : "Entry Pending"}
             </span>
           </div>
         </div>
@@ -414,9 +415,87 @@ function StatusUpdateDetailModal({ update, onClose }: { update: OccupantStatusUp
   );
 }
 
+// ── Inactivity Notice Detail Modal ───────────────────────────────────────────
+// What an "inactivity" notification tap opens for the student themselves — the
+// actual real inactivity_notices row (LandlordOccupants.tsx detects this from
+// real check-in/out history, 0052), with a direct way to fix it.
+
+function InactivityDetailModal({ notice, studentName, onClose, onCheckInOut }: { notice: InactivityNotice; studentName: string; onClose: () => void; onCheckInOut: () => void }) {
+  const lastActivityLabel = new Date(notice.lastActivityAt).toLocaleDateString("en-US", { month:"long", day:"numeric", year:"numeric" });
+  const dayWord = `${notice.daysInactive} day${notice.daysInactive === 1 ? "" : "s"}`;
+  const [responseText, setResponseText] = useState(notice.response ?? "");
+  const [sentResponse, setSentResponse] = useState(notice.response);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  async function handleSend() {
+    const trimmed = responseText.trim();
+    if (!trimmed) { setErrorMsg("Please enter a response."); return; }
+    setSubmitting(true); setErrorMsg(null);
+    const res = await submitInactivityResponse({
+      id: notice.id, studentId: notice.studentId, boardingHouseId: notice.boardingHouseId,
+      studentName, response: trimmed,
+    });
+    setSubmitting(false);
+    if (res.ok === false) { setErrorMsg(res.error); return; }
+    setSentResponse(trimmed);
+  }
+
+  return (
+    <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:28 }} onClick={onClose}>
+      <div style={{ background:"white", borderRadius:28, padding:"28px 24px 24px", width:"100%", maxWidth:340, boxShadow:"0 24px 60px rgba(0,0,0,.25)" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ width:56, height:56, borderRadius:20, background:"#FEF2F2", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <AlertCircle size={24} color="#F87171"/>
+        </div>
+        <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"center" as const }}>You've Gone Quiet</h3>
+        <p style={{ margin:"0 0 18px", fontSize:11, color:"#9CA3AF", fontFamily:IN, textAlign:"center" as const }}>Your landlord and parent were notified too</p>
+
+        <div style={{ background:"#FEF2F2", borderRadius:14, padding:"12px 14px", marginBottom:18, textAlign:"center" as const }}>
+          <p style={{ margin:0, fontSize:12, color:"#7F1D1D", fontFamily:IN, lineHeight:1.6 }}>
+            No Enter/Exit activity in <strong>{dayWord}</strong> — since {lastActivityLabel}.
+          </p>
+        </div>
+
+        {sentResponse ? (
+          <div style={{ background:"#F0FDF4", borderRadius:14, padding:"12px 14px", marginBottom:18 }}>
+            <p style={{ margin:"0 0 4px", fontSize:10, fontWeight:800, color:"#15803D", fontFamily:QS, textTransform:"uppercase" as const }}>Your Response (Sent)</p>
+            <p style={{ margin:0, fontSize:12, color:"#166534", fontFamily:IN, lineHeight:1.6 }}>"{sentResponse}"</p>
+            <p style={{ margin:"6px 0 0", fontSize:10, color:"#4D7C0F", fontFamily:IN }}>Your landlord and parent can see this.</p>
+          </div>
+        ) : (
+          <div style={{ marginBottom:18 }}>
+            <p style={{ margin:"0 0 8px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.6, textAlign:"center" as const }}>
+              Please respond so your landlord and parent know you're okay.
+            </p>
+            <textarea
+              value={responseText}
+              onChange={e => setResponseText(e.target.value)}
+              placeholder="e.g. I'm home for the weekend, forgot to tap Enter…"
+              rows={3}
+              style={{ width:"100%", boxSizing:"border-box" as const, borderRadius:14, border:"1.5px solid #E5E7EB", padding:"10px 12px", fontSize:12, fontFamily:IN, color:"#1F2937", resize:"none" as const, outline:"none" }}
+            />
+            {errorMsg && <p style={{ margin:"6px 0 0", fontSize:11, color:"#EF4444", fontFamily:IN }}>{errorMsg}</p>}
+            <button onClick={handleSend} disabled={submitting} style={{ width:"100%", marginTop:10, padding:"11px 0", borderRadius:16, border:"none", backgroundImage:GRAD, color:"white", fontSize:13, fontWeight:800, cursor:submitting?"default":"pointer", fontFamily:QS, opacity:submitting?0.7:1, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>
+              {submitting ? "Sending…" : "Send Response"}
+            </button>
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={onClose} style={{ flex:1, padding:"12px 0", borderRadius:16, border:"1.5px solid #E5E7EB", background:"white", color:"#6B7280", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS }}>Close</button>
+          <button onClick={onCheckInOut} style={{ flex:1, padding:"12px 0", borderRadius:16, border:"none", backgroundImage:GRAD, color:"white", fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:QS, boxShadow:"0 4px 16px rgba(151,114,246,.3)" }}>Enter/Exit</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab content ───────────────────────────────────────────────────────────────
 
-function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_DATA, studentName }: { go:(s:string)=>void; bhData: MyBoardingHouse; roomData: MyRoom; stayData: MyStay; studentName: string }) {
+function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_DATA, studentName, stayPeriodRef }: {
+  go:(s:string)=>void; bhData: MyBoardingHouse; roomData: MyRoom; stayData: MyStay; studentName: string;
+  stayPeriodRef?: React.RefObject<HTMLDivElement>;
+}) {
   const [showFullMap, setShowFullMap] = useState(false);
   const [showStayChangeForm, setShowStayChangeForm] = useState(false);
   const [pendingStayChange, setPendingStayChange] = useState<StayChangeRequest | null>(null);
@@ -486,18 +565,8 @@ function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_
             </div>
           ))}
         </div>
-        {/* Occupancy bar */}
-        <div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
-            <span style={{ fontSize:11, color:"#6B7280", fontFamily:IN }}>Room Occupancy</span>
-            <span style={{ fontSize:11, fontWeight:700, color:"#9772F6", fontFamily:QS }}>{ROOM_DATA.occupied}/{ROOM_DATA.capacity}</span>
-          </div>
-          <div style={{ height:8, background:"#F3F4F6", borderRadius:6, overflow:"hidden" }}>
-            <div style={{ height:"100%", borderRadius:6, backgroundImage:GRAD, width:`${ROOM_DATA.capacity > 0 ? Math.round(ROOM_DATA.occupied/ROOM_DATA.capacity*100) : 0}%` }}/>
-          </div>
-        </div>
         {/* Stay period */}
-        <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #F3F4F6" }}>
+        <div ref={stayPeriodRef} style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #F3F4F6" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
             <span style={{ fontSize:10, fontWeight:800, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5 }}>Stay Period</span>
             {!pendingStayChange && (
@@ -570,59 +639,13 @@ function OverviewTab({ go, bhData: BH_DATA, roomData: ROOM_DATA, stayData: STAY_
         />
       )}
 
-      {/* Status badges */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
-        <div style={{ background:"white", borderRadius:18, padding:"14px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:36, height:36, borderRadius:12, background:"#DCFCE7", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <CheckCircle size={17} color="#16A34A"/>
-          </div>
-          <div>
-            <p style={{ margin:0, fontSize:11, fontWeight:800, color:"#1F2937", fontFamily:QS }}>BH Status</p>
-            <p style={{ margin:"1px 0 0", fontSize:10, color:"#16A34A", fontFamily:IN, fontWeight:700 }}>{BH_DATA.status}</p>
-          </div>
-        </div>
-        <div style={{ background:"white", borderRadius:18, padding:"14px", boxShadow:"0 2px 10px rgba(0,0,0,.05)", display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:36, height:36, borderRadius:12, background:"#DCFCE7", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Shield size={17} color="#16A34A"/>
-          </div>
-          <div>
-            <p style={{ margin:0, fontSize:11, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Registration</p>
-            <p style={{ margin:"1px 0 0", fontSize:10, color:"#16A34A", fontFamily:IN, fontWeight:700 }}>{BH_DATA.regStatus}</p>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
 
 function OccupantsTab({ setSelOcc, roomData: ROOM_DATA, occupants: ROOM_OCCUPANTS }: { setSelOcc:(v:{occ:Occupant;idx:number}|null)=>void; roomData: MyRoom; occupants: Occupant[] }) {
-  const occupancyPct = ROOM_DATA.capacity > 0 ? Math.round((ROOM_DATA.occupied/ROOM_DATA.capacity)*100) : 0;
   return (
     <div style={{ padding:"16px 16px 28px" }}>
-
-      {/* Room stats */}
-      <div style={{ background:"white", borderRadius:20, padding:"18px", boxShadow:"0 4px 16px rgba(0,0,0,.07)", marginBottom:14 }}>
-        <p style={{ margin:"0 0 14px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Room Summary — {ROOM_DATA.name}</p>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:14 }}>
-          {[
-            { label:"Capacity",  val:ROOM_DATA.capacity,  color:"#9772F6", bg:"#F5F0FF" },
-            { label:"Occupied",  val:ROOM_DATA.occupied,  color:"#EF4444", bg:"#FEE2E2" },
-            { label:"Available", val:ROOM_DATA.available, color:"#16A34A", bg:"#DCFCE7" },
-          ].map(({ label, val, color, bg })=>(
-            <div key={label} style={{ textAlign:"center" as const, background:bg, borderRadius:14, padding:"12px 8px" }}>
-              <p style={{ margin:0, fontSize:22, fontWeight:800, color, fontFamily:QS }}>{val}</p>
-              <p style={{ margin:"2px 0 0", fontSize:10, color:"#9CA3AF", fontFamily:IN }}>{label}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
-          <span style={{ fontSize:11, color:"#6B7280", fontFamily:IN }}>Occupancy Rate</span>
-          <span style={{ fontSize:11, fontWeight:700, color:"#9772F6", fontFamily:QS }}>{occupancyPct}%</span>
-        </div>
-        <div style={{ height:8, background:"#F3F4F6", borderRadius:6, overflow:"hidden" }}>
-          <div style={{ height:"100%", borderRadius:6, backgroundImage:GRAD, width:`${occupancyPct}%`, transition:"width .4s ease" }}/>
-        </div>
-      </div>
 
       {/* Occupants list */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -644,7 +667,7 @@ function OccupantsTab({ setSelOcc, roomData: ROOM_DATA, occupants: ROOM_OCCUPANT
                 </div>
                 <p style={{ margin:"0 0 3px", fontSize:11, color:occ.isMe?"rgba(255,255,255,.85)":"#6B7280", fontFamily:IN }}>{occ.bed} · {occ.program}</p>
                 <span style={{ fontSize:9, fontWeight:800, padding:"2px 8px", borderRadius:20, background:occ.status==="active"?"#DCFCE7":"#FEF3C7", color:occ.status==="active"?"#16A34A":"#D97706", fontFamily:QS }}>
-                  {occ.status==="active"?"Currently Staying":"Check-in Pending"}
+                  {occ.status==="active"?"Currently Staying":"Entry Pending"}
                 </span>
               </div>
               <ChevronRight size={14} color={occ.isMe?"rgba(255,255,255,.7)":"#D1D5DB"}/>
@@ -741,6 +764,31 @@ export function StudentRoomOccupantsScreen({ go, pendingDeepLink, onDeepLinkCons
     });
   }, [pendingDeepLink, onDeepLinkConsumed]);
 
+  // Opened from an "inactivity" notification tap — the landlord's Occupants page
+  // detected no real check-in/out for 24+ hours and logged a real
+  // inactivity_notices row (0052); fetch that specific one and show it here.
+  const [viewingInactivityNotice, setViewingInactivityNotice] = useState<InactivityNotice | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "inactivity" || !pendingDeepLink.relatedId) return;
+    const id = pendingDeepLink.relatedId;
+    getInactivityNotice(id).then(row => {
+      if (row) setViewingInactivityNotice(row);
+      onDeepLinkConsumed?.();
+    });
+  }, [pendingDeepLink, onDeepLinkConsumed]);
+
+  // Opened from a "Stay Change Approved"/"Stay Change Declined" notification tap —
+  // the landlord's decision on a request the student themselves submitted. Lands on
+  // the Overview tab (Stay Period only lives there) and scrolls to that section,
+  // rather than just landing on whichever tab happened to be open.
+  const stayPeriodRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (pendingDeepLink?.type !== "stay-change") return;
+    setActiveTab("overview");
+    requestAnimationFrame(() => stayPeriodRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    onDeepLinkConsumed?.();
+  }, [pendingDeepLink, onDeepLinkConsumed]);
+
   const [profile, setProfile] = useState<MyStudentProfile>(EMPTY_PROFILE);
   const [assignment, setAssignment] = useState<MyAssignment>(EMPTY_ASSIGNMENT);
   const [roommates, setRoommates] = useState<Occupant[]>([]);
@@ -784,10 +832,9 @@ export function StudentRoomOccupantsScreen({ go, pendingDeepLink, onDeepLinkCons
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, backgroundImage:GRAD, position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.06)", pointerEvents:"none" as const }}/>
-        <div style={{ position:"absolute" as const, bottom:-30, left:-30, width:120, height:120, borderRadius:"50%", background:"rgba(255,255,255,.04)", pointerEvents:"none" as const }}/>
+        <div style={{ position:"absolute" as const, top:-50, right:-50, width:180, height:180, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.06)", filter:"blur(32px)", pointerEvents:"none" as const }}/>
+        <div style={{ position:"absolute" as const, bottom:-30, left:-30, width:120, height:120, borderRadius:"60% 40% 35% 65%/55% 65% 35% 45%", background:"rgba(255,255,255,.04)", filter:"blur(24px)", pointerEvents:"none" as const }}/>
         <div style={{ padding:"52px 20px 20px", position:"relative" as const }}>
-          <p style={{ margin:"0 0 3px", fontSize:11, color:"rgba(255,255,255,.6)", fontFamily:IN, textTransform:"uppercase" as const, letterSpacing:1, fontWeight:700 }}>My Boarding House</p>
           <h1 style={{ margin:"0 0 4px", fontSize:21, fontWeight:800, color:"white", fontFamily:QS, lineHeight:1.2 }}>{BH_DATA.name}</h1>
           <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:16 }}>
             <MapPin size={11} color="rgba(255,255,255,.7)"/>
@@ -827,7 +874,7 @@ export function StudentRoomOccupantsScreen({ go, pendingDeepLink, onDeepLinkCons
 
       {/* ── Tab Content ─────────────────────────────────────────────────────── */}
       <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const }}>
-        {activeTab === "overview"  && <OverviewTab go={go} bhData={BH_DATA} roomData={ROOM_DATA} stayData={assignment.stay} studentName={profile.name} />}
+        {activeTab === "overview"  && <OverviewTab go={go} bhData={BH_DATA} roomData={ROOM_DATA} stayData={assignment.stay} studentName={profile.name} stayPeriodRef={stayPeriodRef} />}
         {activeTab === "occupants" && <OccupantsTab setSelOcc={setSelOcc} roomData={ROOM_DATA} occupants={roommates} />}
         {activeTab === "amenities" && <AmenitiesTab bhData={BH_DATA} />}
         {activeTab === "rules"     && <RulesTab bhData={BH_DATA} />}
@@ -835,6 +882,7 @@ export function StudentRoomOccupantsScreen({ go, pendingDeepLink, onDeepLinkCons
 
       {selOcc && <OccupantModal occ={selOcc.occ} idx={selOcc.idx} onClose={()=>setSelOcc(null)} roomName={ROOM_DATA.name} bhName={BH_DATA.name}/>}
       {viewingStatusUpdate && <StatusUpdateDetailModal update={viewingStatusUpdate} onClose={()=>setViewingStatusUpdate(null)}/>}
+      {viewingInactivityNotice && <InactivityDetailModal notice={viewingInactivityNotice} studentName={profile.name} onClose={()=>setViewingInactivityNotice(null)} onCheckInOut={()=>{ setViewingInactivityNotice(null); go("map"); }}/>}
     </div>
   );
 }

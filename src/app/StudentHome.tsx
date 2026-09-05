@@ -937,8 +937,8 @@ export function StudentHomeScreen({ go, pendingDeepLink, onDeepLinkConsumed }: {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ flexShrink:0, padding:"52px 20px 22px", backgroundImage:GRAD_H, position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-60, right:-60, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.06)" }}/>
-        <div style={{ position:"absolute" as const, bottom:-40, left:-30, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.04)" }}/>
+        <div style={{ position:"absolute" as const, top:-60, right:-60, width:220, height:220, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.06)", filter:"blur(38px)" }}/>
+        <div style={{ position:"absolute" as const, bottom:-40, left:-30, width:150, height:150, borderRadius:"60% 40% 35% 65%/55% 65% 35% 45%", background:"rgba(255,255,255,.04)", filter:"blur(28px)" }}/>
         <div style={{ display:"flex", justifyContent:"flex-end", gap:10, marginBottom:18, position:"relative" as const, zIndex:2 }}>
           <button onClick={()=>go("notifications")} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.18)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" as const }}>
             <Bell size={19} color="white"/>

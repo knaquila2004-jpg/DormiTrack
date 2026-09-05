@@ -77,6 +77,38 @@ export async function getPendingRegistrationsForLandlord(landlordId: string): Pr
   }));
 }
 
+// Real, status-agnostic lookup by id (sbr_select_landlord, 0003_rls.sql, doesn't
+// filter by status) — a "New Registration Request"/"Registration Cancelled"
+// notification tap needs this once the request is no longer 'pending' (so it's
+// dropped out of getPendingRegistrationsForLandlord above), to tell the
+// difference between "still loading" and "genuinely cancelled" and show the
+// real reason instead of the notification silently doing nothing.
+export type RegistrationStatusInfo = {
+  id: string; status: string; studentName: string; houseName: string; roomName: string; bedLabel: string;
+};
+
+export async function getRegistrationStatusForLandlord(registrationId: string): Promise<RegistrationStatusInfo | null> {
+  const { data, error } = await supabase
+    .from("student_boarding_registrations")
+    .select(`
+      id, status,
+      students!inner ( users!inner ( first_name, last_name ) ),
+      rooms ( name ), beds ( label ),
+      boarding_houses!inner ( name )
+    `)
+    .eq("id", registrationId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const r: any = data;
+  return {
+    id: r.id, status: r.status,
+    studentName: fullName(r.students.users),
+    houseName: r.boarding_houses?.name ?? "",
+    roomName: r.rooms?.name ?? "",
+    bedLabel: r.beds?.label ?? "",
+  };
+}
+
 export async function approveRegistration(registrationId: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const { error } = await supabase.rpc("approve_registration", { p_registration_id: registrationId });
   if (error) return { ok: false, error: error.message };
@@ -87,6 +119,25 @@ export async function rejectRegistration(registrationId: string): Promise<{ ok: 
   const { error } = await supabase.rpc("reject_registration", { p_registration_id: registrationId });
   if (error) return { ok: false, error: error.message };
   return { ok: true };
+}
+
+// The student's own way to back out of a registration they submitted, while it's
+// still pending (cancel_registration, 0054) — releases a reserved bed back to
+// 'available' exactly like a landlord rejection already does.
+export async function cancelRegistration(registrationId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.rpc("cancel_registration", { p_registration_id: registrationId });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+// Real boarding_house_id for a registration the student owns (sbr_select_student,
+// 0003_rls.sql, doesn't filter by status) — needed so cancelling can notify the
+// right landlord without PendingRegInfo having to carry the id around everywhere
+// just for this one, rarely-used path.
+export async function getRegistrationBoardingHouseId(registrationId: string): Promise<string | null> {
+  const { data, error } = await supabase.from("student_boarding_registrations").select("boarding_house_id").eq("id", registrationId).maybeSingle();
+  if (error || !data) return null;
+  return data.boarding_house_id;
 }
 
 export type OccupancyStats = {
@@ -155,6 +206,7 @@ export type PendingRegInfo = { studentName: string; houseName: string; roomName:
 export type StudentGateStatus =
   | { kind: "assigned" }
   | { kind: "pending"; registrationId: string; info: PendingRegInfo }
+  | { kind: "rejected"; registrationId: string; info: PendingRegInfo }
   | { kind: "none" };
 
 export async function getMyStudentGateStatus(): Promise<StudentGateStatus> {
@@ -177,23 +229,21 @@ export async function getMyStudentGateStatus(): Promise<StudentGateStatus> {
     .limit(1)
     .maybeSingle();
 
-  if (reg && reg.status === "pending") {
+  if (reg && (reg.status === "pending" || reg.status === "rejected")) {
     const u = (reg as any).students.users;
-    return {
-      kind: "pending",
-      registrationId: reg.id,
-      info: {
-        studentName: fullName(u),
-        houseName: (reg as any).boarding_houses?.name ?? "—",
-        roomName: (reg as any).rooms?.name ?? "—",
-        bedLabel: (reg as any).beds?.label,
-        submittedDate: new Date(reg.submitted_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-      },
+    const info: PendingRegInfo = {
+      studentName: fullName(u),
+      houseName: (reg as any).boarding_houses?.name ?? "—",
+      roomName: (reg as any).rooms?.name ?? "—",
+      bedLabel: (reg as any).beds?.label,
+      submittedDate: new Date(reg.submitted_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     };
+    return reg.status === "pending"
+      ? { kind: "pending", registrationId: reg.id, info }
+      : { kind: "rejected", registrationId: reg.id, info };
   }
-  // Rejected or never submitted at all — either way, back to choosing a
-  // boarding house (no dedicated "you were rejected" screen exists yet;
-  // resubmission is the only path forward regardless).
+  // Cancelled or never submitted at all — either way, back to choosing a
+  // boarding house with nothing further to say about it.
   return { kind: "none" };
 }
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import {
   User, Mail, Lock, Phone, MapPin, Building2, ChevronDown, ChevronUp,
-  Edit3, Save, X, Camera, LogOut, Shield, BookOpen,
+  Edit3, Save, X, LogOut, Shield, BookOpen,
   Eye, EyeOff, Check, AlertCircle, Home, Bed,
   Calendar, Clock, GraduationCap, CreditCard, Users,
 } from "lucide-react";
@@ -10,6 +10,7 @@ import { GRAD, GRAD_H, Screen } from "./shared";
 import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
 import { getMyBills, StudentBilling } from "./paymentStore";
 import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
+import { ProfileAvatar } from "./components/ProfileAvatar";
 // Role-agnostic real Supabase Auth password change (re-authenticate then update) — lives in
 // landlordProfileStore.ts historically but has no landlord-specific logic, reused here instead
 // of duplicating it. See its own comment for why re-authentication happens first.
@@ -273,27 +274,21 @@ export function StudentProfileScreen({ go }: { go: (s: string) => void }) {
         {/* Header */}
         <div style={{ padding: "52px 20px 24px", backgroundImage: GRAD_H, textAlign: "center" as const }}>
           <h1 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "0 0 20px", fontFamily: QS, textAlign: "left" as const }}>My Profile</h1>
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-              {photo
-                ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="profile"/>
-                : <span style={{ fontSize: 30, fontWeight: 800, color: "white", fontFamily: QS }}>{initials}</span>}
-            </div>
-            <label style={{ position: "absolute", bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
-              <Camera size={13} color="#9772F6" />
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
-                const res = await uploadProfilePhoto(f);
-                if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
-                else setPhoto(res.url);
-              }} />
-            </label>
-          </div>
-          {photo && (
-            <button onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ display: "block", margin: "10px auto 0", background: "none", border: "none", color: "rgba(255,255,255,.7)", fontSize: 11, cursor: "pointer", fontFamily: QS }}>Remove Photo</button>
-          )}
+          <ProfileAvatar
+            photo={photo}
+            fallback={<span style={{ fontSize: 36, fontWeight: 800, color: "white", fontFamily: QS }}>{initials}</span>}
+            onSelectFile={async f => {
+              setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+              const res = await uploadProfilePhoto(f);
+              if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+              else setPhoto(res.url);
+            }}
+            onRemove={async () => {
+              setPhoto(null);
+              const res = await removeProfilePhoto();
+              if (res.ok === false) showToast(res.error || "Couldn't remove photo.");
+            }}
+          />
           <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 4px", fontFamily: QS }}>{fullName}</h2>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const, justifyContent: "center" }}>
             <span style={{ background: "rgba(255,255,255,.18)", borderRadius: 20, padding: "3px 12px", fontSize: 11, color: "white", fontFamily: QS, fontWeight: 700 }}>{studentId}</span>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { uploadProfilePhoto, removeProfilePhoto } from "./profileStore";
+import { ProfileAvatar } from "./components/ProfileAvatar";
 import {
   ChevronLeft, ChevronDown, ChevronUp, ChevronRight,
   User, Edit3, Shield, Mail, Phone, Key, Lock,
@@ -8,7 +9,7 @@ import {
   AlertTriangle, CheckCircle, XCircle, Smartphone, Eye, EyeOff,
   FileText, HelpCircle, BookOpen, MessageSquare, Info,
   Calendar, Building2, Users, Flag, X, Check, RefreshCw,
-  MapPin, Camera, Activity,
+  MapPin, Activity,
 } from "lucide-react";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
@@ -196,7 +197,7 @@ function LoginHistorySheet({ onClose }: { onClose: () => void }) {
 const ACTIVITY = [
   { Icon: CheckCircle, color: "#16A34A", bg: "#DCFCE7", action: "Approved new user account",      sub: "Kevin Cruz – Student",              time: "Today, 9:14 AM"   },
   { Icon: Flag,        color: "#9772F6", bg: "#F5F0FF", action: "Resolved a user report",          sub: "Harassment – Ben Torres",           time: "Today, 8:45 AM"   },
-  { Icon: Bell,        color: "#3B82F6", bg: "#EFF6FF", action: "Sent system announcement",        sub: "Monthly check-in reminder",         time: "Aug 2, 4:30 PM"   },
+  { Icon: Bell,        color: "#3B82F6", bg: "#EFF6FF", action: "Sent system announcement",        sub: "Monthly entry reminder",         time: "Aug 2, 4:30 PM"   },
   { Icon: Building2,   color: "#D97706", bg: "#FEF3C7", action: "Updated boarding house details",  sub: "Naquila BH – Updated curfew rules", time: "Aug 2, 11:00 AM"  },
   { Icon: Shield,      color: "#6366F1", bg: "#EEF2FF", action: "Changed system settings",         sub: "Enabled maintenance mode briefly",  time: "Aug 1, 2:15 PM"   },
   { Icon: XCircle,     color: "#EF4444", bg: "#FEE2E2", action: "Suspended a user account",        sub: "Ben Torres – Policy violation",     time: "Jul 31, 3:50 PM"  },
@@ -281,30 +282,21 @@ export function AdminProfileScreen({ go }: { go: (s: string) => void }) {
         </div>
 
         {/* Avatar */}
-        <div style={{ position: "relative" as const, display: "inline-block" }}>
-          <div style={{ width: 84, height: 84, borderRadius: "50%", background: photo ? "transparent" : "rgba(255,255,255,.2)", border: "3px solid rgba(255,255,255,.4)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-            {photo
-              ? <img src={photo} style={{ width: "100%", height: "100%", objectFit: "cover" as const }} />
-              : <User size={38} color="white" />}
-          </div>
-          <label style={{ position: "absolute" as const, bottom: -6, right: -6, width: 28, height: 28, borderRadius: 10, background: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,.15)" }}>
-            <Camera size={13} color="#9772F6" />
-            <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
-              const res = await uploadProfilePhoto(f);
-              if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
-              else setPhoto(res.url);
-            }} />
-          </label>
-        </div>
-
-        {photo && (
-          <div style={{ marginTop: 8 }}>
-            <span onClick={async () => { setPhoto(null); const res = await removeProfilePhoto(); if (res.ok === false) showToast(res.error || "Couldn't remove photo."); }} style={{ fontSize: 11, color: "rgba(255,255,255,.7)", fontFamily: QS, cursor: "pointer", textDecoration: "underline" }}>Remove Photo</span>
-          </div>
-        )}
+        <ProfileAvatar
+          photo={photo}
+          fallback={<User size={46} color="white" />}
+          onSelectFile={async f => {
+            setPhoto(URL.createObjectURL(f)); // instant preview while the real upload runs
+            const res = await uploadProfilePhoto(f);
+            if (res.ok === false) showToast(res.error || "Couldn't upload photo. Please try again.");
+            else setPhoto(res.url);
+          }}
+          onRemove={async () => {
+            setPhoto(null);
+            const res = await removeProfilePhoto();
+            if (res.ok === false) showToast(res.error || "Couldn't remove photo.");
+          }}
+        />
 
         <h2 style={{ color: "white", fontSize: 20, fontWeight: 800, margin: "14px 0 6px", fontFamily: QS }}>{name}</h2>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const, justifyContent: "center" }}>
