@@ -36,3 +36,47 @@ export async function removeProfilePhoto(): Promise<{ ok: true } | { ok: false; 
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
+
+// ── Login history (0060) ─────────────────────────────────────────────────────
+// Real, persisted record of a user's own successful sign-ins — currently
+// surfaced by AdminProfile.tsx's "Login History" sheet, but written here
+// (role-agnostic, shared) since it's recorded for every role's real login,
+// not just the admin's own. See the migration for why this only ever
+// records successes, and only a real device label + real timestamp (no
+// fabricated location — this app has no IP-geolocation service).
+
+export async function recordLogin(): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const { error } = await supabase.from("login_history").insert({
+    user_id: uid, user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+  });
+  if (error) console.error("recordLogin:", error.message);
+}
+
+export type LoginHistoryEntry = { id: string; device: string; occurredAt: string };
+
+// Coarse, honest device label parsed from the browser's own real user agent
+// string — not a fabricated "iPhone 15 Pro"-style guess, just what the
+// device/browser combination actually was.
+function labelDevice(ua: string | null): string {
+  if (!ua) return "Unknown device";
+  if (/iPad/.test(ua)) return "iPad";
+  if (/iPhone/.test(ua)) return "iPhone";
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
+  const os = /Windows/.test(ua) ? "Windows" : /Macintosh/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "Unknown OS";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "browser";
+  return `${browser} – ${os}`;
+}
+
+export async function getMyLoginHistory(limit = 20): Promise<LoginHistoryEntry[]> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from("login_history").select("id, user_agent, occurred_at")
+    .eq("user_id", uid).order("occurred_at", { ascending: false }).limit(limit);
+  if (error) { console.error("getMyLoginHistory:", error.message); return []; }
+  return (data ?? []).map(r => ({ id: r.id, device: labelDevice(r.user_agent), occurredAt: r.occurred_at }));
+}

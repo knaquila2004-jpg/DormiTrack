@@ -1,14 +1,13 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import {
-  Settings, ChevronDown, ChevronUp, ChevronRight, X, Check,
-  AlertTriangle, LogOut, Trash2, Plus, Clock, Database, RefreshCw,
-  Eye, Activity, Globe, Bell, FileText, Info, Archive, Edit3,
-  Building2, Shield, Users, Lock, Unlock, Search, Filter,
-  Megaphone, Pin, Calendar, Smartphone, Server, Wifi, CloudOff,
-  Cloud, CheckCircle, XCircle, AlertCircle, Save, Download,
-  Upload, HardDrive, User, Flag, Mail, Key, MonitorOff,
-  ToggleLeft, Zap, MapPin,
+  Settings, ChevronDown, ChevronRight, X, Check,
+  AlertTriangle, LogOut, Trash2, Plus, Clock,
+  Eye, Globe, Bell, FileText, Info, Archive, Edit3,
+  Building2, Shield, Users, Search, Filter,
+  Megaphone, Pin, Calendar,
+  CheckCircle, Save,
+  User, Flag, Mail, MonitorOff,
 } from "lucide-react";
 import {
   getAllAnnouncementsForAdmin, createAnnouncement, updateAnnouncement, setAnnouncementStatus, deleteAnnouncement,
@@ -16,6 +15,13 @@ import {
   getPendingBoardingHouses, approveBoardingHouse, rejectBoardingHouse, requestBoardingHouseRevision,
   Announcement, AnnouncementPriority, RolePermissions, PermRole, PermKey, BHRequest,
 } from "./adminSystemStore";
+import {
+  logAdminActivity, getMyAdminActivity, AdminActivityEntry,
+  getMyNotificationPrefs, setNotificationPref, AdminNotificationPrefs,
+} from "./adminStore";
+import { useDeviceType } from "./components/useDeviceType";
+import { CountUp } from "./components/CountUp";
+import { PrivacyPolicyContent, TermsConditionsContent } from "./LegalContent";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -29,16 +35,18 @@ function SectionCard({ title, icon, iconBg = "#F5F0FF", children, defaultOpen = 
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ background: "white", borderRadius: 20, marginBottom: 14, boxShadow: "0 4px 20px rgba(0,0,0,.06)", overflow: "hidden" }}>
-      <div onClick={() => setOpen(o => !o)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "16px 18px", cursor: "pointer", borderBottom: open ? "1px solid #F3F4F6" : "none" }}>
+    <div className="dt-admin-card" style={{ background: "white", borderRadius: 20, marginBottom: 14, boxShadow: "0 4px 20px rgba(0,0,0,.06)", overflow: "hidden" }}>
+      <div onClick={() => setOpen(o => !o)} className="dt-admin-row" style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "16px 18px", cursor: "pointer", borderBottom: open ? "1px solid #F3F4F6" : "none" }}>
         <div style={{ width: 34, height: 34, borderRadius: 11, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           {icon}
         </div>
         <span style={{ flex: 1, fontSize: 14, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{title}</span>
         {badge !== undefined && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 20, background: "#FEF3C7", color: "#D97706", fontFamily: QS, marginRight: 4 }}>{badge}</span>}
-        {open ? <ChevronUp size={17} color="#9CA3AF" /> : <ChevronDown size={17} color="#9CA3AF" />}
+        <div style={{ transition: "transform .2s ease", transform: open ? "rotate(180deg)" : "none" }}>
+          <ChevronDown size={17} color="#9CA3AF" />
+        </div>
       </div>
-      {open && <div style={{ padding: "14px 18px 18px" }}>{children}</div>}
+      {open && <div className="dt-admin-fade-in" style={{ padding: "14px 18px 18px" }}>{children}</div>}
     </div>
   );
 }
@@ -55,7 +63,7 @@ function Row({ label, sub, right, onClick, danger }: {
   label: string; sub?: string; right?: React.ReactNode; onClick?: () => void; danger?: boolean;
 }) {
   return (
-    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: "1px solid #F9FAFB", cursor: onClick ? "pointer" : "default" }}>
+    <div onClick={onClick} className={onClick ? "dt-admin-row" : undefined} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: "1px solid #F9FAFB", cursor: onClick ? "pointer" : "default", borderRadius: 10 }}>
       <div style={{ flex: 1 }}>
         <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: danger ? "#EF4444" : "#1F2937", fontFamily: QS }}>{label}</p>
         {sub && <p style={{ margin: "2px 0 0", fontSize: 10, color: "#9CA3AF", fontFamily: IN }}>{sub}</p>}
@@ -71,7 +79,7 @@ function ToggleRow({ label, sub, on, onToggle }: { label: string; sub?: string; 
 
 function Chip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
-    <div onClick={onClick} style={{ padding: "5px 13px", borderRadius: 20, cursor: "pointer", background: active ? "#1F2937" : "#F3F4F6", color: active ? "white" : "#6B7280", fontSize: 10, fontWeight: 800, fontFamily: QS, flexShrink: 0 }}>
+    <div onClick={onClick} className="dt-admin-btn" style={{ padding: "5px 13px", borderRadius: 20, cursor: "pointer", background: active ? "#1F2937" : "#F3F4F6", color: active ? "white" : "#6B7280", fontSize: 10, fontWeight: 800, fontFamily: QS, flexShrink: 0 }}>
       {label}
     </div>
   );
@@ -91,8 +99,8 @@ function ConfirmDialog({ title, msg, confirmLabel = "Confirm", danger = true, on
         <h3 style={{ margin: "0 0 8px", fontSize: 17, fontWeight: 800, color: "#1F2937", fontFamily: QS, textAlign: "center" as const }}>{title}</h3>
         <p style={{ margin: "0 0 22px", fontSize: 12, color: "#6B7280", fontFamily: IN, lineHeight: 1.65, textAlign: "center" as const }}>{msg}</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <button onClick={onCancel} style={{ height: 48, borderRadius: 18, border: "2px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "#374151", fontFamily: QS }}>Cancel</button>
-          <button onClick={onConfirm} style={{ height: 48, borderRadius: 18, border: "none", background: danger ? "#EF4444" : GRAD, cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS }}>{confirmLabel}</button>
+          <button className="dt-admin-btn" onClick={onCancel} style={{ height: 48, borderRadius: 18, border: "2px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "#374151", fontFamily: QS }}>Cancel</button>
+          <button className="dt-admin-btn" onClick={onConfirm} style={{ height: 48, borderRadius: 18, border: "none", background: danger ? "#EF4444" : GRAD, cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS }}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -122,6 +130,7 @@ const PRIORITY_META: Record<string, { label: string; color: string; bg: string }
 function AnnouncementForm({ ann, onSaved, onClose }: {
   ann?: Announcement; onSaved: () => void; onClose: () => void;
 }) {
+  const isWide = useDeviceType() !== "mobile";
   const [title,     setTitle]     = useState(ann?.title     ?? "");
   const [desc,      setDesc]      = useState(ann?.desc      ?? "");
   const [audience,  setAudience]  = useState(ann?.audience  ?? "Everyone");
@@ -138,17 +147,18 @@ function AnnouncementForm({ ann, onSaved, onClose }: {
     const res = ann ? await updateAnnouncement(ann.id, input) : await createAnnouncement(input);
     setSaving(false);
     if (res.ok === false) { setErr(res.error); return; }
+    await logAdminActivity(ann ? "update_announcement" : "create_announcement", `${ann ? "Updated" : "Posted"} announcement: "${input.title}"`);
     onSaved();
     onClose();
   };
 
   return (
     <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 800, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={onClose}>
-      <div style={{ background: "#F7F8FC", borderRadius: "26px 26px 0 0", maxHeight: "90%", display: "flex", flexDirection: "column" as const }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: "#F7F8FC", borderRadius: "26px 26px 0 0", maxHeight: "90%", display: "flex", flexDirection: "column" as const, maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 4px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "#E5E7EB" }} /></div>
         <div style={{ background: "white", borderRadius: "26px 26px 0 0", padding: "14px 20px 12px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{ann ? "Edit Announcement" : "New Announcement"}</p>
-          <div onClick={onClose} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={14} color="#6B7280" /></div>
+          <div onClick={onClose} className="dt-admin-btn" style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={14} color="#6B7280" /></div>
         </div>
         <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "14px 20px 40px" }}>
           {[
@@ -181,7 +191,7 @@ function AnnouncementForm({ ann, onSaved, onClose }: {
               {(["low", "normal", "high", "urgent"] as const).map(p => {
                 const m = PRIORITY_META[p];
                 return (
-                  <div key={p} onClick={() => setPriority(p)} style={{ flex: 1, height: 36, borderRadius: 12, border: `2px solid ${priority === p ? m.color : "#E5E7EB"}`, background: priority === p ? m.bg : "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div key={p} onClick={() => setPriority(p)} className="dt-admin-btn" style={{ flex: 1, height: 36, borderRadius: 12, border: `2px solid ${priority === p ? m.color : "#E5E7EB"}`, background: priority === p ? m.bg : "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <span style={{ fontSize: 10, fontWeight: 800, color: priority === p ? m.color : "#9CA3AF", fontFamily: QS }}>{m.label}</span>
                   </div>
                 );
@@ -199,7 +209,7 @@ function AnnouncementForm({ ann, onSaved, onClose }: {
             ))}
           </div>
           {err && <p style={{ margin: "0 0 10px", fontSize: 11, color: "#EF4444", fontFamily: IN }}>{err}</p>}
-          <button onClick={handleSave} disabled={saving} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
+          <button className="dt-admin-btn" onClick={handleSave} disabled={saving} style={{ width: "100%", height: 48, borderRadius: 20, backgroundImage: GRAD, border: "none", cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, fontSize: 14, fontWeight: 800, color: "white", fontFamily: QS, boxShadow: "0 4px 16px rgba(151,114,246,.3)" }}>
             {saving ? "Saving…" : ann ? "Save Changes" : "Publish Announcement"}
           </button>
         </div>
@@ -208,31 +218,28 @@ function AnnouncementForm({ ann, onSaved, onClose }: {
   );
 }
 
-// ── Audit log data ────────────────────────────────────────────────────────────
-
-const AUDIT_LOGS = [
-  { user: "Admin",          role: "Administrator", action: "Approved user account",    time: "Today, 9:14 AM",    device: "iPhone 15 Pro",   status: "success" },
-  { user: "Admin",          role: "Administrator", action: "Resolved report",           time: "Today, 8:45 AM",    device: "iPhone 15 Pro",   status: "success" },
-  { user: "Ma. Kyla Naquila",role:"Landlord",      action: "Updated boarding house",    time: "Aug 3, 11:00 AM",   device: "Android",         status: "success" },
-  { user: "Admin",          role: "Administrator", action: "Sent system announcement",  time: "Aug 2, 4:30 PM",    device: "iPhone 15 Pro",   status: "success" },
-  { user: "Unknown",        role: "—",             action: "Failed login attempt",      time: "Jul 29, 3:12 AM",   device: "Unknown Device",  status: "failed"  },
-  { user: "Carlos Sunrise", role: "Landlord",      action: "Registered boarding house", time: "Jul 28, 9:00 AM",   device: "Chrome – macOS",  status: "success" },
-  { user: "Admin",          role: "Administrator", action: "Exported database",         time: "Jul 27, 2:00 PM",   device: "Chrome – macOS",  status: "success" },
-  { user: "Ben Torres",     role: "Student",       action: "Account suspended",         time: "Jul 25, 5:30 PM",   device: "iPhone 14",       status: "warning" },
-];
-
-// ── Security data ─────────────────────────────────────────────────────────────
-
-const SECURITY_EVENTS = [
-  { type: "failed",  user: "Unknown",    detail: "Wrong password — 3 attempts",      time: "Jul 29, 3:12 AM",   device: "Unknown Device" },
-  { type: "locked",  user: "Ben Torres", detail: "Account locked due to suspension",  time: "Jul 25, 5:30 PM",   device: "iPhone 14"      },
-  { type: "reset",   user: "Kevin Cruz", detail: "Password reset requested",          time: "Aug 1, 10:00 AM",   device: "Chrome – Windows"},
-  { type: "unknown", user: "Unknown",    detail: "Unrecognized device login attempt", time: "Jul 29, 3:15 AM",   device: "Unknown Android" },
-];
-
 // ── Main Screen ───────────────────────────────────────────────────────────────
+//
+// Removed from here this pass, as fully fabricated and not honestly buildable
+// client-side (see .env.local's service-role-key constraint):
+//  - "Security Center" (fake failed-login/locked-account/session counts and
+//    fake Unlock/Force Logout/Reset Password buttons — real session/lockout
+//    data requires Supabase's Admin API, i.e. the service role key).
+//  - "Database Management" (hardcoded "Connected"/"1.24 GB"/"2,847 records",
+//    and Backup/Restore/Export buttons that only ever showed a toast).
+//  - "System Health" (a static online/warning/offline list that even named
+//    the wrong backend — "Firebase" — this app runs on Supabase; no real
+//    infra-monitoring source exists to back it).
+// "Audit Logs" below was kept, rewired to the real admin_activity_log table
+// (0061_admin_activity_log.sql) instead of its former hardcoded array.
 
 export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
+  // Desktop-only spacing/width adjustments (AdminShellFrame in App.tsx already
+  // provides the sidebar/header chrome at this width) — same data, same tabs,
+  // just no mobile-status-bar clearance and a bounded content width.
+  const deviceType = useDeviceType();
+  const isWide = deviceType !== "mobile";
+  const isDesktop = deviceType === "desktop";
   // System settings
   const [appName,       setAppName]       = useState("DormiTrack");
   const [orgName,       setOrgName]       = useState("BISU Calape Campus");
@@ -256,24 +263,22 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
 
   useEffect(() => { refreshAnnouncements(); refreshBhRequests(); getRolePermissions().then(setPerms); }, []);
 
-  // Audit logs
+  // Audit logs — real admin_activity_log rows for this admin (RLS is
+  // self-select-only, so there's no honest way to show other admins' or
+  // other roles' actions here — see 0061_admin_activity_log.sql).
+  const [auditLogs,   setAuditLogs]     = useState<AdminActivityEntry[]>([]);
   const [auditSearch, setAuditSearch]   = useState("");
-  const [auditRole,   setAuditRole]     = useState("all");
-  const [auditStatus, setAuditStatus]   = useState("all");
+  const refreshAuditLogs = () => { getMyAdminActivity(50).then(setAuditLogs); };
+  useEffect(() => { refreshAuditLogs(); }, []);
 
-  // Notifications
-  const [notifs, setNotifs] = useState({ push: true, email: false, payment: true, verification: true, reports: true, maintenance: true });
-
-  // Health
-  const HEALTH = [
-    { label: "Firebase",        status: "online"  as const, Icon: Cloud   },
-    { label: "Authentication",  status: "online"  as const, Icon: Shield  },
-    { label: "Database",        status: "warning" as const, Icon: Database},
-    { label: "Google Maps API", status: "online"  as const, Icon: MapPin  },
-    { label: "Cloud Storage",   status: "online"  as const, Icon: HardDrive},
-    { label: "Cloud Sync",      status: "offline" as const, Icon: Wifi    },
-  ];
-  const STATUS_META = { online: { label: "Online", color: "#16A34A", bg: "#DCFCE7", dot: "#22C55E" }, warning: { label: "Warning", color: "#D97706", bg: "#FEF3C7", dot: "#F59E0B" }, offline: { label: "Offline", color: "#EF4444", bg: "#FEE2E2", dot: "#EF4444" } };
+  // Notifications — real, persisted admin_notification_prefs (0063)
+  const [notifPrefs, setNotifPrefs] = useState<AdminNotificationPrefs>({ newUserAlerts: true, bhRequestAlerts: true, reportAlerts: true, paymentAlerts: true });
+  useEffect(() => { getMyNotificationPrefs().then(setNotifPrefs); }, []);
+  const toggleNotifPref = (key: keyof AdminNotificationPrefs) => {
+    const next = !notifPrefs[key];
+    setNotifPrefs(p => ({ ...p, [key]: next }));
+    setNotificationPref(key, next).then(res => { if (res.ok === false) showToast(`Could not save: ${res.error}`); });
+  };
 
   // Role permissions — persisted to role_permissions (real), deliberately
   // not enforced anywhere, matching the confirmed design decision.
@@ -288,20 +293,22 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
   // Logout
   const [showLogout, setShowLogout] = useState(false);
 
+  // Real Privacy Policy / Terms & Conditions text (same content shown from
+  // the login screen's footer) — these two buttons had no onClick at all.
+  const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
+
   // Toast
   const [toast, setToast] = useState("");
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 2200); };
 
-  // Filtered audit logs
+  // Filtered audit logs — search only (no role/status filters: every row here
+  // is this admin's own action, and every logged action succeeded by
+  // definition, so those two dimensions no longer apply to real data).
   const filteredLogs = useMemo(() => {
-    return AUDIT_LOGS.filter(l => {
-      const q = auditSearch.toLowerCase();
-      const matchQ = !q || l.user.toLowerCase().includes(q) || l.action.toLowerCase().includes(q);
-      const matchRole = auditRole === "all" || l.role.toLowerCase() === auditRole;
-      const matchStatus = auditStatus === "all" || l.status === auditStatus;
-      return matchQ && matchRole && matchStatus;
-    });
-  }, [auditSearch, auditRole, auditStatus]);
+    const q = auditSearch.toLowerCase();
+    if (!q) return auditLogs;
+    return auditLogs.filter(l => l.action.toLowerCase().includes(q) || l.description.toLowerCase().includes(q));
+  }, [auditLogs, auditSearch]);
 
   const pendingBH = bhRequests.filter(b => b.status === "pending").length;
   const activeAnns = announcements.filter(a => a.status !== "archived").length;
@@ -315,7 +322,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
       {showAnnForm && (
         <AnnouncementForm
           ann={editAnn}
-          onSaved={() => { refreshAnnouncements(); showToast(editAnn ? "Announcement updated." : "Announcement published."); }}
+          onSaved={() => { refreshAnnouncements(); refreshAuditLogs(); showToast(editAnn ? "Announcement updated." : "Announcement published."); }}
           onClose={() => { setShowAnnForm(false); setEditAnn(undefined); }}
         />
       )}
@@ -327,10 +334,13 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           msg="This announcement will be permanently removed."
           confirmLabel="Delete"
           onConfirm={async () => {
+            const target = announcements.find(a => a.id === deleteAnnId);
             const res = await deleteAnnouncement(deleteAnnId);
             setDeleteAnnId(null);
             if (res.ok === false) { showToast(`Could not delete: ${res.error}`); return; }
+            await logAdminActivity("delete_announcement", `Deleted announcement: "${target?.title ?? deleteAnnId}"`);
             refreshAnnouncements();
+            refreshAuditLogs();
             showToast("Announcement deleted.");
           }}
           onCancel={() => setDeleteAnnId(null)}
@@ -352,6 +362,11 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
             setConfirmBH(null);
             if (res.ok === false) { showToast(`Action failed: ${res.error}`); return; }
             if (action !== "revision") refreshBhRequests();
+            await logAdminActivity(
+              action === "approve" ? "approve_bh" : action === "reject" ? "reject_bh" : "request_bh_revision",
+              `${action === "approve" ? "Approved" : action === "reject" ? "Rejected" : "Requested revision for"} boarding house "${req.name}"`,
+            );
+            refreshAuditLogs();
             showToast(action === "approve" ? "Boarding house approved." : action === "reject" ? "Request rejected." : "Revision request sent.");
           }}
           onCancel={() => setConfirmBH(null)}
@@ -369,32 +384,50 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
         />
       )}
 
-      {/* ── App Bar ──────────────────────────────────────────────────────── */}
-      <div style={{ flexShrink: 0, backgroundImage: GRAD_H, padding: "52px 20px 20px", position: "relative" as const, overflow: "hidden" }}>
-        <div style={{ position: "absolute" as const, top: -40, right: -40, width: 150, height: 150, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.05)", filter: "blur(28px)", pointerEvents: "none" }} />
+      {/* Privacy Policy / Terms & Conditions — real, full text (same as the login screen's) */}
+      {legalDoc && (
+        <div style={{ position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.55)", zIndex: 300, display: "flex", flexDirection: "column" as const, justifyContent: "flex-end" }} onClick={() => setLegalDoc(null)}>
+          <div style={{ background: "white", borderRadius: "24px 24px 0 0", maxHeight: "85%", display: "flex", flexDirection: "column" as const, maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #F3F4F6", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{legalDoc === "privacy" ? "Privacy Policy" : "Terms & Conditions"}</p>
+              <button className="dt-admin-btn" onClick={() => setLegalDoc(null)} style={{ width: 32, height: 32, borderRadius: 10, background: "#F3F4F6", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <X size={15} color="#6B7280" />
+              </button>
+            </div>
+            <div style={{ overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "16px 20px 32px" }}>
+              {legalDoc === "privacy" ? <PrivacyPolicyContent /> : <TermsConditionsContent />}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── App Bar — flat on desktop (sidebar carries the purple identity
+          there); unchanged purple rectangle on mobile/tablet ──────────── */}
+      <div style={{ flexShrink: 0, backgroundImage: isDesktop ? undefined : GRAD_H, background: isDesktop ? "white" : undefined, borderBottom: isDesktop ? "1px solid #EFEFF5" : undefined, padding: isWide ? "26px 32px 20px" : "52px 20px 20px", position: "relative" as const, overflow: "hidden" }}>
+        {!isDesktop && <div style={{ position: "absolute" as const, top: -40, right: -40, width: 150, height: 150, borderRadius: "42% 58% 65% 35%/45% 40% 60% 55%", background: "rgba(255,255,255,.05)", filter: "blur(28px)", pointerEvents: "none" }} />}
         <div style={{ marginBottom: 4 }}>
-          <h1 style={{ margin: "0 0 2px", fontSize: 20, fontWeight: 800, color: "white", fontFamily: QS }}>System</h1>
-          <p style={{ margin: 0, fontSize: 11, color: "rgba(255,255,255,.65)", fontFamily: IN }}>Administration & Configuration Center</p>
+          <h1 style={{ margin: "0 0 2px", fontSize: 20, fontWeight: 800, color: isDesktop ? "#1F2937" : "white", fontFamily: QS }}>System</h1>
+          <p style={{ margin: 0, fontSize: 11, color: isDesktop ? "#9CA3AF" : "rgba(255,255,255,.65)", fontFamily: IN }}>Administration & Configuration Center</p>
         </div>
 
         {/* Quick stat strip */}
         <div style={{ display: "flex", gap: 8, marginTop: 14, overflowX: "auto" as const, scrollbarWidth: "none" as const }}>
           {[
-            { label: "Announcements", val: activeAnns,                     color: "#FDE68A" },
-            { label: "BH Pending",    val: pendingBH,                      color: "#FCA5A5" },
-            { label: "Audit Logs",    val: AUDIT_LOGS.length,              color: "#A5B4FC" },
-            { label: "Security Events",val: SECURITY_EVENTS.length,        color: "#6EE7B7" },
+            { label: "Announcements", val: activeAnns,       color: isDesktop ? "#D97706" : "#FDE68A" },
+            { label: "BH Pending",    val: pendingBH,        color: isDesktop ? "#EF4444" : "#FCA5A5" },
+            { label: "Audit Logs",    val: auditLogs.length, color: isDesktop ? "#6366F1" : "#A5B4FC" },
           ].map(({ label, val, color }) => (
-            <div key={label} style={{ flexShrink: 0, background: "rgba(255,255,255,.15)", borderRadius: 14, padding: "9px 14px", backdropFilter: "blur(8px)", textAlign: "center" as const, minWidth: 80 }}>
-              <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color, fontFamily: QS }}>{val}</p>
-              <p style={{ margin: "2px 0 0", fontSize: 8, color: "rgba(255,255,255,.7)", fontFamily: IN, whiteSpace: "nowrap" as const }}>{label}</p>
+            <div key={label} className="dt-admin-fade-in" style={{ flexShrink: 0, background: isDesktop ? `${color}14` : "rgba(255,255,255,.15)", borderRadius: 14, padding: "9px 14px", backdropFilter: isDesktop ? undefined : "blur(8px)", textAlign: "center" as const, minWidth: 80 }}>
+              <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color, fontFamily: QS }}><CountUp value={val}/></p>
+              <p style={{ margin: "2px 0 0", fontSize: 8, color: isDesktop ? "#6B7280" : "rgba(255,255,255,.7)", fontFamily: IN, whiteSpace: "nowrap" as const }}>{label}</p>
             </div>
           ))}
         </div>
       </div>
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: "14px 16px 100px" }}>
+      <div style={{ flex: 1, overflowY: "auto" as const, scrollbarWidth: "none" as const, padding: isWide ? "20px 32px 60px" : "14px 16px 100px" }}>
+      <div style={{ maxWidth: isWide ? 800 : undefined, margin: isWide ? "0 auto" : undefined }}>
 
         {/* 1. System Settings */}
         <SectionCard title="System Settings" icon={<Settings size={16} color="#9772F6" />} defaultOpen>
@@ -415,7 +448,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           <p style={{ margin: "4px 0 8px", fontSize: 10, fontWeight: 700, color: "#9CA3AF", fontFamily: QS, textTransform: "uppercase" as const, letterSpacing: 0.4 }}>Theme</p>
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             {(["light", "dark", "system"] as const).map(t => (
-              <div key={t} onClick={() => setTheme(t)} style={{ flex: 1, height: 40, borderRadius: 12, border: `2px solid ${theme === t ? "#9772F6" : "#E5E7EB"}`, background: theme === t ? "#F5F0FF" : "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div key={t} onClick={() => setTheme(t)} className="dt-admin-btn" style={{ flex: 1, height: 40, borderRadius: 12, border: `2px solid ${theme === t ? "#9772F6" : "#E5E7EB"}`, background: theme === t ? "#F5F0FF" : "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: theme === t ? "#9772F6" : "#9CA3AF", fontFamily: QS, textTransform: "capitalize" as const }}>{t}</span>
               </div>
             ))}
@@ -447,20 +480,20 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
             <Toggle on={maintenance} onToggle={() => { setMaintenance(v => !v); showToast(maintenance ? "Maintenance mode disabled." : "Maintenance mode enabled."); }} />
           </div>
 
-          <button onClick={() => showToast("Settings saved.")} style={{ marginTop: 14, width: "100%", height: 44, borderRadius: 18, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 16px rgba(151,114,246,.25)" }}>
+          <button className="dt-admin-btn" onClick={() => showToast("Settings saved.")} style={{ marginTop: 14, width: "100%", height: 44, borderRadius: 18, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 800, color: "white", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 16px rgba(151,114,246,.25)" }}>
             <Save size={14} color="white" /> Save Settings
           </button>
         </SectionCard>
 
         {/* 2. Announcement Management */}
         <SectionCard title="Announcement Management" icon={<Megaphone size={16} color="#3B82F6" />} iconBg="#EFF6FF" badge={activeAnns}>
-          <button onClick={() => { setEditAnn(undefined); setShowAnnForm(true); }} style={{ width: "100%", height: 42, borderRadius: 16, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 800, color: "white", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, marginBottom: 14, boxShadow: "0 4px 16px rgba(151,114,246,.25)" }}>
+          <button className="dt-admin-btn" onClick={() => { setEditAnn(undefined); setShowAnnForm(true); }} style={{ width: "100%", height: 42, borderRadius: 16, backgroundImage: GRAD, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 800, color: "white", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, marginBottom: 14, boxShadow: "0 4px 16px rgba(151,114,246,.25)" }}>
             <Plus size={14} color="white" /> New Announcement
           </button>
           {announcements.map(a => {
             const pm = PRIORITY_META[a.priority];
             return (
-              <div key={a.id} style={{ background: "#F9FAFB", borderRadius: 16, padding: "12px 14px", marginBottom: 10, border: "1px solid #F3F4F6" }}>
+              <div key={a.id} className="dt-admin-card" style={{ background: "#F9FAFB", borderRadius: 16, padding: "12px 14px", marginBottom: 10, border: "1px solid #F3F4F6" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
                   <div style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
                     <div style={{ display: "flex", gap: 5, marginBottom: 4, flexWrap: "wrap" as const }}>
@@ -475,10 +508,10 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                 <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>Scheduled: {a.scheduledDate || "—"}</span>
                   <div style={{ display: "flex", gap: 5 }}>
-                    <div onClick={() => { setEditAnn(a); setShowAnnForm(true); }} style={{ width: 28, height: 28, borderRadius: 9, background: "#EFF6FF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Edit3 size={11} color="#3B82F6" /></div>
-                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, a.status === "pinned" ? "active" : "pinned"); if (res.ok === false) { showToast(`Could not update: ${res.error}`); return; } refreshAnnouncements(); }} style={{ width: 28, height: 28, borderRadius: 9, background: a.status === "pinned" ? "#F5F0FF" : "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Pin size={11} color={a.status === "pinned" ? "#9772F6" : "#9CA3AF"} /></div>
-                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, "archived"); if (res.ok === false) { showToast(`Could not archive: ${res.error}`); return; } refreshAnnouncements(); }} style={{ width: 28, height: 28, borderRadius: 9, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Archive size={11} color="#9CA3AF" /></div>
-                    <div onClick={() => setDeleteAnnId(a.id)} style={{ width: 28, height: 28, borderRadius: 9, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Trash2 size={11} color="#EF4444" /></div>
+                    <div onClick={() => { setEditAnn(a); setShowAnnForm(true); }} className="dt-admin-btn" style={{ width: 28, height: 28, borderRadius: 9, background: "#EFF6FF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Edit3 size={11} color="#3B82F6" /></div>
+                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, a.status === "pinned" ? "active" : "pinned"); if (res.ok === false) { showToast(`Could not update: ${res.error}`); return; } refreshAnnouncements(); }} className="dt-admin-btn" style={{ width: 28, height: 28, borderRadius: 9, background: a.status === "pinned" ? "#F5F0FF" : "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Pin size={11} color={a.status === "pinned" ? "#9772F6" : "#9CA3AF"} /></div>
+                    <div onClick={async () => { const res = await setAnnouncementStatus(a.id, "archived"); if (res.ok === false) { showToast(`Could not archive: ${res.error}`); return; } refreshAnnouncements(); }} className="dt-admin-btn" style={{ width: 28, height: 28, borderRadius: 9, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Archive size={11} color="#9CA3AF" /></div>
+                    <div onClick={() => setDeleteAnnId(a.id)} className="dt-admin-btn" style={{ width: 28, height: 28, borderRadius: 9, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Trash2 size={11} color="#EF4444" /></div>
                   </div>
                 </div>
               </div>
@@ -496,11 +529,15 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
               </div>
               <div style={{ background: "#F9FAFB", borderRadius: 14, padding: "4px 14px" }}>
                 {(Object.entries(ps) as [keyof typeof ps, boolean][]).map(([perm, val]) => (
-                  <div key={perm} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #F3F4F6" }}>
+                  <div key={perm} className="dt-admin-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #F3F4F6", borderRadius: 8 }}>
                     <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: "#374151", fontFamily: IN }}>{PERM_LABELS[perm]}</p>
                     <Toggle on={val} onToggle={() => {
                       setPerms(p => ({ ...p, [role]: { ...p[role], [perm]: !val } }));
-                      setRolePermission(role as PermRole, perm as PermKey, !val).then(res => { if (res.ok === false) showToast(`Could not save: ${res.error}`); });
+                      setRolePermission(role as PermRole, perm as PermKey, !val).then(async res => {
+                        if (res.ok === false) { showToast(`Could not save: ${res.error}`); return; }
+                        await logAdminActivity("role_permission", `${!val ? "Enabled" : "Disabled"} "${PERM_LABELS[perm]}" for ${role === "admin" ? "Administrator" : role}`);
+                        refreshAuditLogs();
+                      });
                     }} />
                   </div>
                 ))}
@@ -524,7 +561,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
             };
             const sm = statusMeta[b.status];
             return (
-              <div key={b.id} style={{ background: "#F9FAFB", borderRadius: 16, padding: "13px 14px", marginBottom: 10, border: "1px solid #F3F4F6" }}>
+              <div key={b.id} className="dt-admin-card" style={{ background: "#F9FAFB", borderRadius: 16, padding: "13px 14px", marginBottom: 10, border: "1px solid #F3F4F6" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 }}>
                   <div>
                     <p style={{ margin: "0 0 2px", fontSize: 13, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{b.name}</p>
@@ -536,9 +573,9 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
                 <p style={{ margin: "0 0 10px", fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>Submitted: {b.submitted}</p>
                 {b.status === "pending" && (
                   <div style={{ display: "flex", gap: 7 }}>
-                    <button onClick={() => setConfirmBH({ req: b, action: "approve" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#DCFCE7", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#16A34A", fontFamily: QS }}>Approve</button>
-                    <button onClick={() => setConfirmBH({ req: b, action: "revision" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#EEF2FF", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#6366F1", fontFamily: QS }}>Revision</button>
-                    <button onClick={() => setConfirmBH({ req: b, action: "reject" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#FEE2E2", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#EF4444", fontFamily: QS }}>Reject</button>
+                    <button className="dt-admin-btn" onClick={() => setConfirmBH({ req: b, action: "approve" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#DCFCE7", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#16A34A", fontFamily: QS }}>Approve</button>
+                    <button className="dt-admin-btn" onClick={() => setConfirmBH({ req: b, action: "revision" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#EEF2FF", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#6366F1", fontFamily: QS }}>Revision</button>
+                    <button className="dt-admin-btn" onClick={() => setConfirmBH({ req: b, action: "reject" })} style={{ flex: 1, height: 34, borderRadius: 12, border: "none", background: "#FEE2E2", cursor: "pointer", fontSize: 11, fontWeight: 800, color: "#EF4444", fontFamily: QS }}>Reject</button>
                   </div>
                 )}
               </div>
@@ -546,146 +583,43 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           })}
         </SectionCard>
 
-        {/* 5. Database Management */}
-        <SectionCard title="Database Management" icon={<Database size={16} color="#0891B2" />} iconBg="#ECFEFF">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-            {[
-              { label: "Status",       val: "Connected",   color: "#16A34A", bg: "#DCFCE7" },
-              { label: "Storage Used", val: "1.24 GB",     color: "#9772F6", bg: "#F5F0FF" },
-              { label: "Last Backup",  val: "Aug 3, 2026", color: "#D97706", bg: "#FEF3C7" },
-              { label: "Total Records",val: "2,847",       color: "#0891B2", bg: "#ECFEFF" },
-            ].map(({ label, val, color, bg }) => (
-              <div key={label} style={{ background: bg, borderRadius: 14, padding: "12px 13px" }}>
-                <p style={{ margin: "0 0 2px", fontSize: 9, color, fontFamily: QS, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: 0.4 }}>{label}</p>
-                <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color, fontFamily: QS }}>{val}</p>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[
-              { label: "Backup",  Icon: Download, color: "#16A34A", bg: "#DCFCE7" },
-              { label: "Restore", Icon: Upload,   color: "#D97706", bg: "#FEF3C7" },
-              { label: "Export",  Icon: HardDrive,color: "#0891B2", bg: "#ECFEFF" },
-            ].map(({ label, Icon, color, bg }) => (
-              <button key={label} onClick={() => showToast(`${label} initiated.`)} style={{ height: 48, borderRadius: 14, border: "none", background: bg, cursor: "pointer", display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 4 }}>
-                <Icon size={16} color={color} />
-                <span style={{ fontSize: 10, fontWeight: 800, color, fontFamily: QS }}>{label}</span>
-              </button>
-            ))}
-          </div>
-        </SectionCard>
-
-        {/* 6. Audit Logs */}
-        <SectionCard title="Audit Logs" icon={<FileText size={16} color="#374151" />} iconBg="#F3F4F6" badge={AUDIT_LOGS.length}>
+        {/* 5. Audit Logs — real admin_activity_log rows for this admin */}
+        <SectionCard title="Audit Logs" icon={<FileText size={16} color="#374151" />} iconBg="#F3F4F6" badge={auditLogs.length}>
           {/* Search */}
-          <div style={{ background: "#F3F4F6", borderRadius: 12, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <div style={{ background: "#F3F4F6", borderRadius: 12, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <Search size={13} color="#9CA3AF" />
             <input value={auditSearch} onChange={e => setAuditSearch(e.target.value)} placeholder="Search logs…" style={{ flex: 1, background: "none", border: "none", outline: "none", fontSize: 12, fontFamily: IN, color: "#1F2937" }} />
           </div>
-          {/* Filters */}
-          <div style={{ display: "flex", gap: 5, marginBottom: 12, flexWrap: "wrap" as const }}>
-            {["all","Administrator","Landlord","Student"].map(r => (
-              <Chip key={r} label={r === "all" ? "All Roles" : r} active={auditRole === r} onClick={() => setAuditRole(r)} />
-            ))}
-            <Chip label="Success" active={auditStatus === "success"} onClick={() => setAuditStatus(auditStatus === "success" ? "all" : "success")} />
-            <Chip label="Failed"  active={auditStatus === "failed"}  onClick={() => setAuditStatus(auditStatus === "failed"  ? "all" : "failed")} />
-          </div>
-          {filteredLogs.map((l, i) => (
-            <div key={i} style={{ display: "flex", gap: 10, padding: "10px 0", borderBottom: "1px solid #F9FAFB" }}>
-              <div style={{ width: 30, height: 30, borderRadius: 10, background: l.status === "success" ? "#DCFCE7" : l.status === "failed" ? "#FEE2E2" : "#FEF3C7", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {l.status === "success" ? <CheckCircle size={13} color="#16A34A" /> : l.status === "failed" ? <XCircle size={13} color="#EF4444" /> : <AlertCircle size={13} color="#D97706" />}
+          {filteredLogs.map((l) => (
+            <div key={l.id} className="dt-admin-row" style={{ display: "flex", gap: 10, padding: "10px 0", borderBottom: "1px solid #F9FAFB", borderRadius: 8 }}>
+              <div style={{ width: 30, height: 30, borderRadius: 10, background: "#DCFCE7", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <CheckCircle size={13} color="#16A34A" />
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ margin: "0 0 1px", fontSize: 12, fontWeight: 700, color: "#1F2937", fontFamily: QS }}>{l.action}</p>
-                <p style={{ margin: "0 0 2px", fontSize: 10, color: "#6B7280", fontFamily: IN }}>{l.user} · {l.role}</p>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>{l.time}</span>
-                  <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>{l.device}</span>
-                </div>
+                <p style={{ margin: "0 0 2px", fontSize: 12, fontWeight: 700, color: "#1F2937", fontFamily: QS }}>{l.description}</p>
+                <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>{new Date(l.createdAt).toLocaleString()}</span>
               </div>
             </div>
           ))}
-          {filteredLogs.length === 0 && <p style={{ margin: 0, fontSize: 12, color: "#9CA3AF", fontFamily: IN, textAlign: "center" as const, padding: "16px 0" }}>No logs match your filters.</p>}
+          {filteredLogs.length === 0 && <p style={{ margin: 0, fontSize: 12, color: "#9CA3AF", fontFamily: IN, textAlign: "center" as const, padding: "16px 0" }}>{auditSearch ? "No logs match your search." : "No admin actions recorded yet."}</p>}
         </SectionCard>
 
-        {/* 7. Security Center */}
-        <SectionCard title="Security Center" icon={<Lock size={16} color="#EF4444" />} iconBg="#FEE2E2" badge={SECURITY_EVENTS.length}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-            {[
-              { label: "Failed Logins",     val: "1", color: "#EF4444", bg: "#FEE2E2" },
-              { label: "Locked Accounts",   val: "1", color: "#D97706", bg: "#FEF3C7" },
-              { label: "Active Sessions",   val: "4", color: "#16A34A", bg: "#DCFCE7" },
-              { label: "Password Resets",   val: "1", color: "#3B82F6", bg: "#EFF6FF" },
-            ].map(({ label, val, color, bg }) => (
-              <div key={label} style={{ background: bg, borderRadius: 14, padding: "11px 13px" }}>
-                <p style={{ margin: "0 0 1px", fontSize: 8, color, fontFamily: QS, fontWeight: 700, textTransform: "uppercase" as const }}>{label}</p>
-                <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color, fontFamily: QS }}>{val}</p>
-              </div>
-            ))}
-          </div>
-          {SECURITY_EVENTS.map((e, i) => {
-            const typeMeta: Record<string, { color: string; bg: string; Icon: any }> = {
-              failed:  { color: "#EF4444", bg: "#FEE2E2", Icon: XCircle     },
-              locked:  { color: "#D97706", bg: "#FEF3C7", Icon: Lock        },
-              reset:   { color: "#3B82F6", bg: "#EFF6FF", Icon: Key         },
-              unknown: { color: "#6366F1", bg: "#EEF2FF", Icon: AlertCircle },
-            };
-            const tm = typeMeta[e.type];
-            return (
-              <div key={i} style={{ background: "#F9FAFB", borderRadius: 14, padding: "11px 13px", marginBottom: 9, border: `1px solid ${tm.bg}` }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <div style={{ width: 30, height: 30, borderRadius: 10, background: tm.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <tm.Icon size={13} color={tm.color} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ margin: "0 0 1px", fontSize: 12, fontWeight: 800, color: "#1F2937", fontFamily: QS }}>{e.user}</p>
-                    <p style={{ margin: "0 0 4px", fontSize: 10, color: "#6B7280", fontFamily: IN }}>{e.detail}</p>
-                    <span style={{ fontSize: 9, color: "#C4C9D4", fontFamily: IN }}>{e.time} · {e.device}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
-                  {e.type === "locked" && <button onClick={() => showToast("Account unlocked.")} style={{ flex: 1, height: 30, borderRadius: 10, border: "none", background: "#DCFCE7", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#16A34A", fontFamily: QS }}>Unlock Account</button>}
-                  {(e.type === "failed" || e.type === "unknown") && <button onClick={() => showToast("User force logged out.")} style={{ flex: 1, height: 30, borderRadius: 10, border: "none", background: "#FEE2E2", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#EF4444", fontFamily: QS }}>Force Logout</button>}
-                  <button onClick={() => showToast("Password reset sent.")} style={{ flex: 1, height: 30, borderRadius: 10, border: "none", background: "#EFF6FF", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#3B82F6", fontFamily: QS }}>Reset Password</button>
-                </div>
-              </div>
-            );
-          })}
-        </SectionCard>
-
-        {/* 8. Notification Settings */}
+        {/* 6. Notification Settings — real, persisted (admin_notification_prefs,
+            0063), and each one actually gates whether that event notifies
+            admin (see notifyAdmins in notificationStore.ts and its call sites
+            in Student/Parent/LandlordSignUp, StudentHome, StudentPayments).
+            Push/Email were dropped: no push or email delivery exists anywhere
+            in this app, only in-app notifications. "User Verification" and
+            "Maintenance" were dropped too — there's no real pending-approval
+            gate or system-health concept to notify about. */}
         <SectionCard title="Notification Settings" icon={<Bell size={16} color="#3B82F6" />} iconBg="#EFF6FF">
-          <ToggleRow label="Push Notifications"          sub="In-app alerts"                on={notifs.push}         onToggle={() => setNotifs(n => ({ ...n, push: !n.push }))} />
-          <ToggleRow label="Email Notifications"         sub="Sent to admin email"           on={notifs.email}        onToggle={() => setNotifs(n => ({ ...n, email: !n.email }))} />
-          <ToggleRow label="Payment Alerts"              sub="New payments & overdue rent"   on={notifs.payment}      onToggle={() => setNotifs(n => ({ ...n, payment: !n.payment }))} />
-          <ToggleRow label="User Verification Alerts"    sub="New pending accounts"          on={notifs.verification} onToggle={() => setNotifs(n => ({ ...n, verification: !n.verification }))} />
-          <ToggleRow label="Report Alerts"               sub="New user reports submitted"    on={notifs.reports}      onToggle={() => setNotifs(n => ({ ...n, reports: !n.reports }))} />
-          <ToggleRow label="Maintenance Notifications"   sub="System downtime alerts"        on={notifs.maintenance}  onToggle={() => setNotifs(n => ({ ...n, maintenance: !n.maintenance }))} />
+          <ToggleRow label="New User Registrations"  sub="Student, parent & landlord signups"  on={notifPrefs.newUserAlerts}   onToggle={() => toggleNotifPref("newUserAlerts")} />
+          <ToggleRow label="Boarding House Requests" sub="New submissions awaiting approval"   on={notifPrefs.bhRequestAlerts} onToggle={() => toggleNotifPref("bhRequestAlerts")} />
+          <ToggleRow label="Report Alerts"           sub="New user reports submitted"          on={notifPrefs.reportAlerts}    onToggle={() => toggleNotifPref("reportAlerts")} />
+          <ToggleRow label="Payment Alerts"          sub="New payments awaiting verification"  on={notifPrefs.paymentAlerts}   onToggle={() => toggleNotifPref("paymentAlerts")} />
         </SectionCard>
 
-        {/* 9. System Health */}
-        <SectionCard title="System Health" icon={<Activity size={16} color="#16A34A" />} iconBg="#DCFCE7">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {HEALTH.map(({ label, status, Icon }) => {
-              const sm = STATUS_META[status];
-              return (
-                <div key={label} style={{ background: sm.bg, borderRadius: 16, padding: "12px 13px", border: `1px solid ${sm.dot}30` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
-                    <Icon size={14} color={sm.color} />
-                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: sm.dot }} />
-                    <span style={{ fontSize: 9, fontWeight: 800, color: sm.color, fontFamily: QS }}>{sm.label}</span>
-                  </div>
-                  <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: sm.color, fontFamily: QS, lineHeight: 1.3 }}>{label}</p>
-                </div>
-              );
-            })}
-          </div>
-          <button onClick={() => showToast("System health refreshed.")} style={{ marginTop: 12, width: "100%", height: 40, borderRadius: 14, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 12, fontWeight: 800, color: "#374151", fontFamily: QS, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
-            <RefreshCw size={13} color="#9CA3AF" /> Refresh Status
-          </button>
-        </SectionCard>
-
-        {/* 10. App Information */}
+        {/* 7. App Information */}
         <SectionCard title="App Information" icon={<Info size={16} color="#9CA3AF" />} iconBg="#F3F4F6">
           {[
             { label: "App Name",      val: "DormiTrack"           },
@@ -693,7 +627,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
             { label: "Build Number",  val: "42"                   },
             { label: "Last Updated",  val: "August 4, 2026"       },
             { label: "Developer",     val: "BISU Capstone Team"   },
-            { label: "Platform",      val: "React 18 / Firebase"  },
+            { label: "Platform",      val: "React 18 / Supabase"  },
           ].map(({ label, val }) => (
             <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid #F9FAFB" }}>
               <p style={{ margin: 0, fontSize: 12, color: "#9CA3AF", fontFamily: IN }}>{label}</p>
@@ -701,14 +635,13 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
             </div>
           ))}
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            {["Privacy Policy", "Terms & Conditions"].map(l => (
-              <button key={l} style={{ flex: 1, height: 36, borderRadius: 12, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#6B7280", fontFamily: QS }}>{l}</button>
-            ))}
+            <button className="dt-admin-btn" onClick={() => setLegalDoc("privacy")} style={{ flex: 1, height: 36, borderRadius: 12, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#6B7280", fontFamily: QS }}>Privacy Policy</button>
+            <button className="dt-admin-btn" onClick={() => setLegalDoc("terms")} style={{ flex: 1, height: 36, borderRadius: 12, border: "1.5px solid #E5E7EB", background: "white", cursor: "pointer", fontSize: 10, fontWeight: 800, color: "#6B7280", fontFamily: QS }}>Terms & Conditions</button>
           </div>
         </SectionCard>
 
-        {/* 11. Logout */}
-        <div onClick={() => setShowLogout(true)} style={{ background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.06)" }}>
+        {/* 8. Logout */}
+        <div onClick={() => setShowLogout(true)} className="dt-admin-card" style={{ background: "white", borderRadius: 20, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, border: "1px solid #FEE2E2", cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.06)" }}>
           <div style={{ width: 36, height: 36, borderRadius: 11, background: "#FEE2E2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <LogOut size={16} color="#DC2626" />
           </div>
@@ -719,6 +652,7 @@ export function AdminSystemScreen({ go }: { go: (s: string) => void }) {
           <ChevronRight size={14} color="#FCA5A5" />
         </div>
 
+      </div>
       </div>
     </div>
   );

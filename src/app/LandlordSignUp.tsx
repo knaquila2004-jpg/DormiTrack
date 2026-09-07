@@ -8,6 +8,8 @@ import { BoardingHouseLocationPicker } from "./components/BoardingHouseLocationP
 import { AddressComponents } from "./components/mapGeo";
 import { supabase } from "../lib/supabase";
 import { createBoardingHouseWithRooms } from "./boardingHouseStore";
+import { notifyAdmins } from "./notificationStore";
+import { useDeviceType } from "./components/useDeviceType";
 
 // ── Payment Setup helpers ─────────────────────────────────────────────────────
 // Hoisted to module scope (not redeclared per-render) so they keep a stable
@@ -65,6 +67,11 @@ function ConfirmDialog({ title, msg, confirmLabel = "Confirm", onConfirm, onCanc
 }
 
 export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
+  // Same convention as WelcomeLoginScreen/RoleSelectScreen (App.tsx) — mobile
+  // stays pixel-identical (maxWidth/margin become `undefined` there);
+  // tablet/desktop cap the form column instead of letting it stretch to the
+  // full page width now that this isn't boxed into a phone-shaped panel.
+  const isWide = useDeviceType() !== "mobile";
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
   const [step, setStep] = useState(0); // 0=personal 1=account 2=setup 3=review
@@ -365,6 +372,16 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
       setSubmitError(bhResult.error);
       return;
     }
+    notifyAdmins("new_user_alerts", {
+      type: "account", title: "New Landlord Registration",
+      description: `${firstName} ${lastName} registered as a landlord.`,
+      destination: "adminUsers",
+    });
+    notifyAdmins("bh_request_alerts", {
+      type: "boarding-house", title: "New Boarding House Submitted",
+      description: `"${bhName}" was submitted for approval.`,
+      destination: "adminSystem", relatedId: bhResult.id,
+    });
     go("dashboard");
   };
 
@@ -432,7 +449,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
       </div>
       <div style={{ height:16 }} />
       <ProgressBar />
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px", maxWidth: isWide ? 480 : undefined, width: "100%", margin: isWide ? "0 auto" : undefined, boxSizing: "border-box" as const }}>
         {sCard("Personal Information", null, <>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
             <div>
@@ -493,7 +510,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
       </div>
       <div style={{ height:16 }} />
       <ProgressBar />
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px", maxWidth: isWide ? 480 : undefined, width: "100%", margin: isWide ? "0 auto" : undefined, boxSizing: "border-box" as const }}>
         {sCard("Account Details", null, <>
           <div style={fieldStyle}>
             <label style={labelStyle}>Username</label>
@@ -563,7 +580,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
       </div>
       <div style={{ height:16 }} />
       <ProgressBar />
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px", maxWidth: isWide ? 480 : undefined, width: "100%", margin: isWide ? "0 auto" : undefined, boxSizing: "border-box" as const }}>
 
         {/* A: Basic Info */}
         {sCard("Boarding House Information", null, <>
@@ -1100,7 +1117,7 @@ export function LandlordSignUpScreen({ go }: { go: (s: Screen) => void }) {
       </div>
       <div style={{ height:16 }} />
       <ProgressBar />
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"0 16px 24px", maxWidth: isWide ? 480 : undefined, width: "100%", margin: isWide ? "0 auto" : undefined, boxSizing: "border-box" as const }}>
         {rvCard("Personal Information", ()=>setStep(0), <>
           {rvRow("Full Name", [firstName, middleName, lastName].filter(Boolean).join(" "))}
           {rvRow("Contact", contact ? `+63 ${contact}` : "")}

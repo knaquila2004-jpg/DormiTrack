@@ -7,6 +7,8 @@ import {
 import { GRAD, GRAD_H, Screen } from "./shared";
 import { supabase } from "../lib/supabase";
 import { acknowledgeParentLink } from "./parentLinkStore";
+import { notifyAdmins } from "./notificationStore";
+import { useDeviceType } from "./components/useDeviceType";
 
 const STEPS = ["Personal", "Account", "Student"];
 
@@ -16,6 +18,14 @@ const RELATIONS = [
 ];
 
 export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void; onComplete: (studentId: string) => void }) {
+  // Same convention as WelcomeLoginScreen/RoleSelectScreen (App.tsx) — mobile
+  // stays pixel-identical; tablet/desktop cap the form column instead of
+  // letting it stretch to the full page width now that this isn't boxed
+  // into a phone-shaped panel. (ParentLinkingScreen further down this same
+  // file is unaffected — it's reached post-signup with a real session, so
+  // it's correctly still subject to the mobile/tablet-only restriction, not
+  // part of this pre-auth full-bleed treatment.)
+  const isWide = useDeviceType() !== "mobile";
   const QS = "'Quicksand',sans-serif";
   const IN = "'Inter',sans-serif";
 
@@ -208,6 +218,11 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
       setSubmitError(lastError);
       return;
     }
+    notifyAdmins("new_user_alerts", {
+      type: "account", title: "New Parent Registration",
+      description: `${firstName} ${lastName} registered as a parent.`,
+      destination: "adminUsers",
+    });
     onComplete(studentId);
   };
 
@@ -275,7 +290,7 @@ export function ParentSignUpScreen({ go, onComplete }: { go: (s: Screen) => void
       <ProgressBar />
 
       {/* Scrollable form */}
-      <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "0 16px 32px" }}>
+      <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" as const, padding: "0 16px 32px", maxWidth: isWide ? 480 : undefined, width: "100%", margin: isWide ? "0 auto" : undefined, boxSizing: "border-box" as const }}>
 
         {/* ── STEP 0: Personal Info ── */}
         {step === 0 && card(<>

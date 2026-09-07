@@ -264,3 +264,174 @@ export async function getAdminInsights(daily: DailyActivity[], monthly: MonthlyR
 
   return insights;
 }
+
+// ── Admin Map — real student locations + real open-report locations ────────
+// AdminMap.tsx previously plotted only real boarding houses, leaving its
+// "Students" and "Reports" filters as an honest empty state (no backend data
+// existed for either yet — see that file's own comment). This is that real
+// data, following the exact same "only what's actually real and persisted"
+// rule ParentMap.tsx already uses for a single student: this app has no live
+// GPS backend, so a student's "location" is only ever their most recent real
+// check_in_out_records row, at whatever position that record actually
+// captured (never fabricated). Admin has full SELECT on both tables via
+// current_role() = 'admin' policies (0003_rls.sql), same as everything else
+// in this file.
+
+export type AdminStudentLocation = {
+  studentId: string; studentName: string; boardingHouseId: string; boardingHouseName: string;
+  type: "checkin" | "checkout"; occurredAt: string; lat: number; lng: number;
+};
+
+export async function getStudentLocationsForAdmin(): Promise<AdminStudentLocation[]> {
+  const { data: assignments, error: aErr } = await supabase
+    .from("student_assignments")
+    .select("student_id, boarding_house_id, students!inner ( user_id, users!inner ( first_name, last_name ) ), boarding_houses ( name )")
+    .eq("is_current", true);
+  if (aErr) { console.error("getStudentLocationsForAdmin (assignments):", aErr.message); return []; }
+  if (!assignments?.length) return [];
+
+  const nameByStudentId = new Map(assignments.map((a: any) => [a.student_id, [a.students.users.first_name, a.students.users.last_name].filter(Boolean).join(" ") || "A student"]));
+  const bhByStudentId = new Map(assignments.map((a: any) => [a.student_id, { id: a.boarding_house_id, name: a.boarding_houses?.name ?? "—" }]));
+
+  // Most recent row per student — same "take the first occurrence in a
+  // newest-first feed" dedupe already used above (getAdminOverviewStats),
+  // just without the "today only" filter and over a bounded window large
+  // enough to cover every currently-assigned student at least once.
+  const { data: records, error: rErr } = await supabase
+    .from("check_in_out_records")
+    .select("student_id, type, occurred_at, lat, lng")
+    .in("student_id", assignments.map((a: any) => a.student_id))
+    .not("lat", "is", null).not("lng", "is", null)
+    .order("occurred_at", { ascending: false })
+    .limit(2000);
+  if (rErr) { console.error("getStudentLocationsForAdmin (records):", rErr.message); return []; }
+
+  const seen = new Set<string>();
+  const out: AdminStudentLocation[] = [];
+  for (const r of records ?? []) {
+    if (seen.has(r.student_id)) continue;
+    seen.add(r.student_id);
+    const bh = bhByStudentId.get(r.student_id);
+    if (!bh) continue;
+    out.push({
+      studentId: r.student_id, studentName: nameByStudentId.get(r.student_id) ?? "A student",
+      boardingHouseId: bh.id, boardingHouseName: bh.name,
+      type: r.type, occurredAt: r.occurred_at, lat: r.lat as number, lng: r.lng as number,
+    });
+  }
+  return out;
+}
+
+// ── Real admin activity log (0061) ──────────────────────────────────────────
+// AdminProfile.tsx's "Activity History" showed a hardcoded mock array —
+// replaced by this real, persisted log. Written from the screen-level
+// handler right after each real action actually succeeds (user status
+// changes, report responses, announcements, boarding house approvals,
+// role-permission changes, report exports), since that's where the specific
+// name/title/etc. needed for a real description is already in memory —
+// mirrors how this app already fires notifications from screen-level
+// handlers rather than from inside the low-level store functions.
+export async function logAdminActivity(action: string, description: string): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return;
+  const { error } = await supabase.from("admin_activity_log").insert({ admin_id: uid, action, description });
+  if (error) console.error("logAdminActivity:", error.message);
+}
+
+export type AdminActivityEntry = { id: string; action: string; description: string; createdAt: string };
+
+export async function getMyAdminActivity(limit = 20): Promise<AdminActivityEntry[]> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return [];
+  const { data, error } = await supabase
+    .from("admin_activity_log").select("id, action, description, created_at")
+    .eq("admin_id", uid).order("created_at", { ascending: false }).limit(limit);
+  if (error) { console.error("getMyAdminActivity:", error.message); return []; }
+  return (data ?? []).map(r => ({ id: r.id, action: r.action, description: r.description, createdAt: r.created_at }));
+}
+
+// ── Real profile-summary counts (AdminProfile.tsx's Stats card + Account
+// Information section) — replaces hardcoded "11"/"8"/"2 properties" etc.
+// "Reports Handled" counts reports this admin has actually resolved or
+// archived (from admin_activity_log), not just every report ever filed —
+// closer to what "handled" honestly means for one admin's own profile.
+export type AdminProfileStats = { totalManagedUsers: number; totalBoardingHouses: number; reportsHandled: number };
+
+export async function getMyAdminProfileStats(): Promise<AdminProfileStats> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  const [students, parents, landlords, boardingHouses, reportsHandled] = await Promise.all([
+    countRows("students"),
+    countRows("parents"),
+    countRows("landlords"),
+    countRows("boarding_houses"),
+    uid ? countRows("admin_activity_log", q => q.eq("admin_id", uid).in("action", ["resolve_report", "archive_report", "report_status"])) : Promise.resolve(0),
+  ]);
+  return { totalManagedUsers: students + parents + landlords, totalBoardingHouses: boardingHouses, reportsHandled };
+}
+
+// ── Real admin notification preferences (0063) ──────────────────────────────
+// Replaces two separate local-only useState toggle sets (AdminSystem.tsx and
+// AdminProfile.tsx each had their own, neither persisted). Only 4 kept — each
+// gates a real event this app can actually fire (see notifyAdmins in
+// notificationStore.ts): new signups, boarding house submissions, reports,
+// payments. A missing row (no admin has customized their prefs yet) means
+// every alert defaults to on, matching the table's own column defaults.
+export type AdminNotificationPrefs = {
+  newUserAlerts: boolean; bhRequestAlerts: boolean; reportAlerts: boolean; paymentAlerts: boolean;
+};
+const DEFAULT_ADMIN_NOTIF_PREFS: AdminNotificationPrefs = {
+  newUserAlerts: true, bhRequestAlerts: true, reportAlerts: true, paymentAlerts: true,
+};
+
+export async function getMyNotificationPrefs(): Promise<AdminNotificationPrefs> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return DEFAULT_ADMIN_NOTIF_PREFS;
+  const { data, error } = await supabase
+    .from("admin_notification_prefs").select("new_user_alerts, bh_request_alerts, report_alerts, payment_alerts")
+    .eq("admin_id", uid).maybeSingle();
+  if (error) { console.error("getMyNotificationPrefs:", error.message); return DEFAULT_ADMIN_NOTIF_PREFS; }
+  if (!data) return DEFAULT_ADMIN_NOTIF_PREFS;
+  return { newUserAlerts: data.new_user_alerts, bhRequestAlerts: data.bh_request_alerts, reportAlerts: data.report_alerts, paymentAlerts: data.payment_alerts };
+}
+
+export async function setNotificationPref(key: keyof AdminNotificationPrefs, enabled: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return { ok: false, error: "Not signed in." };
+  const column = { newUserAlerts: "new_user_alerts", bhRequestAlerts: "bh_request_alerts", reportAlerts: "report_alerts", paymentAlerts: "payment_alerts" }[key];
+  const { error } = await supabase.from("admin_notification_prefs").upsert({ admin_id: uid, [column]: enabled }, { onConflict: "admin_id" });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export type AdminReportLocation = {
+  boardingHouseId: string; boardingHouseName: string; lat: number; lng: number; openReportCount: number;
+};
+
+// A report has no coordinate of its own (see public.reports — it's tied to a
+// boarding house/room/bed, not a GPS point), so the only real, non-fabricated
+// location for it is its boarding house's real lat/lng. Only open reports
+// (pending/under-review/in-progress) count — a resolved/rejected/closed one
+// isn't an active issue to flag on a live map.
+export async function getOpenReportLocationsForAdmin(): Promise<AdminReportLocation[]> {
+  const { data, error } = await supabase
+    .from("reports")
+    .select("boarding_house_id, boarding_houses ( name, lat, lng )")
+    .in("status", ["pending", "under-review", "in-progress"])
+    .not("boarding_house_id", "is", null);
+  if (error) { console.error("getOpenReportLocationsForAdmin:", error.message); return []; }
+
+  const byBh = new Map<string, AdminReportLocation>();
+  for (const r of data ?? []) {
+    const bh = (r as any).boarding_houses;
+    if (!bh || bh.lat == null || bh.lng == null) continue;
+    const existing = byBh.get(r.boarding_house_id);
+    if (existing) existing.openReportCount++;
+    else byBh.set(r.boarding_house_id, { boardingHouseId: r.boarding_house_id, boardingHouseName: bh.name, lat: bh.lat, lng: bh.lng, openReportCount: 1 });
+  }
+  return [...byBh.values()];
+}

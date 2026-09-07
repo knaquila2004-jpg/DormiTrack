@@ -10,14 +10,15 @@ export const MAP_CENTER = { lat: 9.8947193, lng: 123.8827641 };
 
 // ── Screen & role types ───────────────────────────────────────────────────────
 export type Screen =
-  | "splash" | "landing" | "roleSelect" | "login" | "signup"
+  | "publicLanding"
+  | "splash" | "landing" | "roleSelect" | "login"
   | "forgotPassword" | "dashboard" | "payments" | "map"
-  | "notifications" | "messages" | "profile" | "dormInfo" | "occupants"
-  | "homeVisit" | "settings" | "rooms"
+  | "notifications" | "messages" | "profile" | "occupants"
+  | "settings"
   | "adminUsers" | "adminReports" | "adminProfile" | "adminMap" | "adminSystem"
   | "studentSignup" | "landlordSignup" | "parentSignup" | "parentLinking" | "boardingReg" | "pendingVerify";
 
-export type NavTab = { id: Screen; Icon: React.ComponentType<{ size?: number; color?: string; strokeWidth?: number; style?: React.CSSProperties }>; label: string };
+export type NavTab = { id: Screen; Icon: React.ComponentType<{ size?: number; color?: string; strokeWidth?: number; style?: React.CSSProperties; className?: string }>; label: string };
 export type Role = "student" | "parent" | "landlord" | "admin";
 
 // ── Data types ────────────────────────────────────────────────────────────────

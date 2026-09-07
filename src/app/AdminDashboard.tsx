@@ -8,6 +8,8 @@ import {
 import { useUnreadCount, fmtBadgeCount, timeAgo } from "./notificationStore";
 import { useUnreadChatCount } from "./chatStore";
 import { getAdminOverviewStats, getAdminTodayWidgets, getRecentPlatformActivity, AdminOverviewStats, AdminTodayWidgets, PlatformActivity } from "./adminStore";
+import { useDeviceType } from "./components/useDeviceType";
+import { CountUp } from "./components/CountUp";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -22,14 +24,14 @@ const EMPTY_WIDGETS: AdminTodayWidgets = { newUsers: 0, checkIns: 0, checkOuts: 
 // real current value only — an honest gap rather than a fabricated trend.
 function buildStatCards(s: AdminOverviewStats) {
   return [
-    { label:"Total Students",       val:String(s.totalStudents),       color:"#9772F6", bg:"#F5F0FF", Icon:Users       },
-    { label:"Total Parents",        val:String(s.totalParents),        color:"#EC4899", bg:"#FDF2F8", Icon:Users       },
-    { label:"Total Landlords",      val:String(s.totalLandlords),      color:"#3B82F6", bg:"#EFF6FF", Icon:Building2   },
-    { label:"Boarding Houses",      val:String(s.totalBoardingHouses), color:"#6366F1", bg:"#EEF2FF", Icon:Home        },
-    { label:"Active (Inside)",      val:String(s.activeInside),        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn       },
-    { label:"Outside BH",           val:String(s.outsideBH),           color:"#D97706", bg:"#FEF3C7", Icon:LogOut      },
-    { label:"Pending Verifications",val:String(s.pendingVerifications),color:"#EF4444", bg:"#FEE2E2", Icon:AlertCircle },
-    { label:"Reports Today",        val:String(s.reportsToday),        color:"#0891B2", bg:"#ECFEFF", Icon:FileText    },
+    { label:"Total Students",       val:s.totalStudents,       color:"#9772F6", bg:"#F5F0FF", Icon:Users       },
+    { label:"Total Parents",        val:s.totalParents,        color:"#EC4899", bg:"#FDF2F8", Icon:Users       },
+    { label:"Total Landlords",      val:s.totalLandlords,      color:"#3B82F6", bg:"#EFF6FF", Icon:Building2   },
+    { label:"Boarding Houses",      val:s.totalBoardingHouses, color:"#6366F1", bg:"#EEF2FF", Icon:Home        },
+    { label:"Active (Inside)",      val:s.activeInside,        color:"#16A34A", bg:"#DCFCE7", Icon:LogIn       },
+    { label:"Outside BH",           val:s.outsideBH,           color:"#D97706", bg:"#FEF3C7", Icon:LogOut      },
+    { label:"Pending Verifications",val:s.pendingVerifications,color:"#EF4444", bg:"#FEE2E2", Icon:AlertCircle },
+    { label:"Reports Today",        val:s.reportsToday,        color:"#0891B2", bg:"#ECFEFF", Icon:FileText    },
   ];
 }
 
@@ -56,11 +58,11 @@ const QUICK_ACTIONS = [
 
 function buildTodayWidgets(w: AdminTodayWidgets) {
   return [
-    { label:"New Users",       val:String(w.newUsers),       color:"#9772F6" },
-    { label:"Entries",         val:String(w.checkIns),       color:"#16A34A" },
-    { label:"Exits",           val:String(w.checkOuts),      color:"#D97706" },
-    { label:"Pending Reports", val:String(w.pendingReports), color:"#EF4444" },
-    { label:"BH Approvals",    val:String(w.bhApprovals),    color:"#3B82F6" },
+    { label:"New Users",       val:w.newUsers,       color:"#9772F6" },
+    { label:"Entries",         val:w.checkIns,       color:"#16A34A" },
+    { label:"Exits",           val:w.checkOuts,      color:"#D97706" },
+    { label:"Pending Reports", val:w.pendingReports, color:"#EF4444" },
+    { label:"BH Approvals",    val:w.bhApprovals,    color:"#3B82F6" },
   ];
 }
 
@@ -72,6 +74,15 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
   const [refreshing, setRefreshing] = useState(false);
   const notifCount = useUnreadCount("admin");
   const chatCount = useUnreadChatCount("admin");
+  // Desktop-only layout adjustments (AdminShellFrame in App.tsx already
+  // provides the sidebar/header chrome at this width) — same data, same
+  // components, just more columns and no mobile-status-bar clearance.
+  // isDesktop additionally drops the purple app-bar rectangle in favor of a
+  // flat header, now that the sidebar itself carries the purple identity —
+  // mobile/tablet (no sidebar) keep the original purple app bar unchanged.
+  const deviceType = useDeviceType();
+  const isWide = deviceType !== "mobile";
+  const isDesktop = deviceType === "desktop";
 
   const [stats, setStats] = useState<AdminOverviewStats>(EMPTY_STATS);
   const [widgets, setWidgets] = useState<AdminTodayWidgets>(EMPTY_WIDGETS);
@@ -92,29 +103,30 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
   return (
     <div style={{ height:"100%", display:"flex", flexDirection:"column" as const, background:"#F2F4F8" }}>
 
-      {/* ── App Bar ─────────────────────────────────────────────────────────── */}
-      <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 20px", position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(28px)", pointerEvents:"none" }}/>
+      {/* ── App Bar — flat on desktop (the sidebar already carries the purple
+          identity there); unchanged purple rectangle on mobile/tablet ──── */}
+      <div style={{ flexShrink:0, backgroundImage: isDesktop ? undefined : GRAD_H, background: isDesktop ? "white" : undefined, borderBottom: isDesktop ? "1px solid #EFEFF5" : undefined, padding: isWide ? "26px 32px 20px" : "52px 20px 20px", position:"relative" as const, overflow:"hidden" }}>
+        {!isDesktop && <div style={{ position:"absolute" as const, top:-40, right:-40, width:160, height:160, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(28px)", pointerEvents:"none" }}/>}
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
           <div>
-            <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:1 }}>Welcome,</p>
-            <h1 style={{ margin:"2px 0 2px", fontSize:22, fontWeight:800, color:"white", fontFamily:QS }}>Admin</h1>
-            <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.6)", fontFamily:IN }}>{fmtDate()}</p>
+            <p style={{ margin:0, fontSize:11, color: isDesktop ? "#9772F6" : "rgba(255,255,255,.65)", fontFamily:IN, fontWeight:700, textTransform:"uppercase" as const, letterSpacing:1 }}>Welcome,</p>
+            <h1 style={{ margin:"2px 0 2px", fontSize:22, fontWeight:800, color: isDesktop ? "#1F2937" : "white", fontFamily:QS }}>Admin</h1>
+            <p style={{ margin:0, fontSize:11, color: isDesktop ? "#9CA3AF" : "rgba(255,255,255,.6)", fontFamily:IN }}>{fmtDate()}</p>
           </div>
           <div style={{ display:"flex", gap:8 }}>
-            <button onClick={refresh} style={{ width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <RefreshCw size={16} color="white" style={{ transform:refreshing?"rotate(360deg)":"none", transition:"transform .6s" }}/>
+            <button onClick={refresh} className="dt-admin-btn" style={{ width:40, height:40, borderRadius:13, background: isDesktop ? "#F5F0FF" : "rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <RefreshCw size={16} color={isDesktop ? "#7549F6" : "white"} style={{ transform:refreshing?"rotate(360deg)":"none", transition:"transform .6s" }}/>
             </button>
-            <button onClick={()=>go("notifications")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <Bell size={17} color="white"/>
+            <button onClick={()=>go("notifications")} className="dt-admin-btn" style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background: isDesktop ? "#F5F0FF" : "rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <Bell size={17} color={isDesktop ? "#7549F6" : "white"}/>
               {notifCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#EF4444", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(notifCount)}</span>}
             </button>
-            <button onClick={()=>go("messages")} style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <MessageCircle size={17} color="white"/>
+            <button onClick={()=>go("messages")} className="dt-admin-btn" style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background: isDesktop ? "#F5F0FF" : "rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <MessageCircle size={17} color={isDesktop ? "#7549F6" : "white"}/>
               {chatCount > 0 && <span style={{ position:"absolute" as const, top:-2, right:-2, width:16, height:16, borderRadius:"50%", background:"#22C55E", color:"white", fontSize:8, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{fmtBadgeCount(chatCount)}</span>}
             </button>
-            <button onClick={()=>go("adminProfile")} aria-label="My Profile" style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <User size={17} color="white"/>
+            <button onClick={()=>go("adminProfile")} aria-label="My Profile" className="dt-admin-btn" style={{ position:"relative" as const, width:40, height:40, borderRadius:13, background: isDesktop ? "#F5F0FF" : "rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <User size={17} color={isDesktop ? "#7549F6" : "white"}/>
             </button>
           </div>
         </div>
@@ -122,28 +134,29 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
         {/* Today widget strip */}
         <div style={{ display:"flex", gap:8, marginTop:16, overflowX:"auto" as const, scrollbarWidth:"none" as const, paddingBottom:2 }}>
           {TODAY_WIDGETS.map(({ label, val, color })=>(
-            <div key={label} style={{ flexShrink:0, background:"rgba(255,255,255,.15)", borderRadius:14, padding:"9px 13px", backdropFilter:"blur(8px)", textAlign:"center" as const, minWidth:70 }}>
-              <p style={{ margin:0, fontSize:16, fontWeight:800, color:"white", fontFamily:QS }}>{val}</p>
-              <p style={{ margin:"2px 0 0", fontSize:8, color:"rgba(255,255,255,.65)", fontFamily:IN, whiteSpace:"nowrap" as const }}>{label}</p>
+            <div key={label} style={{ flexShrink:0, background: isDesktop ? `${color}14` : "rgba(255,255,255,.15)", borderRadius:14, padding:"9px 13px", backdropFilter: isDesktop ? undefined : "blur(8px)", textAlign:"center" as const, minWidth:70 }}>
+              <p style={{ margin:0, fontSize:16, fontWeight:800, color: isDesktop ? color : "white", fontFamily:QS }}><CountUp value={val}/></p>
+              <p style={{ margin:"2px 0 0", fontSize:8, color: isDesktop ? "#6B7280" : "rgba(255,255,255,.65)", fontFamily:IN, whiteSpace:"nowrap" as const }}>{label}</p>
             </div>
           ))}
         </div>
       </div>
 
       {/* ── Scrollable Body ──────────────────────────────────────────────────── */}
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"16px 16px 32px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding: isWide ? "24px 32px 40px" : "16px 16px 32px" }}>
+      <div style={{ maxWidth: isWide ? 1100 : undefined, margin: isWide ? "0 auto" : undefined }}>
 
-        {/* Stat cards 2-col grid */}
+        {/* Stat cards — 2 columns on mobile, 4 on desktop (same real data either way) */}
         <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>System Overview</p>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:18 }}>
-          {STATS.map(({ label, val, color, bg, Icon })=>(
-            <div key={label} style={{ background:"white", borderRadius:18, padding:"14px 14px", boxShadow:"0 3px 12px rgba(0,0,0,.06)" }}>
+        <div style={{ display:"grid", gridTemplateColumns: isWide ? "repeat(4,1fr)" : "1fr 1fr", gap:10, marginBottom:18 }}>
+          {STATS.map(({ label, val, color, bg, Icon }, i)=>(
+            <div key={label} className="dt-admin-card dt-admin-fade-in" style={{ background:"white", borderRadius:18, padding:"14px 14px", boxShadow:"0 3px 12px rgba(0,0,0,.06)", borderTop:`2.5px solid ${color}`, animationDelay:`${i*40}ms` }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
                 <div style={{ width:32, height:32, borderRadius:10, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Icon size={15} color={color}/>
                 </div>
               </div>
-              <p style={{ margin:0, fontSize:20, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{val}</p>
+              <p style={{ margin:0, fontSize:20, fontWeight:800, color:"#1F2937", fontFamily:QS }}><CountUp value={val}/></p>
               <p style={{ margin:"2px 0 0", fontSize:9, color:"#9CA3AF", fontFamily:IN, lineHeight:1.3 }}>{label}</p>
             </div>
           ))}
@@ -151,9 +164,9 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
 
         {/* Quick Actions */}
         <p style={{ margin:"0 0 10px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Quick Actions</p>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:18 }}>
-          {QUICK_ACTIONS.map(({ label, Icon, color, bg, screen })=>(
-            <button key={label} onClick={()=>go(screen)} style={{ background:"white", borderRadius:18, padding:"14px 8px", border:"none", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, boxShadow:"0 3px 12px rgba(0,0,0,.06)" }}>
+        <div style={{ display:"grid", gridTemplateColumns: isWide ? "repeat(6,1fr)" : "repeat(3,1fr)", gap:10, marginBottom:18 }}>
+          {QUICK_ACTIONS.map(({ label, Icon, color, bg, screen }, i)=>(
+            <button key={label} onClick={()=>go(screen)} className="dt-admin-card dt-admin-btn dt-admin-fade-in" style={{ background:"white", borderRadius:18, padding:"14px 8px", border:"none", cursor:"pointer", display:"flex", flexDirection:"column" as const, alignItems:"center", gap:8, boxShadow:"0 3px 12px rgba(0,0,0,.06)", animationDelay:`${i*40}ms` }}>
               <div style={{ width:40, height:40, borderRadius:13, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <Icon size={18} color={color}/>
               </div>
@@ -177,7 +190,7 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
           {activity.slice(0,5).map(({ id, type, msg, ts }, i, arr)=>{
             const meta = ACTIVITY_META[type] ?? { Icon: Activity, color:"#6B7280", bg:"#F3F4F6" };
             return (
-              <div key={id} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 16px", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
+              <div key={id} className="dt-admin-row" style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 16px", borderBottom:i<arr.length-1?"1px solid #F9FAFB":"none" }}>
                 <div style={{ width:34, height:34, borderRadius:11, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
                   <meta.Icon size={14} color={meta.color}/>
                 </div>
@@ -191,7 +204,7 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
         </div>
 
         {/* Pending banner */}
-        <div style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 3px 12px rgba(0,0,0,.06)", display:"flex", alignItems:"center", gap:12 }}>
+        <div className="dt-admin-card" style={{ background:"white", borderRadius:18, padding:"14px 16px", boxShadow:"0 3px 12px rgba(0,0,0,.06)", display:"flex", alignItems:"center", gap:12, border: stats.pendingVerifications > 0 ? "1px solid #FECACA" : "1px solid transparent" }}>
           <div style={{ width:42, height:42, borderRadius:14, background:"#FEE2E2", display:"flex", alignItems:"center", justifyContent:"center" }}>
             <AlertCircle size={20} color="#EF4444"/>
           </div>
@@ -199,14 +212,15 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
             <p style={{ margin:"0 0 1px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{stats.pendingVerifications} Pending Verification{stats.pendingVerifications===1?"":"s"}</p>
             <p style={{ margin:0, fontSize:11, color:"#6B7280", fontFamily:IN }}>Accounts waiting for admin approval</p>
           </div>
-          <button onClick={()=>go("adminUsers")} style={{ height:34, padding:"0 14px", borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS }}>Review</button>
+          <button onClick={()=>go("adminUsers")} className="dt-admin-btn" style={{ height:34, padding:"0 14px", borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS, boxShadow:"0 4px 12px rgba(151,114,246,.3)" }}>Review</button>
         </div>
 
+      </div>
       </div>
 
       {showAllActivity && (
         <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.5)", zIndex:90, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={()=>setShowAllActivity(false)}>
-          <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"85%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+          <div style={{ background:"#F7F8FC", borderRadius:"24px 24px 0 0", maxHeight:"85%", display:"flex", flexDirection:"column" as const, maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e=>e.stopPropagation()}>
             <div style={{ padding:"18px 20px 14px", background:"white", borderRadius:"24px 24px 0 0", borderBottom:"1px solid #F3F4F6", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <div>
                 <p style={{ margin:0, fontSize:15, fontWeight:800, color:"#1F2937", fontFamily:QS }}>Recent Activity</p>
@@ -220,7 +234,7 @@ export function AdminDashboardScreen({ go }: { go:(s:string)=>void }) {
               {activity.map(({ id, type, msg, ts }, i)=>{
                 const meta = ACTIVITY_META[type] ?? { Icon: Activity, color:"#6B7280", bg:"#F3F4F6" };
                 return (
-                  <div key={id} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 0", borderBottom:i<activity.length-1?"1px solid #F3F4F6":"none" }}>
+                  <div key={id} className="dt-admin-row" style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"12px 0", borderBottom:i<activity.length-1?"1px solid #F3F4F6":"none" }}>
                     <div style={{ width:34, height:34, borderRadius:11, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
                       <meta.Icon size={14} color={meta.color}/>
                     </div>

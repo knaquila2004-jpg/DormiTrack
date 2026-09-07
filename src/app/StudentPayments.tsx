@@ -5,7 +5,7 @@ import {
   Banknote, MessageSquare, ChevronRight, Receipt, Zap, Droplet,
   Wifi, Trash2, Tag, Eye, Download,
 } from "lucide-react";
-import { notifyLandlordOfBoardingHouse } from "./notificationStore";
+import { notifyLandlordOfBoardingHouse, notifyAdmins } from "./notificationStore";
 import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
 import { getMyBills, submitPaymentRecord, uploadPaymentProof, StudentBilling } from "./paymentStore";
 
@@ -447,6 +447,11 @@ export function StudentPaymentsScreen({ go, relatedId, onDeepLinkConsumed }: { g
       type: "payment", title: "Payment Awaiting Verification",
       description: `${profile.name} submitted a payment for verification.`,
       destination: "payments", relatedId: firstRecordId,
+    });
+    notifyAdmins("payment_alerts", {
+      type: "payment", title: "New Payment Submitted",
+      description: `${profile.name} submitted a payment for verification.`,
+      destination: "adminReports", relatedId: firstRecordId,
     });
     refresh();
   };

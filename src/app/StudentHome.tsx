@@ -12,7 +12,7 @@ import {
   CATEGORY_META, STATUS_META,
   StudentReport, ReportCategory,
 } from "./reportStore";
-import { useUnreadCount, notifyLandlordOfBoardingHouse, notifyLinkedParents, NotificationType, fmtBadgeCount } from "./notificationStore";
+import { useUnreadCount, notifyLandlordOfBoardingHouse, notifyLinkedParents, notifyAdmins, NotificationType, fmtBadgeCount } from "./notificationStore";
 import { useUnreadChatCount } from "./chatStore";
 import { getMyProfile, getMyAssignment, MyStudentProfile, MyAssignment } from "./studentAssignmentStore";
 import { getMyPendingParentLinkRequests, approveParentLink, rejectParentLink, ParentLinkRequest } from "./parentLinkStore";
@@ -172,6 +172,11 @@ function SubmitReportModal({ onClose, onSubmitted, bhName, roomName, bedName }: 
       type: "report", title: "Concern Submitted",
       description: `Your student submitted a concern: "${title}".`,
       destination: "dashboard", relatedId: res.id,
+    });
+    notifyAdmins("report_alerts", {
+      type: "report", title: "New Report Submitted",
+      description: `A new concern was submitted: "${title}".`,
+      destination: "adminUsers", relatedId: res.id,
     });
     setSuccess(true);
   };

@@ -12,6 +12,9 @@ import {
   AdminUser as AppUser, UserRole, UserStatus, ParentLinkStatus,
   AdminUserReport, AdminReportCategory as ReportCategory, AdminReportPriority as ReportPriority, AdminReportStatus,
 } from "./adminUsersStore";
+import { useDeviceType } from "./components/useDeviceType";
+import { CountUp } from "./components/CountUp";
+import { logAdminActivity } from "./adminStore";
 
 const GRAD   = "linear-gradient(135deg,#9772F6 0%,#7549F6 100%)";
 const GRAD_H = "linear-gradient(160deg,#9772F6 0%,#7549F6 100%)";
@@ -120,6 +123,12 @@ const AVATAR_COLORS = ["#9772F6","#3B82F6","#16A34A","#EC4899","#D97706","#6366F
 const initials  = (n:string) => n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
 const avatarCol = (id:string) => AVATAR_COLORS[[...id].reduce((a,c)=>a+c.charCodeAt(0),0)%AVATAR_COLORS.length];
 
+// Desktop/tablet data-table cell styles — real <table> markup replaces the
+// mobile row-list at wide widths (same data, same click targets, no columns
+// invented that aren't already shown on mobile).
+const TH: React.CSSProperties = { textAlign:"left" as const, padding:"11px 16px", fontSize:9, fontWeight:800, color:"#9CA3AF", fontFamily:QS, textTransform:"uppercase" as const, letterSpacing:0.5, whiteSpace:"nowrap" as const };
+const TD: React.CSSProperties = { padding:"12px 16px", fontSize:12, color:"#374151", fontFamily:IN, verticalAlign:"middle" as const };
+
 // ── Confirm Dialog ────────────────────────────────────────────────────────────
 
 function ConfirmDialog({ title, msg, confirmLabel="Confirm", danger=true, onConfirm, onCancel }: {
@@ -134,8 +143,8 @@ function ConfirmDialog({ title, msg, confirmLabel="Confirm", danger=true, onConf
         <h3 style={{ margin:"0 0 8px", fontSize:16, fontWeight:800, color:"#1F2937", fontFamily:QS, textAlign:"center" as const }}>{title}</h3>
         <p style={{ margin:"0 0 22px", fontSize:12, color:"#6B7280", fontFamily:IN, lineHeight:1.6, textAlign:"center" as const }}>{msg}</p>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-          <button onClick={onCancel} style={{ height:46, borderRadius:18, border:"2px solid #E5E7EB", background:"white", cursor:"pointer", fontSize:13, fontWeight:800, color:"#374151", fontFamily:QS }}>Cancel</button>
-          <button onClick={onConfirm} style={{ height:46, borderRadius:18, border:"none", background:danger?"#EF4444":GRAD, cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS }}>{confirmLabel}</button>
+          <button className="dt-admin-btn" onClick={onCancel} style={{ height:46, borderRadius:18, border:"2px solid #E5E7EB", background:"white", cursor:"pointer", fontSize:13, fontWeight:800, color:"#374151", fontFamily:QS }}>Cancel</button>
+          <button className="dt-admin-btn" onClick={onConfirm} style={{ height:46, borderRadius:18, border:"none", background:danger?"#EF4444":GRAD, cursor:"pointer", fontSize:13, fontWeight:800, color:"white", fontFamily:QS }}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -151,6 +160,7 @@ function ReportDetailPanel({ report, users, onClose, onUpdateStatus }: {
   onClose:()=>void;
   onUpdateStatus:(id:string,s:ReportStatus,note?:string)=>void;
 }) {
+  const isWide = useDeviceType() !== "mobile";
   const [confirm, setConfirm] = useState<{label:string;status:ReportStatus;msg:string}|null>(null);
   const [note, setNote]     = useState(report.resolutionNotes??"");
   const [showNote, setShowNote] = useState(false);
@@ -184,7 +194,7 @@ function ReportDetailPanel({ report, users, onClose, onUpdateStatus }: {
         </div>
       )}
       <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:500, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
-        <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"92%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+        <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"92%", display:"flex", flexDirection:"column" as const, maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e=>e.stopPropagation()}>
           <div style={{ flexShrink:0, display:"flex", justifyContent:"center", padding:"10px 0 4px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
           {/* Header */}
           <div style={{ flexShrink:0, padding:"4px 18px 14px", borderBottom:"1px solid #F3F4F6", background:"white", borderRadius:"28px 28px 0 0" }}>
@@ -303,6 +313,7 @@ function ReportsCenterModal({ reports, users, onClose, onUpdateStatus }: {
   onClose:()=>void;
   onUpdateStatus:(id:string,s:ReportStatus,note?:string)=>void;
 }) {
+  const isWide = useDeviceType() !== "mobile";
   const [detailReport,  setDetailReport]  = useState<UserReport|null>(null);
   const [searchStudent, setSearchStudent] = useState("");
   const [searchReporter,setSearchReporter]= useState("");
@@ -337,7 +348,7 @@ function ReportsCenterModal({ reports, users, onClose, onUpdateStatus }: {
 
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.6)", zIndex:400, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
-      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"95%", display:"flex", flexDirection:"column" as const, boxShadow:"0 -8px 48px rgba(0,0,0,.25)" }} onClick={e=>e.stopPropagation()}>
+      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"95%", display:"flex", flexDirection:"column" as const, boxShadow:"0 -8px 48px rgba(0,0,0,.25)", maxWidth: isWide ? 720 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e=>e.stopPropagation()}>
 
         {/* Handle */}
         <div style={{ flexShrink:0, display:"flex", justifyContent:"center", padding:"10px 0 2px" }}>
@@ -366,7 +377,7 @@ function ReportsCenterModal({ reports, users, onClose, onUpdateStatus }: {
               { label:"Critical",    val:criticalCount, color:"#7F1D1D", bg:"#FEE2E2" },
             ].map(({ label, val, color, bg })=>(
               <div key={label} style={{ flexShrink:0, background:bg, borderRadius:16, padding:"10px 14px", textAlign:"center" as const, minWidth:62 }}>
-                <p style={{ margin:0, fontSize:20, fontWeight:800, color, fontFamily:QS }}>{val}</p>
+                <p style={{ margin:0, fontSize:20, fontWeight:800, color, fontFamily:QS }}><CountUp value={val}/></p>
                 <p style={{ margin:"2px 0 0", fontSize:8, color, fontFamily:IN, fontWeight:700, opacity:0.8 }}>{label}</p>
               </div>
             ))}
@@ -523,6 +534,7 @@ function UserReportsModal({ user, reports, users, onClose, onUpdateStatus }: {
   user:AppUser; reports:UserReport[]; users:AppUser[]; onClose:()=>void;
   onUpdateStatus:(id:string,s:ReportStatus,note?:string)=>void;
 }) {
+  const isWide = useDeviceType() !== "mobile";
   const [detailReport, setDetailReport] = useState<UserReport|null>(null);
   const [statusFilter, setStatusFilter] = useState<ReportStatus|"all">("all");
 
@@ -537,7 +549,7 @@ function UserReportsModal({ user, reports, users, onClose, onUpdateStatus }: {
 
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:300, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
-      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"90%", display:"flex", flexDirection:"column" as const }} onClick={e=>e.stopPropagation()}>
+      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"90%", display:"flex", flexDirection:"column" as const, maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e=>e.stopPropagation()}>
         <div style={{ flexShrink:0, display:"flex", justifyContent:"center", padding:"10px 0 2px" }}><div style={{ width:40, height:4, borderRadius:2, background:"#E5E7EB" }}/></div>
         <div style={{ flexShrink:0, background:"white", borderRadius:"28px 28px 0 0", padding:"12px 18px 0", borderBottom:"1px solid #F3F4F6" }}>
           <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
@@ -609,12 +621,13 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
   user:AppUser; reportCount:number; onClose:()=>void;
   onAction:(id:string,act:string)=>void; onOpenReports:()=>void;
 }) {
+  const isWide = useDeviceType() !== "mobile";
   const [confirm, setConfirm] = useState<string|null>(null);
   const rm=ROLE_META[user.role]; const sm=STATUS_META[user.status]; const col=avatarCol(user.id);
   return (
     <div style={{ position:"fixed" as const, inset:0, background:"rgba(0,0,0,.55)", zIndex:200, display:"flex", flexDirection:"column" as const, justifyContent:"flex-end" }} onClick={onClose}>
       {confirm&&<ConfirmDialog title={confirm==="delete"?"Delete Account":confirm==="suspend"?"Suspend Account":"Reactivate Account"} msg={confirm==="delete"?`Permanently delete ${user.name}'s account?`:confirm==="suspend"?`Suspend ${user.name}'s account?`:`Reactivate ${user.name}'s account?`} danger={confirm==="delete"||confirm==="suspend"} onConfirm={()=>{onAction(user.id,confirm!);setConfirm(null);onClose();}} onCancel={()=>setConfirm(null)}/>}
-      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"88%", overflow:"auto", boxShadow:"0 -8px 40px rgba(0,0,0,.2)" }} onClick={e=>e.stopPropagation()}>
+      <div style={{ background:"#F2F4F8", borderRadius:"28px 28px 0 0", maxHeight:"88%", overflow:"auto", boxShadow:"0 -8px 40px rgba(0,0,0,.2)", maxWidth: isWide ? 480 : undefined, width: isWide ? "100%" : undefined, margin: isWide ? "0 auto" : undefined }} onClick={e=>e.stopPropagation()}>
         <div style={{ backgroundImage:GRAD, borderRadius:"28px 28px 0 0", padding:"22px 20px 18px", position:"relative" as const }}>
           <button onClick={onClose} style={{ position:"absolute" as const, top:16, right:16, width:32, height:32, borderRadius:10, background:"rgba(255,255,255,.2)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={15} color="white"/></button>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
@@ -651,7 +664,7 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
               <p style={{ margin:"2px 0 0", fontSize:12, fontWeight:700, color:"#1F2937", fontFamily:IN }}>{v}</p>
             </div>
           ))}
-          <button onClick={onOpenReports} style={{ width:"100%", marginTop:14, marginBottom:6, background:"white", borderRadius:18, padding:"13px 16px", display:"flex", alignItems:"center", gap:12, border:reportCount>0?"1.5px solid #FCA5A5":"1.5px solid #E5E7EB", cursor:"pointer", boxShadow:"0 2px 10px rgba(0,0,0,.06)" }}>
+          <button className="dt-admin-btn" onClick={onOpenReports} style={{ width:"100%", marginTop:14, marginBottom:6, background:"white", borderRadius:18, padding:"13px 16px", display:"flex", alignItems:"center", gap:12, border:reportCount>0?"1.5px solid #FCA5A5":"1.5px solid #E5E7EB", cursor:"pointer", boxShadow:"0 2px 10px rgba(0,0,0,.06)" }}>
             <div style={{ width:36, height:36, borderRadius:12, background:reportCount>0?"#FEE2E2":"#F5F0FF", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <Flag size={16} color={reportCount>0?"#EF4444":"#9772F6"}/>
             </div>
@@ -665,15 +678,15 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
           <p style={{ margin:"12px 0 8px", fontSize:11, fontWeight:800, color:"#374151", fontFamily:QS }}>Admin Actions</p>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             {[{label:"Edit Info",Icon:Edit3,color:"#9772F6",bg:"#F5F0FF"},{label:"Reset Password",Icon:Lock,color:"#3B82F6",bg:"#EFF6FF"},{label:"View Activity",Icon:Eye,color:"#6366F1",bg:"#EEF2FF"},{label:"Verify Docs",Icon:FileText,color:"#0891B2",bg:"#ECFEFF"}].map(({label,Icon,color,bg})=>(
-              <button key={label} onClick={onClose} style={{ display:"flex", alignItems:"center", gap:8, background:"white", borderRadius:14, padding:"11px 14px", border:"none", cursor:"pointer", boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
+              <button key={label} className="dt-admin-btn" onClick={onClose} style={{ display:"flex", alignItems:"center", gap:8, background:"white", borderRadius:14, padding:"11px 14px", border:"none", cursor:"pointer", boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
                 <div style={{ width:28, height:28, borderRadius:9, background:bg, display:"flex", alignItems:"center", justifyContent:"center" }}><Icon size={13} color={color}/></div>
                 <span style={{ fontSize:11, fontWeight:700, color:"#374151", fontFamily:QS }}>{label}</span>
               </button>
             ))}
           </div>
           <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-            {user.status==="active"?<button onClick={()=>setConfirm("suspend")} style={{ height:42, borderRadius:14, border:"1.5px solid #EF4444", background:"#FEF2F2", cursor:"pointer", fontSize:11, fontWeight:800, color:"#EF4444", fontFamily:QS }}>Suspend</button>:<button onClick={()=>setConfirm("reactivate")} style={{ height:42, borderRadius:14, border:"1.5px solid #16A34A", background:"#F0FDF4", cursor:"pointer", fontSize:11, fontWeight:800, color:"#16A34A", fontFamily:QS }}>Reactivate</button>}
-            <button onClick={()=>setConfirm("delete")} style={{ height:42, borderRadius:14, border:"none", background:"#EF4444", cursor:"pointer", fontSize:11, fontWeight:800, color:"white", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><Trash2 size={13} color="white"/>Delete</button>
+            {user.status==="active"?<button className="dt-admin-btn" onClick={()=>setConfirm("suspend")} style={{ height:42, borderRadius:14, border:"1.5px solid #EF4444", background:"#FEF2F2", cursor:"pointer", fontSize:11, fontWeight:800, color:"#EF4444", fontFamily:QS }}>Suspend</button>:<button className="dt-admin-btn" onClick={()=>setConfirm("reactivate")} style={{ height:42, borderRadius:14, border:"1.5px solid #16A34A", background:"#F0FDF4", cursor:"pointer", fontSize:11, fontWeight:800, color:"#16A34A", fontFamily:QS }}>Reactivate</button>}
+            <button className="dt-admin-btn" onClick={()=>setConfirm("delete")} style={{ height:42, borderRadius:14, border:"none", background:"#EF4444", cursor:"pointer", fontSize:11, fontWeight:800, color:"white", fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}><Trash2 size={13} color="white"/>Delete</button>
           </div>
         </div>
       </div>
@@ -686,6 +699,12 @@ function UserDetailModal({ user, reportCount, onClose, onAction, onOpenReports }
 type UFilter = "all"|UserRole;
 
 export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
+  // Desktop-only spacing/width adjustments (AdminShellFrame in App.tsx already
+  // provides the sidebar/header chrome at this width) — same data, same rows,
+  // same modals, just no mobile-status-bar clearance and a bounded content width.
+  const deviceType = useDeviceType();
+  const isWide = deviceType !== "mobile";
+  const isDesktop = deviceType === "desktop";
   const [filter,       setFilter]       = useState<UFilter>("all");
   const [query,        setQuery]        = useState("");
   const [users,        setUsers]        = useState<AppUser[]>([]);
@@ -714,15 +733,20 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
   // real accounts wired here are honestly ready for that gate if one's ever
   // added, but `pending` will legitimately stay empty until then.
   const handleAction = async (id:string, act:string) => {
+    const target = users.find(u=>u.id===id);
+    const name = target?.name ?? "a user";
     if (act==="delete" || act==="reject") {
       const res = await deleteUserAccount(id);
       if (res.ok === false) { console.error("deleteUserAccount failed:", res.error); return; }
+      logAdminActivity("delete_user", `Deleted ${name}'s account`);
     } else if (act==="suspend") {
       const res = await setUserStatus(id, "suspended");
       if (res.ok === false) { console.error("setUserStatus failed:", res.error); return; }
+      logAdminActivity("suspend_user", `Suspended ${name}'s account`);
     } else if (act==="reactivate" || act==="approve") {
       const res = await setUserStatus(id, "active");
       if (res.ok === false) { console.error("setUserStatus failed:", res.error); return; }
+      logAdminActivity(act==="approve" ? "approve_user" : "reactivate_user", `${act==="approve" ? "Approved" : "Reactivated"} ${name}'s account`);
     }
     refreshUsers();
   };
@@ -730,6 +754,8 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
   const handleUpdateStatus = async (id:string, status:ReportStatus, note?:string) => {
     const res = await respondToReportAsAdmin(id, toDbStatus(status), note);
     if (res.ok === false) { console.error("respondToReportAsAdmin failed:", res.error); return; }
+    const report = reports.find(r=>r.id===id);
+    logAdminActivity("report_status", `Marked report "${report?.title ?? id}" as ${status}`);
     refreshReports();
   };
 
@@ -751,20 +777,21 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
         <UserDetailModal user={selected} reportCount={totalCount(selected.id)} onClose={()=>setSelected(null)} onAction={handleAction} onOpenReports={()=>{setReportsUser(selected);setSelected(null);}}/>
       )}
 
-      {/* ── App Bar ────────────────────────────────────────────────────────── */}
-      <div style={{ flexShrink:0, backgroundImage:GRAD_H, padding:"52px 20px 16px", position:"relative" as const, overflow:"hidden" }}>
-        <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(24px)" }}/>
+      {/* ── App Bar — flat on desktop (sidebar carries the purple identity
+          there); unchanged purple rectangle on mobile/tablet ──────────── */}
+      <div style={{ flexShrink:0, backgroundImage: isDesktop ? undefined : GRAD_H, background: isDesktop ? "white" : undefined, borderBottom: isDesktop ? "1px solid #EFEFF5" : undefined, padding: isWide ? "26px 32px 16px" : "52px 20px 16px", position:"relative" as const, overflow:"hidden" }}>
+        {!isDesktop && <div style={{ position:"absolute" as const, top:-40, right:-40, width:140, height:140, borderRadius:"42% 58% 65% 35%/45% 40% 60% 55%", background:"rgba(255,255,255,.05)", filter:"blur(24px)" }}/>}
 
         {/* Top row: title + icons */}
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:14 }}>
           <div>
-            <h1 style={{ margin:"0 0 2px", fontSize:20, fontWeight:800, color:"white", fontFamily:QS }}>User Management</h1>
-            <p style={{ margin:0, fontSize:11, color:"rgba(255,255,255,.65)", fontFamily:IN }}>{users.length} total accounts</p>
+            <h1 style={{ margin:"0 0 2px", fontSize:20, fontWeight:800, color: isDesktop ? "#1F2937" : "white", fontFamily:QS }}>User Management</h1>
+            <p style={{ margin:0, fontSize:11, color: isDesktop ? "#9CA3AF" : "rgba(255,255,255,.65)", fontFamily:IN }}>{users.length} total accounts</p>
           </div>
 
           {/* Reports icon — opens Reports Center */}
-          <button onClick={()=>setShowCenter(true)} style={{ position:"relative" as const, width:38, height:38, borderRadius:12, background:"rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Flag size={16} color="white"/>
+          <button className="dt-admin-btn" onClick={()=>setShowCenter(true)} style={{ position:"relative" as const, width:38, height:38, borderRadius:12, background: isDesktop ? "#F5F0FF" : "rgba(255,255,255,.15)", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <Flag size={16} color={isDesktop ? "#7549F6" : "white"}/>
             {pendingReportsBadge>0&&(
               <span style={{ position:"absolute" as const, top:-4, right:-4, minWidth:17, height:17, borderRadius:999, background:"#EF4444", color:"white", fontSize:8, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 3px", border:"2px solid white" }}>
                 {pendingReportsBadge>9?"9+":pendingReportsBadge}
@@ -774,16 +801,19 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
         </div>
 
         {/* Search */}
-        <div style={{ background:"rgba(255,255,255,.18)", borderRadius:16, padding:"10px 14px", display:"flex", alignItems:"center", gap:10, backdropFilter:"blur(8px)", marginBottom:12 }}>
-          <Search size={16} color="rgba(255,255,255,.7)"/>
-          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search by name or email…" style={{ background:"none", border:"none", outline:"none", flex:1, color:"white", fontSize:13, fontFamily:IN, caretColor:"white" }}/>
-          {query&&<button onClick={()=>setQuery("")} style={{ background:"none", border:"none", cursor:"pointer" }}><X size={14} color="rgba(255,255,255,.7)"/></button>}
+        <div style={{ background: isDesktop ? "#F3F4F6" : "rgba(255,255,255,.18)", borderRadius:16, padding:"10px 14px", display:"flex", alignItems:"center", gap:10, backdropFilter: isDesktop ? undefined : "blur(8px)", marginBottom:12 }}>
+          <Search size={16} color={isDesktop ? "#9CA3AF" : "rgba(255,255,255,.7)"}/>
+          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search by name or email…" style={{ background:"none", border:"none", outline:"none", flex:1, color: isDesktop ? "#1F2937" : "white", fontSize:13, fontFamily:IN, caretColor: isDesktop ? "#1F2937" : "white" }}/>
+          {query&&<button onClick={()=>setQuery("")} style={{ background:"none", border:"none", cursor:"pointer" }}><X size={14} color={isDesktop ? "#9CA3AF" : "rgba(255,255,255,.7)"}/></button>}
         </div>
 
         {/* Filter chips */}
         <div style={{ display:"flex", gap:6, overflowX:"auto" as const, scrollbarWidth:"none" as const, paddingBottom:2 }}>
           {FILTERS.map(f=>(
-            <button key={f.id} onClick={()=>setFilter(f.id)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"none", cursor:"pointer", background:filter===f.id?"white":"rgba(255,255,255,.18)", color:filter===f.id?"#9772F6":"rgba(255,255,255,.8)", fontSize:11, fontWeight:800, fontFamily:QS }}>
+            <button key={f.id} className="dt-admin-btn" onClick={()=>setFilter(f.id)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"none", cursor:"pointer",
+              background: filter===f.id ? (isDesktop ? "#7549F6" : "white") : (isDesktop ? "#F3F4F6" : "rgba(255,255,255,.18)"),
+              color: filter===f.id ? (isDesktop ? "white" : "#9772F6") : (isDesktop ? "#6B7280" : "rgba(255,255,255,.8)"),
+              fontSize:11, fontWeight:800, fontFamily:QS }}>
               {f.label}
             </button>
           ))}
@@ -791,7 +821,8 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
       </div>
 
       {/* ── Body ───────────────────────────────────────────────────────────── */}
-      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding:"14px 16px 32px" }}>
+      <div style={{ flex:1, overflowY:"auto" as const, scrollbarWidth:"none" as const, padding: isWide ? "20px 32px 40px" : "14px 16px 32px" }}>
+      <div style={{ maxWidth: isWide ? 900 : undefined, margin: isWide ? "0 auto" : undefined }}>
 
         {/* Pending section */}
         {pending.length>0&&(
@@ -800,11 +831,11 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
               <div style={{ width:6, height:6, borderRadius:"50%", background:"#EF4444" }}/>
               <p style={{ margin:0, fontSize:12, fontWeight:800, color:"#EF4444", fontFamily:QS }}>Pending Verification ({pending.length})</p>
             </div>
-            <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(239,68,68,.12)", marginBottom:16, border:"1.5px solid #FEE2E2" }}>
+            <div className="dt-admin-fade-in" style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(239,68,68,.12)", marginBottom:16, border:"1.5px solid #FEE2E2" }}>
               {pending.map((u,i)=>{
                 const col=avatarCol(u.id); const pc=avatarBadge(u.id);
                 return (
-                  <div key={u.id} style={{ padding:"13px 16px", borderBottom:i<pending.length-1?"1px solid #FEF2F2":"none" }}>
+                  <div key={u.id} className="dt-admin-row" style={{ padding:"13px 16px", borderBottom:i<pending.length-1?"1px solid #FEF2F2":"none" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                       <div style={{ width:42, height:42, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
                         {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:14, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
@@ -813,19 +844,19 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
                         <p style={{ margin:"0 0 1px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS }}>{u.name}</p>
                         <p style={{ margin:0, fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{ROLE_META[u.role].label} · {u.email}</p>
                       </div>
-                      <button onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:34, height:34, borderRadius:11, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      <button className="dt-admin-btn" onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:34, height:34, borderRadius:11, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                         <Flag size={14} color={pc>0?"#EF4444":"#9CA3AF"}/>
                         {pc>0&&<div style={{ position:"absolute" as const, top:-4, right:-4, width:14, height:14, borderRadius:"50%", background:"#EF4444", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:7, color:"white", fontWeight:800 }}>{pc}</span></div>}
                       </button>
                     </div>
                     <div style={{ display:"flex", gap:8, marginTop:10 }}>
-                      <button onClick={()=>handleAction(u.id,"approve")} style={{ flex:1, height:34, borderRadius:12, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+                      <button className="dt-admin-btn" onClick={()=>handleAction(u.id,"approve")} style={{ flex:1, height:34, borderRadius:12, backgroundImage:GRAD, border:"none", cursor:"pointer", color:"white", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
                         <CheckCircle size={12} color="white"/>Approve
                       </button>
-                      <button onClick={()=>handleAction(u.id,"reject")} style={{ flex:1, height:34, borderRadius:12, border:"1.5px solid #EF4444", background:"white", cursor:"pointer", color:"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+                      <button className="dt-admin-btn" onClick={()=>handleAction(u.id,"reject")} style={{ flex:1, height:34, borderRadius:12, border:"1.5px solid #EF4444", background:"white", cursor:"pointer", color:"#EF4444", fontSize:11, fontWeight:800, fontFamily:QS, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
                         <XCircle size={12} color="#EF4444"/>Reject
                       </button>
-                      <button onClick={()=>setSelected(u)} style={{ width:34, height:34, borderRadius:12, background:"#F9FAFB", border:"1.5px solid #E5E7EB", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      <button className="dt-admin-btn" onClick={()=>setSelected(u)} style={{ width:34, height:34, borderRadius:12, background:"#F9FAFB", border:"1.5px solid #E5E7EB", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
                         <Eye size={13} color="#6B7280"/>
                       </button>
                     </div>
@@ -840,40 +871,103 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
         {rest.length>0&&(
           <>
             <p style={{ margin:"0 0 10px", fontSize:12, fontWeight:800, color:"#374151", fontFamily:QS }}>All Users ({rest.length})</p>
-            <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
-              {rest.map((u,i)=>{
-                const col=avatarCol(u.id); const rm=ROLE_META[u.role]; const sm=STATUS_META[u.status];
-                const pc=avatarBadge(u.id); const tc=totalCount(u.id);
-                return (
-                  <div key={u.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 16px", borderBottom:i<rest.length-1?"1px solid #F3F4F6":"none" }}>
-                    <div onClick={()=>setSelected(u)} style={{ position:"relative" as const, flexShrink:0, cursor:"pointer" }}>
-                      <div style={{ width:44, height:44, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
-                        {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
+            {isWide ? (
+              // Real desktop/tablet data table — same rows, same fields, same
+              // click targets as the mobile card list below, just columned.
+              <div className="dt-admin-fade-in" style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)", overflowX:"auto" as const }}>
+                <table style={{ width:"100%", borderCollapse:"collapse" as const }}>
+                  <thead>
+                    <tr style={{ background:"#F9FAFB", borderBottom:"1px solid #F3F4F6" }}>
+                      <th style={TH}>User</th>
+                      <th style={TH}>Role</th>
+                      <th style={TH}>Status</th>
+                      <th style={TH}>Link / Last Login</th>
+                      <th style={TH}>Reports</th>
+                      <th style={{ ...TH, textAlign:"right" as const }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rest.map((u,i)=>{
+                      const col=avatarCol(u.id); const rm=ROLE_META[u.role]; const sm=STATUS_META[u.status];
+                      const pc=avatarBadge(u.id); const tc=totalCount(u.id);
+                      return (
+                        <tr key={u.id} className="dt-admin-row" onClick={()=>setSelected(u)} style={{ borderBottom:i<rest.length-1?"1px solid #F3F4F6":"none", cursor:"pointer" }}>
+                          <td style={TD}>
+                            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                              <div style={{ position:"relative" as const, flexShrink:0 }}>
+                                <div style={{ width:36, height:36, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+                                  {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:12, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
+                                </div>
+                                {pc>0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:14, height:14, borderRadius:"50%", background:"#EF4444", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:6, color:"white", fontWeight:800 }}>{pc}</span></div>}
+                              </div>
+                              <div style={{ minWidth:0 }}>
+                                <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:800, color:"#1F2937", fontFamily:QS, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const, maxWidth:220 }}>{u.name}</p>
+                                <p style={{ margin:0, fontSize:10, color:"#9CA3AF", fontFamily:IN, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const, maxWidth:220 }}>{u.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td style={TD}><span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:rm.bg, color:rm.color, fontFamily:QS }}>{rm.label}</span></td>
+                          <td style={TD}><span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span></td>
+                          <td style={TD}>
+                            {/* lastLogin has no real data behind it (see adminUsersStore.ts) —
+                                shown only for roles without a real link status to display instead. */}
+                            {(u.role==="student"||u.role==="parent")
+                              ? <span style={{ fontSize:9, fontWeight:800, padding:"3px 9px", borderRadius:20, background:LINK_STATUS_META[u.linkStatus??"none"].bg, color:LINK_STATUS_META[u.linkStatus??"none"].color, fontFamily:QS }}>{LINK_STATUS_META[u.linkStatus??"none"].label}</span>
+                              : <span style={{ fontSize:11, color:"#9CA3AF", fontFamily:IN }}>{u.lastLogin}</span>}
+                          </td>
+                          <td style={TD}>
+                            <button className="dt-admin-btn" onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:32, height:32, borderRadius:11, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                              <Flag size={13} color={pc>0?"#EF4444":"#9CA3AF"}/>
+                              {tc>0&&pc===0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:13, height:13, borderRadius:"50%", background:"#9CA3AF", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:6, color:"white", fontWeight:800 }}>{tc}</span></div>}
+                            </button>
+                          </td>
+                          <td style={{ ...TD, textAlign:"right" as const }}>
+                            <button className="dt-admin-btn" onClick={e=>{e.stopPropagation();setSelected(u);}} style={{ height:30, padding:"0 12px", borderRadius:20, backgroundImage:GRAD, border:"none", cursor:"pointer", fontSize:10, fontWeight:800, color:"white", fontFamily:QS, display:"inline-flex", alignItems:"center", gap:4 }}>
+                              <Eye size={11} color="white"/>View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ background:"white", borderRadius:20, overflow:"hidden", boxShadow:"0 4px 16px rgba(0,0,0,.07)" }}>
+                {rest.map((u,i)=>{
+                  const col=avatarCol(u.id); const rm=ROLE_META[u.role]; const sm=STATUS_META[u.status];
+                  const pc=avatarBadge(u.id); const tc=totalCount(u.id);
+                  return (
+                    <div key={u.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 16px", borderBottom:i<rest.length-1?"1px solid #F3F4F6":"none" }}>
+                      <div onClick={()=>setSelected(u)} style={{ position:"relative" as const, flexShrink:0, cursor:"pointer" }}>
+                        <div style={{ width:44, height:44, borderRadius:"50%", background:col+"18", border:`1.5px solid ${col}30`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+                          {u.photo ? <img src={u.photo} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:15, fontWeight:800, color:col, fontFamily:QS }}>{initials(u.name)}</span>}
+                        </div>
+                        {pc>0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:16, height:16, borderRadius:"50%", background:"#EF4444", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:7, color:"white", fontWeight:800 }}>{pc}</span></div>}
                       </div>
-                      {pc>0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:16, height:16, borderRadius:"50%", background:"#EF4444", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:7, color:"white", fontWeight:800 }}>{pc}</span></div>}
-                    </div>
-                    <div onClick={()=>setSelected(u)} style={{ flex:1, minWidth:0, cursor:"pointer" }}>
-                      <p style={{ margin:"0 0 3px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const }}>{u.name}</p>
-                      <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                        <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:rm.bg, color:rm.color, fontFamily:QS }}>{rm.label}</span>
-                        <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
-                        {/* Parent-student link status, at a glance — lastLogin has no real data
-                            behind it (see adminUsersStore.ts) so this replaces it for the two
-                            roles it actually applies to instead of sitting next to a "—". */}
-                        {(u.role==="student"||u.role==="parent")
-                          ? <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:LINK_STATUS_META[u.linkStatus??"none"].bg, color:LINK_STATUS_META[u.linkStatus??"none"].color, fontFamily:QS }}>{LINK_STATUS_META[u.linkStatus??"none"].label}</span>
-                          : <span style={{ fontSize:9, color:"#C4C9D4", fontFamily:IN }}>{u.lastLogin}</span>}
+                      <div onClick={()=>setSelected(u)} style={{ flex:1, minWidth:0, cursor:"pointer" }}>
+                        <p style={{ margin:"0 0 3px", fontSize:13, fontWeight:800, color:"#1F2937", fontFamily:QS, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const }}>{u.name}</p>
+                        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:rm.bg, color:rm.color, fontFamily:QS }}>{rm.label}</span>
+                          <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:sm.bg, color:sm.color, fontFamily:QS }}>{sm.label}</span>
+                          {/* Parent-student link status, at a glance — lastLogin has no real data
+                              behind it (see adminUsersStore.ts) so this replaces it for the two
+                              roles it actually applies to instead of sitting next to a "—". */}
+                          {(u.role==="student"||u.role==="parent")
+                            ? <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background:LINK_STATUS_META[u.linkStatus??"none"].bg, color:LINK_STATUS_META[u.linkStatus??"none"].color, fontFamily:QS }}>{LINK_STATUS_META[u.linkStatus??"none"].label}</span>
+                            : <span style={{ fontSize:9, color:"#C4C9D4", fontFamily:IN }}>{u.lastLogin}</span>}
+                        </div>
                       </div>
+                      <button className="dt-admin-btn" onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:36, height:36, borderRadius:12, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                        <Flag size={15} color={pc>0?"#EF4444":"#9CA3AF"}/>
+                        {tc>0&&pc===0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:13, height:13, borderRadius:"50%", background:"#9CA3AF", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:6, color:"white", fontWeight:800 }}>{tc}</span></div>}
+                      </button>
+                      <ChevronRight size={14} color="#D1D5DB" onClick={()=>setSelected(u)} style={{ cursor:"pointer" }}/>
                     </div>
-                    <button onClick={e=>{e.stopPropagation();setReportsUser(u);}} style={{ position:"relative" as const, width:36, height:36, borderRadius:12, background:pc>0?"#FEE2E2":"#F9FAFB", border:`1.5px solid ${pc>0?"#FECACA":"#E5E7EB"}`, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                      <Flag size={15} color={pc>0?"#EF4444":"#9CA3AF"}/>
-                      {tc>0&&pc===0&&<div style={{ position:"absolute" as const, top:-3, right:-3, width:13, height:13, borderRadius:"50%", background:"#9CA3AF", display:"flex", alignItems:"center", justifyContent:"center", border:"2px solid white" }}><span style={{ fontSize:6, color:"white", fontWeight:800 }}>{tc}</span></div>}
-                    </button>
-                    <ChevronRight size={14} color="#D1D5DB" onClick={()=>setSelected(u)} style={{ cursor:"pointer" }}/>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
 
@@ -885,6 +979,7 @@ export function AdminUsersScreen({ go }: { go:(s:string)=>void }) {
             <p style={{ margin:0, fontSize:14, fontWeight:700, color:"#9CA3AF", fontFamily:QS }}>No users found</p>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

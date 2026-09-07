@@ -1,0 +1,20 @@
+# Deployed as a static SPA (single index.html, no server-side routes) — Vite
+# copies everything in public/ verbatim into dist/, so this lands at the
+# document root alongside index.html on Hostinger.
+
+# Force HTTPS — the PWA install prompt (beforeinstallprompt) and service
+# worker registration both require a secure context; Hostinger's free SSL
+# only takes effect once traffic is actually redirected to it.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} off
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+
+# Apache doesn't always know the manifest's real MIME type out of the box —
+# served as anything else, Chrome/Edge silently reject it and the app stops
+# being installable even though the file is present and correct.
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
+  AddType application/javascript .js .mjs
+</IfModule>

@@ -223,3 +223,17 @@ export async function notifyLinkedParents(studentId: string, input: Omit<NotifyI
   });
   if (error) console.error("notifyLinkedParents:", error.message);
 }
+
+// "Notify every admin who wants this kind of alert" — admin_notification_prefs
+// (0063) isn't the caller's own row to read a fan-out list from (a student
+// filing a report has no reason to see every admin's preferences directly),
+// so this goes through the same SECURITY DEFINER RPC pattern as
+// notify_linked_parents above.
+export type AdminNotifPrefKey = "new_user_alerts" | "bh_request_alerts" | "report_alerts" | "payment_alerts";
+export async function notifyAdmins(prefKey: AdminNotifPrefKey, input: Omit<NotifyInput, "userId">): Promise<void> {
+  const { error } = await supabase.rpc("notify_admins", {
+    p_pref_key: prefKey, p_type: input.type, p_title: input.title,
+    p_description: input.description, p_destination: input.destination, p_related_id: input.relatedId ?? null,
+  });
+  if (error) console.error("notifyAdmins:", error.message);
+}
